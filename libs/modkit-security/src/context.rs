@@ -1,5 +1,5 @@
 use crate::permission::Permission;
-use crate::{ROOT_SUBJECT_ID, ROOT_TENANT_ID};
+use crate::{AccessScope, PolicyEngineRef, ROOT_SUBJECT_ID, ROOT_TENANT_ID};
 use uuid::Uuid;
 
 /// `SecurityContext` encapsulates the security-related information for a request or operation
@@ -57,6 +57,40 @@ impl SecurityContext {
     pub fn environment(&self) -> Vec<(String, String)> {
         self.environment.clone()
     }
+
+    pub fn scope(&self, policy_engine: PolicyEngineRef) -> AccessScopeResolver {
+        AccessScopeResolver {
+            _policy_engine: policy_engine,
+            _context: self.clone(),
+        }
+    }
+}
+
+pub struct AccessScopeResolver {
+    _policy_engine: PolicyEngineRef,
+    _context: SecurityContext,
+}
+
+impl AccessScopeResolver {
+    #[must_use]
+    pub fn include_tenant_children(&self) -> &Self {
+        self
+    }
+
+    #[must_use]
+    pub fn include_resource_ids(&self) -> &Self {
+        self
+    }
+
+    /// Prepare and build the final `AccessScope` based on the resolver configuration
+    ///
+    /// # Errors
+    /// This function may return an error if the scope preparation fails
+    #[allow(clippy::unused_async)]
+    pub async fn prepare(&self) -> Result<AccessScope, Box<dyn std::error::Error>> {
+        // TODO: implement the logic to build the AccessScope
+        Ok(AccessScope::default())
+    }
 }
 
 #[derive(Default)]
@@ -109,11 +143,6 @@ impl SecurityContextBuilder {
             environment: self.environment,
         }
     }
-}
-
-/// Policy Engine - Zero Trust Policy Engine, responsible for evaluating and enforcing policies or rules
-pub trait PolicyEngine: Send + Sync {
-    fn allows(&self, ctx: &SecurityContext, resource: &str, action: &str) -> bool;
 }
 
 #[cfg(test)]
