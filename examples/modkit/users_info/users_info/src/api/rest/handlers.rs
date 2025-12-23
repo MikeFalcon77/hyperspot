@@ -1,5 +1,4 @@
 use axum::{extract::Path, http::Uri, Extension};
-use futures::TryFutureExt;
 use tracing::{field::Empty, info};
 use uuid::Uuid;
 
@@ -12,13 +11,7 @@ use modkit::api::select::{apply_select, page_to_projected_json};
 use crate::domain::service::Service;
 use modkit::SseBroadcaster;
 
-// Import auth extractors
-use modkit_auth::axum_ext::Authz;
-
-// Import domain error for conversion
 use modkit_security::SecurityContext;
-// Type aliases for our specific API with DomainError
-use crate::domain::error::DomainError;
 
 /// List users with cursor-based pagination and optional field projection via $select
 #[tracing::instrument(
@@ -41,7 +34,6 @@ pub async fn list_users(
 
     let page = svc
         .list_users_page(&ctx, &query)
-        .map_err(UsersApiError::from_domain)
         .await?
         .map_items(UserDto::from);
 

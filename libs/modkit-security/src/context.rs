@@ -61,14 +61,14 @@ impl SecurityContext {
     pub fn scope(&self, policy_engine: PolicyEngineRef) -> AccessScopeResolver {
         AccessScopeResolver {
             _policy_engine: policy_engine,
-            _context: self.clone(),
+            context: self.clone(),
         }
     }
 }
 
 pub struct AccessScopeResolver {
     _policy_engine: PolicyEngineRef,
-    _context: SecurityContext,
+    context: SecurityContext,
 }
 
 impl AccessScopeResolver {
@@ -86,9 +86,26 @@ impl AccessScopeResolver {
     ///
     /// # Errors
     /// This function may return an error if the scope preparation fails
-    #[allow(clippy::unused_async)]
     pub async fn prepare(&self) -> Result<AccessScope, Box<dyn std::error::Error>> {
-        // TODO: implement the logic to build the AccessScope
+        // Keep this async to allow future policy-engine / IO-backed resolution without
+        // changing the public API. This no-op await also satisfies clippy::unused_async.
+        std::future::ready(()).await;
+
+        // Minimal deterministic scope resolution for local/in-process usage.
+        //
+        // NOTE: This is intentionally simple: it enables tenant isolation for the common case
+        // (a request has a tenant_id), while still allowing system/root context to access all.
+        //
+        // More advanced scope resolution should be implemented via `PolicyEngine`.
+        if self.context.tenant_id == ROOT_TENANT_ID && self.context.subject_id == ROOT_SUBJECT_ID
+        {
+            return Ok(AccessScope::root_tenant());
+        }
+
+        if self.context.tenant_id != Uuid::default() {
+            return Ok(AccessScope::tenants_only(vec![self.context.tenant_id]));
+        }
+
         Ok(AccessScope::default())
     }
 }
