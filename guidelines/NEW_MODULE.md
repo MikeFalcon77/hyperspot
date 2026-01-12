@@ -1126,7 +1126,7 @@ external API clients.
 
    ```rust
    use chrono::{DateTime, Utc};
-   use modkit_db_macros::ODataFilterable;
+   use modkit_odata_macros::ODataFilterable;
    use serde::{Deserialize, Serialize};
    use utoipa::ToSchema;
    use uuid::Uuid;

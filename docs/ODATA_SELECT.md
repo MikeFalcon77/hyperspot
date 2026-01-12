@@ -167,8 +167,7 @@ pub async fn list_users(
     // ... other extractors
 ) -> Result<JsonPage<serde_json::Value>> {
     let page = fetch_page().await?;
-    let projected_page = page_to_projected_json(&page, query.selected_fields())?;
-    Ok(Json(projected_page))
+    Ok(Json(page_to_projected_json(&page, query.selected_fields())))
 }
 ```
 
@@ -193,6 +192,10 @@ let fields_set: HashSet<String> = query
 
 let projected = project_json(&value, &fields_set);
 ```
+
+#### Custom projection
+
+If you need custom projection behavior, serialize to `serde_json::Value` and call `project_json(...)` directly.
 
 ## API Reference
 
@@ -236,7 +239,7 @@ Helper function to apply field projection to a serializable value.
 
 ```rust
 pub fn apply_select<T: serde::Serialize>(
-    value: &T,
+    value: T,
     selected_fields: Option<&[String]>,
 ) -> Value
 ```
@@ -246,16 +249,6 @@ pub fn apply_select<T: serde::Serialize>(
   - `selected_fields`: Optional slice of field names to include
 
 - **Returns:** The projected JSON value, or the original value if no fields are selected
-
-#### `SelectProjectable` Trait
-
-Implement on your DTO types for custom projection logic:
-
-```rust
-pub trait SelectProjectable: serde::Serialize {
-    fn project_select(&self, selected_fields: &[String]) -> Value;
-}
-```
 
 ## Validation & Constraints
 

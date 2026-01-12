@@ -317,7 +317,7 @@ use types_registry_sdk::TypesRegistryApi;
 
 #[modkit::module(
     name = "my_gateway",
-    deps = ["types_registry", "plugin_a", "plugin_b"],  // Depend on all plugins
+    deps = ["types_registry"],
     capabilities = [rest]
 )]
 pub struct MyGateway {
@@ -403,7 +403,7 @@ pub struct Service {
 
 impl Service {
     /// Lazily resolve the plugin on first call
-    async fn get_plugin(&self) -> Result<Arc<dyn MyMoodulePluginClient>, DomainError> {
+    async fn get_plugin(&self) -> Result<Arc<dyn MyModulePluginClient>, DomainError> {
         let scope = self.resolved
             .get_or_try_init(|| self.resolve_plugin())
             .await?;
@@ -530,189 +530,16 @@ impl MyModulePluginClient for Service {
 
 ---
 
-## Plugin Selection Strategies
-
-The gateway can select plugins based on various criteria:
-
-### By Vendor (Configuration-Based)
-
-```yaml
-# config/quickstart.yaml
-modules:
-  my_gateway:
-    config:
-      vendor: "Contoso"  # Select Contoso plugin
-```
-
-```rust
-fn choose_plugin(vendor: &str, instances: &[GtsEntity]) -> Result<&GtsEntity, DomainError> {
-    instances
-        .iter()
-        .filter(|e| {
-            let spec: MyModulePluginSpecV1 = serde_json::from_value(e.content.clone()).ok()?;
-            spec.vendor == vendor
-        })
-        .min_by_key(|e| {
-            let spec: MyModulePluginSpecV1 = serde_json::from_value(e.content.clone()).unwrap();
-            spec.priority
-        })
-        .ok_or(DomainError::PluginNotFound { vendor: vendor.to_owned() })
-}
-```
-
-### By Tenant (Context-Based)
-
-```rust
-async fn get_plugin_for_tenant(
-    &self,
-    ctx: &SecurityCtx,
-) -> Result<Arc<dyn MyModulePluginClient>, DomainError> {
-    // Look up tenant-specific plugin configuration
-    let tenant_id = ctx.tenant_id();
-    let plugin_id = self.tenant_plugin_map.get(&tenant_id)?;
-    let scope = ClientScope::gts_id(plugin_id);
-    self.hub.get_scoped::<dyn PluginClient>(&scope)
-}
-```
-
-### By Request Parameters
-
-```rust
-pub async fn handle_request(
-    &self,
-    ctx: &SecurityCtx,
-    provider: &str,  // e.g., "openai", "anthropic"
-) -> Result<Response, DomainError> {
-    let plugin_id = format!("gts.x.core.modkit.plugin.v1~x.llm_gateway.llm_gateway.plugin.v1~{}.llm_gateway._.plugin.v1", provider);
-    let scope = ClientScope::gts_id(&plugin_id);
-    let plugin = self.hub.get_scoped::<dyn LlmPluginClient>(&scope)?;
-    plugin.complete(ctx, request).await
-}
-```
-
----
-
-## Configuration
-
-### Gateway Configuration
-
-```yaml
-# config/quickstart.yaml
-modules:
-  my_gateway:
-    config:
-      vendor: "Contoso"
-      fallback_vendor: "Default"
-```
-
-```rust
-// <gateway>-gw/src/config.rs
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct GatewayConfig {
-    pub vendor: String,
-    pub fallback_vendor: Option<String>,
-}
-
-impl Default for GatewayConfig {
-    fn default() -> Self {
-        Self {
-            vendor: "Default".to_owned(),
-            fallback_vendor: None,
-        }
-    }
-}
-```
-
-### Plugin Configuration
-
-```yaml
-# config/quickstart.yaml
-modules:
-  contoso_plugin:
-    config:
-      vendor: "Contoso"
-      priority: 10
-  fabrikam_plugin:
-    config:
-      vendor: "Fabrikam"
-      priority: 20  # Lower priority = selected if vendor matches
-```
-
-```rust
-// plugins/contoso_plugin/src/config.rs
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct PluginConfig {
-    pub vendor: String,
-    pub priority: i16,
-}
-
-impl Default for PluginConfig {
-    fn default() -> Self {
-        Self {
-            vendor: "Contoso".to_owned(),
-            priority: 10,
-        }
-    }
-}
-```
-
----
-
-## Error Handling
-
-### Domain Errors (Gateway)
-
-```rust
-// <gateway>-gw/src/domain/error.rs
-#[derive(thiserror::Error, Debug)]
-pub enum DomainError {
-    #[error("types registry unavailable: {0}")]
-    TypesRegistryUnavailable(String),
-
-    #[error("no plugin found for vendor '{vendor}'")]
-    PluginNotFound { vendor: String },
-
-    #[error("invalid plugin instance '{gts_id}': {reason}")]
-    InvalidPluginInstance { gts_id: String, reason: String },
-
-    #[error("plugin client not registered for '{gts_id}'")]
-    PluginClientNotFound { gts_id: String },
-
-    #[error(transparent)]
-    PluginError(#[from] my_sdk::MyError),
-}
-```
-
-### SDK Errors (Shared)
-
-```rust
-// <gateway>-sdk/src/error.rs
-#[derive(thiserror::Error, Debug, Clone)]
-pub enum MyError {
-    #[error("not found: {0}")]
-    NotFound(String),
-
-    #[error("permission denied: {0}")]
-    PermissionDenied(String),
-
-    #[error("internal error: {0}")]
-    Internal(String),
-}
-```
-
----
-
 ## Module Dependencies
 
-Ensure proper initialization order by declaring dependencies:
+Gateway and plugin modules should depend on `types_registry`.
 
 ```rust
-// Gateway depends on types_registry AND all plugins
+// Gateway depends only on types_registry.
+// Plugins are discovered dynamically via types_registry and do not need to be listed as deps.
 #[modkit::module(
     name = "my_gateway",
-    deps = ["types_registry", "plugin_a", "plugin_b", "plugin_c"],
+    deps = ["types_registry"],
     capabilities = [rest]
 )]
 pub struct MyGateway { /* ... */ }
@@ -725,11 +552,7 @@ pub struct MyGateway { /* ... */ }
 pub struct PluginA { /* ... */ }
 ```
 
-This ensures:
-
-1. `types_registry` initializes first
-2. All plugins initialize and register their instances
-3. Gateway initializes last and can discover all available plugins
+To include plugins in a build, register them in the server binary (e.g. `registered_modules.rs`) or gate them behind Cargo feature flags.
 
 ---
 
