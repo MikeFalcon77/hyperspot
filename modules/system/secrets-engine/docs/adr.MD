@@ -24,7 +24,7 @@ We do **not** want to re-implement the full Credstore API. We only need a small 
 - `get` secret
 - optionally `delete` secret
 
-Secrets must be scoped **per tenant**, where the tenant is derived from the request **Security Context**.
+Secrets must be scoped **per tenant**, where the tenant is derived from the request **SecurityContext**.
 
 Credstore requires OAuth2 authentication and tenant scoping via `tenant_id` query parameter.
 
@@ -59,14 +59,19 @@ Operations:
 - `put(ctx, key, bytes) -> ()`
 - `delete(ctx, key) -> ()` (optional but recommended)
 
-Tenant ID is **not** passed explicitly. It is derived from `SecurityCtx` (e.g. `ctx.tenant_id()`).
+Tenant ID is **not** passed explicitly. It is derived from `SecurityContext` (e.g. `ctx.tenant_id()`).
 
 ### 3) Enforce authorization in the gateway (not in plugins)
 
-We will enforce module-level authorization in `secrets-gw` using the request `SecurityCtx`:
+We will enforce module-level authorization in `secrets-gw` using the request `SecurityContext`.
 
-- `get` requires `Secrets:Read`
-- `put/delete` require `Secrets:Write`
+Authorization is enforced at two levels:
+
+- **Perimeter (REST API):** each secured endpoint uses `require_auth(resource, action)` before calling the domain/service.
+- **Defense-in-depth (Gateway domain/service):** the gateway service also validates the required `resource:action` permission in `SecurityContext` for every operation. This protects non-REST (ClientHub) callers and prevents bypasses due to wiring/route configuration mistakes.
+
+- `get` requires permission `secrets:read` (enforced at REST perimeter via `require_auth("secrets", "read")`)
+- `put/delete` require permission `secrets:write` (enforced at REST perimeter via `require_auth("secrets", "write")`)
 
 Plugins are “storage adapters” and must not implement policy decisions to avoid inconsistent behavior across backends.
 
