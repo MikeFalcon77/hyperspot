@@ -134,16 +134,10 @@ This allows least-privilege deployments.
 
 ## Alternatives Considered
 
-### A) Directly calling Credstore from consumers (no gateway)
-- **Rejected**: violates ModKit plugin isolation principles and couples all consumers to Credstore REST/auth details.
-
-### B) Single implementation (no plugin system)
-- **Rejected**: prevents runtime/environment-specific backends and complicates desktop support.
-
-### C) Store local mapping key->uuid (InternalID) for Credstore
+### A) Store local mapping key->uuid (InternalID) for Credstore
 - **Rejected**: introduces additional state/storage requirements and complicates recovery/migrations.
 
-### D) Implement full Credstore API in the new service
+### B) Implement full Credstore API in the new service
 - **Rejected**: out of scope; we only need store/retrieve per-tenant secrets.
 
 ---
@@ -158,7 +152,6 @@ This allows least-privilege deployments.
 - **Centralized auth config**: global issuer URL and shared token caching.
 
 ### Negative / Tradeoffs
-- Plugin architecture adds additional crates/modules and types-registry wiring.
 - ExternalID format must remain stable across versions to avoid breaking lookups.
 - If Credstore has stricter validation for ExternalID content, we must ensure encoding conforms.
 - Two-step write flow (PUT then POST then PUT) adds complexity (but improves performance for updates).
