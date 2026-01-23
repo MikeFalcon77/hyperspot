@@ -4,29 +4,27 @@
 - **Status:** Proposed
 - **Date:** 2026-01-20
 - **Decision Drivers:**
-    - Minimal functionality required: **store / retrieve secrets per tenant**.
-    - Support multiple runtimes:
-        - **Desktop/VM**: store secrets in OS protected storage (macOS Keychain / Windows protected storage).
-        - **Kubernetes**: store secrets in the existing **Credentials Store (Credstore) Go service** via REST.
-    - Keep consumers decoupled from storage backends and allow runtime selection.
-    - Enforce **module-level authorization** (read vs write) consistently across backends.
-    - Centralize OAuth/OIDC configuration and token management where possible.
+    - **Store/retrieve secrets per tenant** (minimal surface).
+    - Run in different environments:
+        - **Desktop/VM**: OS protected storage (macOS Keychain / Windows protected storage).
+        - **Kubernetes**: existing **Credstore** service via REST.
+    - Consumers talk to one API; backend is selected at runtime.
+    - Consistent authz model (`read` vs `write`) regardless of backend.
+    - Reuse/centralize OAuth/OIDC config and token handling where possible.
 
 ---
 
 ## Context
 
-We are implementing a new secret storage service in Rust using **ModKit**. The organization already has an existing Go service (**Credstore**) that stores credentials and secrets per tenant and exposes a RAML-described REST API.
-
-We do **not** want to re-implement the full Credstore API. We only need a small subset:
+We are building a new secret storage module in Rust on **ModKit**.
+In Kubernetes we already have **Credstore** (Go, REST). We only need a small subset of its functionality:
 
 - `put` secret (create/update)
 - `get` secret
 - optionally `delete` secret
 
-Secrets must be scoped **per tenant**, where the tenant is derived from the request **SecurityContext**.
-
-Credstore requires OAuth2 authentication and tenant scoping via `tenant_id` query parameter.
+Tenant scoping comes from the request **SecurityContext**.
+Credstore additionally expects `tenant_id` as a query parameter and requires OAuth2.
 
 ---
 
@@ -34,15 +32,15 @@ Credstore requires OAuth2 authentication and tenant scoping via `tenant_id` quer
 
 ### 1) Use ModKit “Gateway + Plugins” architecture for secret storage
 
-We will implement:
+Structure:
 
 - **Gateway module** `secrets-gw`
-    - Exposes a stable public API to other modules via `ClientHub`.
-    - Selects the appropriate plugin implementation at runtime.
-    - Enforces authorization policies (read/write).
-- **Plugin modules** implementing backend-specific storage:
-    - `os_protected_storage` plugin for desktop/VM environments.
-    - `credstore_rest` plugin for Kubernetes environments (REST to Credstore).
+    - Stable API for other modules via `ClientHub`.
+    - Chooses a plugin at runtime.
+    - Enforces read/write authorization.
+- **Plugins** (backend adapters)
+    - `os_protected_storage` (desktop/VM).
+    - `credstore_rest` (Kubernetes, REST to Credstore).
 
 This follows ModKit plugin isolation rules: consumers only depend on the gateway API, not plugins directly.
 
@@ -59,13 +57,12 @@ Operations:
 - `put(ctx, key, bytes) -> ()`
 - `delete(ctx, key) -> ()` (optional but recommended)
 
-Tenant ID is **not** passed explicitly. It is derived from `SecurityContext` (e.g. `ctx.tenant_id()`).
+Tenant ID is not passed explicitly; it is derived from `SecurityContext` (e.g. `ctx.tenant_id()`).
 
 ### 3) Enforce authorization in the gateway (not in plugins)
 
-We will enforce module-level authorization in `secrets-gw` using the request `SecurityContext`.
-
-Authorization is enforced at two levels:
+Authorization lives in `secrets-gw` (plugins stay policy-free).
+We enforce it twice:
 
 - **Perimeter (REST API):** each secured endpoint uses `require_auth(resource, action)` before calling the domain/service.
 - **Defense-in-depth (Gateway domain/service):** the gateway service also validates the required `resource:action` permission in `SecurityContext` for every operation. This protects non-REST (ClientHub) callers and prevents bypasses due to wiring/route configuration mistakes.
@@ -96,33 +93,29 @@ This avoids problematic characters in URL path and aligns with Credstore’s “
 
 ### 6) Credstore REST operations used
 
-We will only use the following Credstore endpoints:
+Credstore endpoints used:
 
 - **Read secret**
     - `GET /credentials/{external_id}?tenant_id=<tenant>&include_secret=true`
     - `404` -> return `None`
 - **Write secret**
-    - Preferred write flow (optimizes for 1 call on existing secret):
-        - `PUT /credentials/{external_id}/identity_and_secret?tenant_id=<tenant>` (if 404 then create)
-        - If `404`:
-            - `POST /credentials?tenant_id=<tenant>` with body including `id=external_id` and `secret=<base64>`
-            - retry the `PUT` to ensure overwrite semantics
+    - Preferred flow:
+        - `PUT /credentials/{external_id}/identity_and_secret?tenant_id=<tenant>`
+        - If `404`: `POST /credentials?tenant_id=<tenant>` (body includes `id=external_id`, `secret=<base64>`) then retry `PUT` to ensure overwrite semantics
 - **Delete secret** (if supported by our module API)
     - `DELETE /credentials/{external_id}?tenant_id=<tenant>`
 
 ### 7) OAuth/OIDC configuration and token acquisition
 
-We will use **client credentials** for service-to-service auth to Credstore.
+Credstore auth uses **client credentials** (service-to-service).
 
-- `issuer_url` (OIDC issuer) is considered **global configuration**.
-- Token acquisition and caching should be centralized via a shared component (recommended):
-    - A module/client like `oauth_token_provider` registered in `ClientHub`
-    - Provides cached access tokens and refresh logic
-- The `credstore_rest` plugin will depend on the shared token provider and store only:
-    - `client_id`, `client_secret` (possibly separate RO/RW credentials)
-    - required `scopes`
-    - Credstore `base_url`
-    - timeouts/retry settings
+- `issuer_url` is **global configuration**.
+- Token acquisition/caching should be centralized (shared `oauth_token_provider` in `ClientHub`).
+- `credstore_rest` stores only:
+    - `client_id`, `client_secret` (optionally separate RO/RW)
+    - `scopes`
+    - `base_url`
+    - timeouts/retries
 
 Optionally, we will support two separate client credentials:
 - **RO** for `get`
@@ -160,10 +153,10 @@ This allows least-privilege deployments.
 
 ## Implementation Notes (Non-Normative)
 
-- Gateway selects plugin by config `vendor` and/or priority using types-registry.
-- Both plugins should use the same key normalization/encoding logic to keep behavior consistent across environments.
-- Add clear error mapping:
-    - Credstore 404 -> `None`
+- Plugin selection: gateway picks by config `vendor` and/or priority via types-registry.
+- Keep key normalization/encoding shared so both backends behave the same.
+- Error mapping:
+    - 404 -> `None`
     - 401/403 -> permission error
     - other 5xx/timeouts -> retryable/internal error
 
@@ -184,4 +177,4 @@ This allows least-privilege deployments.
 
 ## Status
 
-- **ADR written** and ready for review.
+- Ready for review.
