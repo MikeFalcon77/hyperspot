@@ -39,7 +39,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: release-plz release-pr
-        uses: release-plz/action@v0.5.124
+        uses: release-plz/action@v0.5.111
         with:
           command: release-pr
         env:
@@ -108,7 +108,7 @@ jobs:
           git clean -fd
 
       - name: release-plz release
-        uses: release-plz/action@v0.5.124
+        uses: release-plz/action@v0.5.111
         with:
           command: release
         env:
