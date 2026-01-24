@@ -5,8 +5,8 @@ on:
     branches:
       - main
   pull_request:
-    types: [closed]
-    branches: [main]
+    types: [ closed ]
+    branches: [ main ]
   workflow_dispatch:
     inputs:
       mode:
@@ -31,22 +31,19 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: release-plz release-pr
-        uses: release-plz/action@5ab144c9d67d4346240190d0f95ed08668677928
+        uses: release-plz/action@v0.5.124
         with:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   release:
     name: Publish crates
     runs-on: ubuntu-latest
@@ -71,6 +68,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Install gh (local act only)
+        if: ${{ env.ACT == 'true' }}
+        run: |
+          set -euo pipefail
+          if command -v gh >/dev/null 2>&1; then
+            exit 0
+          fi
+          sudo apt-get update -y
+          sudo apt-get install -y gh jq
+
       - name: Install protoc
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
@@ -85,8 +92,23 @@ jobs:
       - name: cargo test (workspace)
         run: cargo test --workspace --no-fail-fast --exclude cf-modkit-macros --exclude cf-modkit-db-macros
 
+      - name: Ensure clean working tree (after tests)
+        run: |
+          set -euo pipefail
+
+          # `cargo publish` refuses to run if git sees any uncommitted changes (including untracked files).
+          # Tests/builds should not produce repo-local artifacts, but if they do, clean them up here.
+          if ! git diff --quiet; then
+            echo "Tracked files modified during tests; restoring:"
+            git diff --name-only
+            git restore --source=HEAD --staged --worktree -- .
+          fi
+
+          # Remove any untracked files produced during tests/builds.
+          git clean -fd
+
       - name: release-plz release
-        uses: release-plz/action@5ab144c9d67d4346240190d0f95ed08668677928
+        uses: release-plz/action@v0.5.124
         with:
           command: release
         env:

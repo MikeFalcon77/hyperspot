@@ -756,7 +756,9 @@ mod tests {
     #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn test_advisory_lock_sqlite() -> Result<()> {
-        let dsn = "sqlite:file:memdb1?mode=memory&cache=shared";
+        // Use a true in-memory SQLite database. `memdb*` URIs may create on-disk files
+        // in some environments, which then makes `cargo publish` fail in CI (dirty worktree).
+        let dsn = "sqlite::memory:";
         let db = DbHandle::connect(dsn, ConnectOpts::default()).await?;
 
         let now = std::time::SystemTime::now()
@@ -779,7 +781,7 @@ mod tests {
     #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn test_advisory_lock_different_keys() -> Result<()> {
-        let dsn = "sqlite:file:memdb_diff_keys?mode=memory&cache=shared";
+        let dsn = "sqlite::memory:";
         let db = DbHandle::connect(dsn, ConnectOpts::default()).await?;
 
         let now = std::time::SystemTime::now()
@@ -796,7 +798,7 @@ mod tests {
     #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn test_try_lock_with_config() -> Result<()> {
-        let dsn = "sqlite:file:memdb2?mode=memory&cache=shared";
+        let dsn = "sqlite::memory:";
         let db = DbHandle::connect(dsn, ConnectOpts::default()).await?;
 
         let now = std::time::SystemTime::now()

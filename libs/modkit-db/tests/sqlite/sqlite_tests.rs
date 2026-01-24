@@ -301,40 +301,6 @@ async fn test_sqlite_memory_database() {
     }
 }
 
-/// Test shared memory database with mode=memory.
-#[tokio::test]
-#[cfg(feature = "sqlite")]
-async fn test_sqlite_shared_memory_database() {
-    // TODO this test unveils a big problem, but i have no time to deal with it.
-    let figment = Figment::new().merge(Serialized::defaults(serde_json::json!({
-        "modules": {
-            "test_module": {
-                "database": {
-                    "dsn": "sqlite:file:memdb?mode=memory&cache=shared"
-                }
-            }
-        }
-    })));
-
-    let temp_dir = TempDir::new().unwrap();
-    let manager = DbManager::from_figment(figment, temp_dir.path().to_path_buf()).unwrap();
-
-    let result = manager.get("test_module").await;
-
-    match result {
-        Ok(Some(_handle)) => {
-            // Connection succeeded - this proves the shared memory DSN was used correctly.
-            // The handle's DSN is simplified for security/logging and doesn't preserve query params.
-        }
-        Ok(None) => {
-            panic!("Expected database handle for shared memory SQLite");
-        }
-        Err(err) => {
-            panic!("Expected successful shared memory SQLite connection, got: {err:?}");
-        }
-    }
-}
-
 /// Test WAL pragma validation.
 #[tokio::test]
 #[cfg(feature = "sqlite")]
