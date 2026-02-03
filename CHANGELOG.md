@@ -9,6 +9,16 @@ release-plz updates this file in the Release PR.
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/MikeFalcon77/hyperspot/compare/cf-file-parser-v0.1.1...cf-file-parser-v0.1.2) - 2026-02-03
+
+### Other
+
+- Merge pull request #251 from yoskini/feat/Quick_start_guide (by @Artifizer) - #251
+
+### Contributors
+
+* @Artifizer
+
 ## [0.1.5](https://github.com/hypernetix/hyperspot/compare/cf-system-sdks-v0.1.4...cf-system-sdks-v0.1.5) - 2026-02-02
 
 ### Other
