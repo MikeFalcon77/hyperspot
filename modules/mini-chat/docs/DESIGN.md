@@ -4,9 +4,9 @@
 
 ### 1.1 Architectural Vision
 
-Mini Chat provides a multi-tenant AI chat experience with SSE streaming, conversation history, and document-aware question answering. Users interact through a REST/SSE API backed by OpenAI Responses API with File Search. The system maintains strict tenant isolation via per-tenant vector stores and enforces cost control through token budgets, usage quotas, and file search limits. Authorization decisions are delegated to the platform's AuthZ Resolver (PDP), which returns query-level constraints compiled to SQL by `chat_service` acting as the Policy Enforcement Point (PEP).
+Mini Chat provides a multi-tenant AI chat experience with SSE streaming, conversation history, and document-aware question answering. Users interact through a REST/SSE API backed by the Responses API with File Search (OpenAI or Azure OpenAI — see [Provider API Mapping](#provider-api-mapping)). The system maintains strict tenant isolation via per-tenant vector stores and enforces cost control through token budgets, usage quotas, and file search limits. Authorization decisions are delegated to the platform's AuthZ Resolver (PDP), which returns query-level constraints compiled to SQL by `chat_service` acting as the Policy Enforcement Point (PEP).
 
-The architecture is modular: `chat_service` orchestrates all request processing — context assembly, LLM invocation, streaming relay, and persistence. It owns the full request lifecycle from receiving a user message to persisting the assistant response and usage metrics. External LLM calls route exclusively through the platform's Outbound API Gateway (OAGW), which handles credential injection and egress control. Mini Chat calls OpenAI directly via OAGW rather than through `cf-llm-gateway`, because it relies on OpenAI-specific features (Responses API, Files API, File Search with vector stores) that the generic gateway does not abstract.
+The architecture is modular: `chat_service` orchestrates all request processing — context assembly, LLM invocation, streaming relay, and persistence. It owns the full request lifecycle from receiving a user message to persisting the assistant response and usage metrics. External LLM calls route exclusively through the platform's Outbound API Gateway (OAGW), which handles credential injection and egress control. Mini Chat calls the LLM provider directly via OAGW rather than through `cf-llm-gateway`, because it relies on provider-specific features (Responses API, Files API, File Search with vector stores) that the generic gateway does not abstract. Both OpenAI and Azure OpenAI expose a compatible Responses API surface; OAGW routes to the configured provider and injects the appropriate credentials (API key header for OpenAI, `api-key` header or Entra ID bearer token for Azure OpenAI).
 
 Long conversations are managed via thread summaries — a Level 1 compression strategy where older messages are periodically summarized by the LLM, and the summary replaces them in the context window. This keeps token costs bounded while preserving key facts, decisions, and document references.
 
@@ -16,10 +16,10 @@ Long conversations are managed via thread summaries — a Level 1 compression st
 
 | Requirement | Design Response |
 |-------------|-----------------|
-| `cpt-cf-mini-chat-fr-chat-streaming` | SSE streaming via `chat_service` → OAGW → OpenAI Responses API |
+| `cpt-cf-mini-chat-fr-chat-streaming` | SSE streaming via `chat_service` → OAGW → Responses API (OpenAI: `POST /v1/responses`; Azure OpenAI: `POST /openai/v1/responses`) |
 | `cpt-cf-mini-chat-fr-conversation-history` | `chat_store` (Postgres) persists all messages; recent messages loaded per request |
-| `cpt-cf-mini-chat-fr-file-upload` | Upload via OAGW → OpenAI Files API; metadata in `chat_store`; file added to tenant vector store |
-| `cpt-cf-mini-chat-fr-file-search` | OpenAI File Search tool call scoped to tenant vector store |
+| `cpt-cf-mini-chat-fr-file-upload` | Upload via OAGW → Files API (OpenAI: `POST /v1/files`; Azure OpenAI: `POST /openai/files`); metadata in `chat_store`; file added to tenant vector store. **Azure note**: use `purpose="assistants"` (Azure does not support `purpose="user_data"`) |
+| `cpt-cf-mini-chat-fr-file-search` | File Search tool call scoped to tenant vector store (identical `file_search` tool on both OpenAI and Azure OpenAI Responses API) |
 | `cpt-cf-mini-chat-fr-thread-summary` | Periodic LLM-driven summarization of old messages; summary replaces history in context |
 | `cpt-cf-mini-chat-fr-chat-crud` | REST endpoints for create/list/get/delete chats |
 | `cpt-cf-mini-chat-fr-temporary-chat` | Toggle temporary flag; scheduled cleanup after 24h |
@@ -33,7 +33,7 @@ Long conversations are managed via thread summaries — a Level 1 compression st
 | `cpt-cf-mini-chat-nfr-authz-alignment` | Authorization must follow platform PDP/PEP model | `chat_service` (PEP) | AuthZ Resolver evaluates every data-access operation; constraints compiled to SQL WHERE clauses; fail-closed on PDP errors | Integration tests with mock PDP; fail-closed verification tests |
 | `cpt-cf-mini-chat-nfr-cost-control` | Predictable and bounded LLM costs | `quota_service`, `chat_service` | Per-user daily/monthly limits; auto-downgrade to base model; file search call limits; token budget per request | Usage metrics dashboard; budget alert tests |
 | `cpt-cf-mini-chat-nfr-streaming-latency` | Low time-to-first-token for chat responses | `chat_service`, OAGW | Direct SSE relay without buffering; cancellation propagation on disconnect | TTFT benchmarks under load; **Disconnect test**: open SSE → receive 1-2 tokens → disconnect → assert provider request closed within 200 ms and active-generation counter decrements; **TTFT delta test**: measure `t_first_token_ui − t_first_byte_from_provider` → assert platform overhead < 50 ms p99 |
-| `cpt-cf-mini-chat-nfr-data-retention` | Temporary chats cleaned up; deleted chats purged from OpenAI | `chat_store`, `chat_service` | Scheduled cleanup job; cascade delete to OpenAI files and vector store entries | Retention policy compliance tests |
+| `cpt-cf-mini-chat-nfr-data-retention` | Temporary chats cleaned up; deleted chats purged from provider | `chat_store`, `chat_service` | Scheduled cleanup job; cascade delete to provider files and vector store entries (OpenAI Files API / Azure OpenAI Files API) | Retention policy compliance tests |
 
 ### 1.3 Architecture Layers
 
@@ -56,7 +56,8 @@ Long conversations are managed via thread summaries — a Level 1 compression st
 │  Infrastructure                                       │
 │  ┌─────────────┐  ┌───────────────────────────┐       │
 │  │ chat_store  │  │ llm_provider (lib)        │       │
-│  │ (Postgres)  │  │ → OAGW → OpenAI           │       │
+│  │ (Postgres)  │  │ → OAGW → OpenAI /         │       │
+│  │             │  │          Azure OpenAI      │       │
 │  └─────────────┘  └───────────────────────────┘       │
 └───────────────────────────────────────────────────────┘
 ```
@@ -88,15 +89,21 @@ The system favors compressed summaries over unbounded message history. Old messa
 
 **ID**: `cpt-cf-mini-chat-principle-streaming-first`
 
-All LLM responses are streamed. The primary delivery path is SSE from OpenAI → OAGW → chat_service → api_gateway → UI. Non-streaming responses are not supported for chat completion.
+All LLM responses are streamed. The primary delivery path is SSE from LLM provider (OpenAI / Azure OpenAI) → OAGW → chat_service → api_gateway → UI. Non-streaming responses are not supported for chat completion. Both providers use an identical SSE event format for the Responses API.
 
 ### 2.2 Constraints
 
-#### OpenAI-Only Provider (P0)
+#### OpenAI-Compatible Provider (P0)
 
-**ID**: `cpt-cf-mini-chat-constraint-openai-only`
+**ID**: `cpt-cf-mini-chat-constraint-openai-compatible`
 
-P0 targets OpenAI exclusively (Responses API, Files API, File Search). Multi-provider support is deferred. This constraint allows direct use of OpenAI-specific features without an abstraction layer.
+P0 targets the OpenAI-compatible API surface — either **OpenAI** or **Azure OpenAI** as the LLM provider. Both expose the Responses API, Files API, Vector Stores API, and File Search tool with compatible request/response contracts. The active provider is selected per deployment via OAGW configuration; `llm_provider` does not need a runtime abstraction layer because the API surface is shared. Multi-provider support (e.g., Anthropic, Google) is deferred.
+
+**Provider parity notes** (Azure OpenAI known limitations at time of writing):
+- Azure supports only **one vector store** per `file_search` tool call (sufficient for P0: one vector store per tenant).
+- `purpose="user_data"` for file uploads is not supported on Azure; use `purpose="assistants"`.
+- `vector_stores.search` (client-side manual search) is not exposed on Azure — not used in this design.
+- New OpenAI features may appear on Azure with a lag of weeks to months.
 
 #### No Credential Storage
 
@@ -140,9 +147,9 @@ Internal mpsc channels between `llm_provider` → `chat_service` → SSE writer 
 |--------|-------------|
 | Chat | A conversation belonging to a user within a tenant. Has title, temporary flag, creation/update timestamps. |
 | Message | A single turn in a chat (role: user/assistant/system). Stores content, token estimate, compression status. |
-| Attachment | File uploaded to a chat. References OpenAI `file_id`, linked to tenant vector store. Has processing status. |
+| Attachment | File uploaded to a chat. References provider `file_id` (OpenAI or Azure OpenAI), linked to tenant vector store. Has processing status. |
 | ThreadSummary | Compressed representation of older messages in a chat. Replaces old history in the context window. |
-| TenantVectorStore | Mapping from `tenant_id` to OpenAI `vector_store_id`. One vector store per tenant. |
+| TenantVectorStore | Mapping from `tenant_id` to provider `vector_store_id` (OpenAI or Azure OpenAI Vector Stores API). One vector store per tenant. |
 | AuditEvent | Structured event emitted to platform `audit_service`: prompt, response, user/tenant, timestamps, policy decisions, usage. Not stored locally. |
 | QuotaUsage | Per-user usage counters for rate limiting and budget enforcement. Tracks daily/monthly periods. |
 | ContextPlan | Transient object assembled per request: system prompt, summary, doc summaries, recent messages, user message, retrieval excerpts. |
@@ -169,7 +176,7 @@ graph TB
     DB["chat_store (Postgres)"]
     LP["llm_provider (lib)"]
     OAGW["outbound_gateway (platform)"]
-    OAI["OpenAI APIs"]
+    OAI["LLM Provider (OpenAI / Azure OpenAI)"]
 
     UI -->|REST/SSE| AG
     AG -->|middleware| AuthN
@@ -193,7 +200,7 @@ graph TB
   - **chat_store** — Postgres persistence layer. Source of truth for chats, messages, attachments, thread summaries, tenant vector store mappings, and quota usage.
 
 - **ID**: `cpt-cf-mini-chat-component-llm-provider`
-  - **llm_provider** — Library (not a standalone service) used by `chat_service`. Builds requests for OpenAI Responses API, parses SSE streams, maps errors. Propagates tenant/user metadata via OpenAI `user` and `metadata` fields on every request (see section 4: OpenAI Request Metadata). Handles both streaming chat and non-streaming calls (summary generation, doc summary).
+  - **llm_provider** — Library (not a standalone service) used by `chat_service`. Builds requests for the Responses API (OpenAI or Azure OpenAI — both expose a compatible surface), parses SSE streams, maps errors. Propagates tenant/user metadata via `user` and `metadata` fields on every request (see section 4: Provider Request Metadata). Handles both streaming chat and non-streaming calls (summary generation, doc summary). The library is provider-agnostic at the API contract level; OAGW handles endpoint routing and credential injection per configured provider.
 
 - **ID**: `cpt-cf-mini-chat-component-quota-service`
   - **quota_service** — Enforces per-user usage limits by period (daily, monthly). Supports auto-downgrade to base model when premium quota is exhausted. Tracks file search call counts separately.
@@ -261,8 +268,8 @@ data: {"code": "quota_exceeded", "message": "Daily limit reached"}
 | `rate_limited` | 429 | Too many requests in time window |
 | `file_too_large` | 413 | Uploaded file exceeds size limit |
 | `unsupported_file_type` | 415 | File type not supported for upload |
-| `provider_error` | 502 | OpenAI returned an error |
-| `provider_timeout` | 504 | OpenAI request timed out |
+| `provider_error` | 502 | LLM provider (OpenAI / Azure OpenAI) returned an error |
+| `provider_timeout` | 504 | LLM provider (OpenAI / Azure OpenAI) request timed out |
 
 ### 3.4 Internal Dependencies
 
@@ -273,10 +280,10 @@ data: {"code": "quota_exceeded", "message": "Daily limit reached"}
 | license_manager (platform) | Middleware | Check tenant has `ai_chat` feature; reject with 403 if not |
 | authz_resolver (platform) | Access evaluation API (`/access/v1/evaluation`) | Obtain authorization decisions + SQL-compilable constraints for chat operations |
 | audit_service (platform) | Event emitter | Receive structured audit events (prompts, responses, usage, policy decisions) |
-| outbound_gateway (platform) | Internal HTTP | Egress to OpenAI with credential injection |
+| outbound_gateway (platform) | Internal HTTP | Egress to LLM provider (OpenAI / Azure OpenAI) with credential injection |
 
 **Dependency Rules**:
-- `chat_service` never calls OpenAI directly; all external calls go through OAGW
+- `chat_service` never calls the LLM provider (OpenAI / Azure OpenAI) directly; all external calls go through OAGW
 - `SecurityContext` (user_id, tenant_id) propagated through all in-process calls
 - `license_manager` runs as middleware before `chat_service` is invoked
 - `chat_service` calls `authz_resolver` before every database query; on PDP denial or PDP unreachable, fail-closed (deny access)
@@ -284,15 +291,31 @@ data: {"code": "quota_exceeded", "message": "Daily limit reached"}
 
 ### 3.5 External Dependencies
 
-#### OpenAI
+#### LLM Provider (OpenAI / Azure OpenAI)
 
-| API | Purpose | Called Via |
-|-----|---------|-----------|
-| Responses API (streaming) | Chat completion with tool support | OAGW `POST /outbound/openai/responses:stream` |
-| Responses API (non-streaming) | Thread summary generation, doc summary | OAGW `POST /outbound/openai/responses` |
-| Files API | Upload user documents | OAGW `POST /outbound/openai/files` |
-| Vector Stores API | Manage per-tenant vector stores, add/remove files | OAGW `POST /outbound/openai/vector_stores/*` |
-| File Search (tool) | Retrieve document excerpts during chat | Invoked as tool within Responses API call |
+Both providers expose a compatible API surface. OAGW routes requests to the configured provider and injects credentials accordingly.
+
+| API | Purpose | OAGW Route | OpenAI Endpoint | Azure OpenAI Endpoint |
+|-----|---------|------------|-----------------|----------------------|
+| Responses API (streaming) | Chat completion with tool support | `POST /outbound/llm/responses:stream` | `POST https://api.openai.com/v1/responses` | `POST https://{resource}.openai.azure.com/openai/v1/responses` |
+| Responses API (non-streaming) | Thread summary generation, doc summary | `POST /outbound/llm/responses` | `POST https://api.openai.com/v1/responses` | `POST https://{resource}.openai.azure.com/openai/v1/responses` |
+| Files API | Upload user documents | `POST /outbound/llm/files` | `POST https://api.openai.com/v1/files` | `POST https://{resource}.openai.azure.com/openai/files` |
+| Vector Stores API | Manage per-tenant vector stores, add/remove files | `POST /outbound/llm/vector_stores/*` | `POST https://api.openai.com/v1/vector_stores/*` | `POST https://{resource}.openai.azure.com/openai/v1/vector_stores/*` |
+| File Search (tool) | Retrieve document excerpts during chat | — (invoked as tool within Responses API call) | `file_search` tool | `file_search` tool (identical contract) |
+
+<a id="provider-api-mapping"></a>
+**Provider API Mapping** — authentication and endpoint differences:
+
+| Aspect | OpenAI | Azure OpenAI |
+|--------|--------|--------------|
+| **Base URL** | `https://api.openai.com/v1` | `https://{resource}.openai.azure.com/openai/v1` |
+| **Authentication** | `Authorization: Bearer {api_key}` | `api-key: {key}` header or Entra ID bearer token |
+| **API version** | Not required | Not required for GA (v1 API); `?api-version=preview` for preview features |
+| **File upload `purpose`** | `user_data` or `assistants` | `assistants` only (`user_data` not supported) |
+| **Vector stores per `file_search`** | Multiple | **One** (sufficient for P0: one store per tenant) |
+| **SSE format** | `event:` + `data:` lines, structured events | Identical format |
+| **`user` field** | Supported | Supported (feeds into Azure abuse monitoring) |
+| **`metadata` object** | Supported | Supported |
 
 #### PostgreSQL
 
@@ -314,7 +337,7 @@ sequenceDiagram
     participant CS as chat_service (PEP)
     participant DB as chat_store
     participant OG as outbound_gateway
-    participant OAI as OpenAI
+    participant OAI as OpenAI / Azure OpenAI
 
     UI->>AG: POST /v1/chats/{id}/messages:stream
     AG->>AG: AuthN + license_manager
@@ -338,14 +361,14 @@ sequenceDiagram
     CS->>CS: Build ContextPlan (system prompt + summary + doc summaries + recent msgs + user msg)
 
     alt File Search needed
-        CS->>OG: POST /outbound/openai/responses (tool=file_search, store=tenant_store)
+        CS->>OG: POST /outbound/llm/responses (tool=file_search, store=tenant_store)
         OG->>OAI: Responses API with file_search
         OAI-->>OG: Retrieved excerpts
         OG-->>CS: Excerpts
         CS->>CS: Add excerpts to context (budgeted)
     end
 
-    CS->>OG: POST /outbound/openai/responses:stream (final prompt)
+    CS->>OG: POST /outbound/llm/responses:stream (final prompt)
     OG->>OAI: Responses API (streaming)
     OAI-->>OG: SSE tokens
     OG-->>CS: Token stream
@@ -358,7 +381,7 @@ sequenceDiagram
     CS->>AS: Emit audit event (usage, policy decisions)
 
     opt Thread summary update triggered
-        CS->>OG: POST /outbound/openai/responses (summarize old turns)
+        CS->>OG: POST /outbound/llm/responses (summarize old turns)
         OG->>OAI: Responses API
         OAI-->>OG: Summary text
         OG-->>CS: Summary
@@ -379,23 +402,23 @@ sequenceDiagram
     participant CS as chat_service
     participant DB as chat_store
     participant OG as outbound_gateway
-    participant OAI as OpenAI
+    participant OAI as OpenAI / Azure OpenAI
 
     UI->>AG: POST /v1/chats/{id}/attachments (multipart)
     AG->>CS: UploadAttachment(chat_id, file, security_ctx)
     CS->>DB: Insert attachment metadata (status: pending)
-    CS->>OG: POST /outbound/openai/files (upload)
+    CS->>OG: POST /outbound/llm/files (upload)
     OG->>OAI: Files API upload
     OAI-->>OG: file_id
     OG-->>CS: file_id
-    CS->>OG: POST /outbound/openai/vector_stores/{tenant_store}/files (add file)
+    CS->>OG: POST /outbound/llm/vector_stores/{tenant_store}/files (add file)
     OG->>OAI: Add file to vector store
     OAI-->>OG: OK
     OG-->>CS: OK
-    CS->>DB: Update attachment (status: ready, openai_file_id)
+    CS->>DB: Update attachment (status: ready, provider_file_id)
 
     opt Generate doc summary (Variant 1)
-        CS->>OG: POST /outbound/openai/responses (summarize document via file_search)
+        CS->>OG: POST /outbound/llm/responses (summarize document via file_search)
         OG->>OAI: Responses API with file_search
         OAI-->>OG: Doc summary
         OG-->>CS: Doc summary
@@ -406,7 +429,7 @@ sequenceDiagram
     AG-->>UI: 201 Created
 ```
 
-**Description**: File upload flow — the file is uploaded to OpenAI, added to the tenant's vector store, optionally summarized, and metadata is persisted locally.
+**Description**: File upload flow — the file is uploaded to the LLM provider (OpenAI or Azure OpenAI) via OAGW, added to the tenant's vector store, optionally summarized, and metadata is persisted locally. **Azure note**: file upload uses `purpose="assistants"` instead of `purpose="user_data"`.
 
 #### Streaming Cancellation
 
@@ -420,7 +443,7 @@ sequenceDiagram
 
 **Mechanism**: A single `CancellationToken` (e.g., `tokio_util::sync::CancellationToken`) is created per request and propagated end-to-end: `api_gateway` → `chat_service` → `llm_provider` → OAGW HTTP client. When any trigger fires, the token is cancelled, and every layer observing it aborts cooperatively.
 
-**Hard cancel requirement**: Cancellation MUST be a hard cancel — `llm_provider` must abort the outbound HTTP request to OAGW/OpenAI (close the TCP connection), not merely stop reading from the stream. Soft cancel (dropping the receiver while the provider keeps generating) wastes tokens and money because the provider continues generating until its own timeout.
+**Hard cancel requirement**: Cancellation MUST be a hard cancel — `llm_provider` must abort the outbound HTTP request to OAGW / LLM provider (close the TCP connection), not merely stop reading from the stream. Soft cancel (dropping the receiver while the provider keeps generating) wastes tokens and money because the provider continues generating until its own timeout. This applies identically to both OpenAI and Azure OpenAI.
 
 ```mermaid
 sequenceDiagram
@@ -429,13 +452,13 @@ sequenceDiagram
     participant CS as chat_service
     participant LP as llm_provider
     participant OG as outbound_gateway
-    participant OAI as OpenAI
+    participant OAI as OpenAI / Azure OpenAI
 
     UI->>AG: SSE connection established
     AG->>AG: Create CancellationToken
     AG->>CS: StartChatTurn(..., cancel_token)
     CS->>LP: stream_response(..., cancel_token)
-    LP->>OG: POST /outbound/openai/responses:stream
+    LP->>OG: POST /outbound/llm/responses:stream
     OG->>OAI: Streaming in progress
 
     alt UI disconnect
@@ -451,7 +474,7 @@ sequenceDiagram
     CS->>CS: Persist partial response + usage (if any tokens received)
 ```
 
-**Description**: Cancellation propagates end-to-end via a shared `CancellationToken`. When triggered, `llm_provider` performs a hard cancel — aborting the outbound HTTP connection so OpenAI stops generating immediately. The partial response (if any tokens were received) is persisted with actual usage for accurate cost tracking.
+**Description**: Cancellation propagates end-to-end via a shared `CancellationToken`. When triggered, `llm_provider` performs a hard cancel — aborting the outbound HTTP connection so the LLM provider (OpenAI / Azure OpenAI) stops generating immediately. The partial response (if any tokens were received) is persisted with actual usage for accurate cost tracking.
 
 #### Thread Summary Update
 
@@ -462,11 +485,11 @@ sequenceDiagram
     participant CS as chat_service
     participant DB as chat_store
     participant OG as outbound_gateway
-    participant OAI as OpenAI
+    participant OAI as OpenAI / Azure OpenAI
 
     CS->>CS: Check summary trigger (msg count > 20 OR tokens > budget OR every 15 user turns)
     CS->>DB: Load current thread_summary + old messages batch (10-20 msgs)
-    CS->>OG: POST /outbound/openai/responses (update summary prompt)
+    CS->>OG: POST /outbound/llm/responses (update summary prompt)
     OG->>OAI: Responses API
     OAI-->>OG: Updated summary
     OG-->>CS: Updated summary
@@ -532,7 +555,7 @@ sequenceDiagram
 | filename | VARCHAR(255) | Original filename |
 | content_type | VARCHAR(128) | MIME type |
 | size_bytes | BIGINT | File size |
-| openai_file_id | VARCHAR(128) | OpenAI file ID (nullable until upload completes) |
+| provider_file_id | VARCHAR(128) | LLM provider file ID — OpenAI `file-*` or Azure OpenAI `assistant-*` (nullable until upload completes) |
 | status | VARCHAR(16) | `pending`, `ready`, `failed` |
 | doc_summary | TEXT | LLM-generated document summary (nullable) |
 | summary_model | VARCHAR(64) | Model used to generate the summary (nullable) |
@@ -562,19 +585,20 @@ sequenceDiagram
 
 **Constraints**: UNIQUE on `chat_id`. FK `chat_id` → `chats.id` ON DELETE CASCADE.
 
-#### Table: tenant_openai_vector_stores
+#### Table: tenant_vector_stores
 
 **ID**: `cpt-cf-mini-chat-dbtable-tenant-vector-stores`
 
 | Column | Type | Description |
 |--------|------|-------------|
 | tenant_id | UUID | Tenant identifier |
-| vector_store_id | VARCHAR(128) | OpenAI vector store ID |
+| vector_store_id | VARCHAR(128) | Provider vector store ID (OpenAI `vs_*` or Azure OpenAI equivalent) |
+| provider | VARCHAR(32) | Provider identifier: `openai` or `azure_openai` |
 | created_at | TIMESTAMPTZ | Creation time |
 
 **PK**: `tenant_id`
 
-**Constraints**: NOT NULL on `vector_store_id`, `created_at`. One vector store per tenant.
+**Constraints**: NOT NULL on `vector_store_id`, `provider`, `created_at`. One vector store per tenant.
 
 #### Table: quota_usage
 
@@ -893,7 +917,7 @@ No changes to the PEP flow or constraint compilation logic are needed. The PDP's
 **Deferred to P2+**:
 - Projects / chat sharing
 - Full-text search across chats
-- Multi-provider LLM support
+- Non-OpenAI-compatible provider support (e.g., Anthropic, Google) — OpenAI and Azure OpenAI are both supported at P0 via a shared API surface
 - Complex retrieval policies (beyond simple limits)
 - Per-workspace vector stores
 
@@ -918,17 +942,22 @@ File Search is invoked when:
 
 Limits: max 1-2 file_search tool calls per message, max calls per day/user tracked in `quota_usage`.
 
-### OpenAI Request Metadata
+### Provider Request Metadata
 
-Every request sent to OpenAI via `llm_provider` MUST include two identification mechanisms:
+Every request sent to the LLM provider via `llm_provider` MUST include two identification mechanisms. Both OpenAI and Azure OpenAI support these fields with identical semantics.
 
-**`user` field** — composite tenant+user identifier for OpenAI's usage monitoring and abuse detection:
+**`user` field** — composite tenant+user identifier for provider usage monitoring and abuse detection:
 
 ```
 "user": "{tenant_id}:{user_id}"
 ```
 
-**`metadata` object** (Responses API) — structured context for debugging and OpenAI dashboard filtering:
+| Provider | Behavior |
+|----------|----------|
+| OpenAI | Used for usage monitoring and abuse detection per API key |
+| Azure OpenAI | Feeds into Azure's Potentially Abusive User Detection (abuse monitoring pipeline). MUST NOT contain PII — use opaque IDs only |
+
+**`metadata` object** (Responses API) — structured context for debugging and provider dashboard filtering:
 
 ```json
 {
@@ -942,9 +971,9 @@ Every request sent to OpenAI via `llm_provider` MUST include two identification 
 }
 ```
 
-These fields are for observability only — they do not provide tenant isolation (that is enforced via per-tenant vector stores and scoped queries). OpenAI aggregates usage per API key/project, so `user` and `metadata` are the only way to attribute requests within a shared key.
+These fields are for observability only — they do not provide tenant isolation (that is enforced via per-tenant vector stores and scoped queries). The provider aggregates usage per API key/project (OpenAI) or per deployment/resource (Azure OpenAI), so `user` and `metadata` are the only way to attribute requests within a shared credential.
 
-Primary cost analytics (per-tenant, per-user) MUST be computed internally from response usage data (see `cpt-cf-mini-chat-fr-cost-metrics`). OpenAI's dashboard is not a billing backend.
+Primary cost analytics (per-tenant, per-user) MUST be computed internally from response usage data (see `cpt-cf-mini-chat-fr-cost-metrics`). The provider's dashboard is not a billing backend.
 
 ### Cancellation Observability
 
@@ -976,8 +1005,8 @@ These are deployment constraints that must be validated during infrastructure se
 
 When a chat is deleted:
 1. Soft-delete the chat record (`deleted_at` set)
-2. Delete all OpenAI files associated with chat attachments via OAGW
-3. Remove files from the tenant vector store via OAGW
+2. Delete all provider files associated with chat attachments via OAGW (OpenAI: `DELETE /v1/files/{file_id}`; Azure OpenAI: `DELETE /openai/files/{file_id}`)
+3. Remove files from the tenant vector store via OAGW (OpenAI: `DELETE /v1/vector_stores/{store}/files/{file_id}`; Azure OpenAI: identical path under `/openai/v1/`)
 4. Anonymize/purge local data per retention policy
 5. Temporary chats follow the same flow, triggered by a scheduled job after 24h
 
