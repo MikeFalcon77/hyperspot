@@ -4,7 +4,7 @@ use modkit::api::operation_builder::OperationBuilder;
 
 use super::super::dto;
 use super::super::handlers;
-use super::{Action, License, Resource};
+use super::License;
 
 pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Router {
     // POST /oagw/v1/routes — Create route
@@ -13,7 +13,7 @@ pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("Create route")
         .description("Create a new route mapping for an upstream service")
         .tag("routes")
-        .require_auth(&Resource::Routes, &Action::Create)
+        .authenticated()
         .require_license_features::<License>([])
         .json_request::<dto::CreateRouteRequest>(openapi, "Route configuration")
         .handler(handlers::route::create_route)
@@ -32,7 +32,7 @@ pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .description("Retrieve a specific route by its GTS identifier")
         .tag("routes")
         .path_param("id", "Route GTS identifier")
-        .require_auth(&Resource::Routes, &Action::Read)
+        .authenticated()
         .require_license_features::<License>([])
         .handler(handlers::route::get_route)
         .json_response_with_schema::<dto::RouteResponse>(
@@ -43,14 +43,14 @@ pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .standard_errors(openapi)
         .register(router, openapi);
 
-    // PUT /oagw/v1/routes/{id} — Update route
-    router = OperationBuilder::put("/oagw/v1/routes/{id}")
+    // PATCH /oagw/v1/routes/{id} — Update route
+    router = OperationBuilder::patch("/oagw/v1/routes/{id}")
         .operation_id("oagw.update_route")
         .summary("Update route")
-        .description("Update an existing route configuration")
+        .description("Partially update an existing route configuration")
         .tag("routes")
         .path_param("id", "Route GTS identifier")
-        .require_auth(&Resource::Routes, &Action::Update)
+        .authenticated()
         .require_license_features::<License>([])
         .json_request::<dto::UpdateRouteRequest>(openapi, "Route update data")
         .handler(handlers::route::update_route)
@@ -69,7 +69,7 @@ pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .description("Delete a route by its GTS identifier")
         .tag("routes")
         .path_param("id", "Route GTS identifier")
-        .require_auth(&Resource::Routes, &Action::Delete)
+        .authenticated()
         .require_license_features::<License>([])
         .handler(handlers::route::delete_route)
         .json_response(http::StatusCode::NO_CONTENT, "Route deleted")
@@ -90,7 +90,7 @@ pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Rou
             "integer",
         )
         .query_param_typed("offset", false, "Number of results to skip", "integer")
-        .require_auth(&Resource::Routes, &Action::Read)
+        .authenticated()
         .require_license_features::<License>([])
         .handler(handlers::route::list_routes)
         .json_response_with_schema::<Vec<dto::RouteResponse>>(

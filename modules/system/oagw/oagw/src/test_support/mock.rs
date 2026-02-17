@@ -14,19 +14,114 @@
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{OriginalUri, Path, State, WebSocketUpgrade};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::IntoResponse;
-use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
 use bytes::Bytes;
+use dashmap::DashMap;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use tokio::sync::oneshot;
+
+// ---------------------------------------------------------------------------
+// Dynamic mock response types
+// ---------------------------------------------------------------------------
+
+/// Body variant for dynamic mock responses.
+#[derive(Clone, Debug)]
+pub enum MockBody {
+    Json(Value),
+    Text(String),
+    Sse(Vec<String>),
+    /// Body delivery is gated on a channel signal.
+    /// When the sender fires, the inner body is delivered.
+    /// When the sender is dropped without firing, the handler aborts the connection.
+    Channel {
+        body: Box<MockBody>,
+        gate: Arc<tokio::sync::Mutex<Option<oneshot::Receiver<()>>>>,
+    },
+}
+
+/// A registered mock response for dynamic routing.
+#[derive(Clone, Debug)]
+pub struct MockResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: MockBody,
+}
+
+/// Key for dynamic route lookup.
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
+pub struct RouteKey {
+    pub method: String,
+    pub path: String,
+}
+
+impl MockResponse {
+    fn into_axum_response(self) -> axum::response::Response {
+        match self.body {
+            MockBody::Channel { body, .. } => {
+                // Gate handling is done in dynamic_handler before calling this.
+                // Here we just unwrap to the inner body.
+                MockResponse {
+                    status: self.status,
+                    headers: self.headers,
+                    body: *body,
+                }
+                .into_axum_response()
+            }
+            MockBody::Json(value) => {
+                let mut builder = axum::response::Response::builder()
+                    .status(StatusCode::from_u16(self.status).unwrap_or(StatusCode::OK));
+                for (k, v) in &self.headers {
+                    builder = builder.header(k.as_str(), v.as_str());
+                }
+                if !self
+                    .headers
+                    .iter()
+                    .any(|(k, _)| k.to_lowercase() == "content-type")
+                {
+                    builder = builder.header("content-type", "application/json");
+                }
+                builder
+                    .body(axum::body::Body::from(value.to_string()))
+                    .unwrap()
+            }
+            MockBody::Text(text) => {
+                let mut builder = axum::response::Response::builder()
+                    .status(StatusCode::from_u16(self.status).unwrap_or(StatusCode::OK));
+                for (k, v) in &self.headers {
+                    builder = builder.header(k.as_str(), v.as_str());
+                }
+                builder.body(axum::body::Body::from(text)).unwrap()
+            }
+            MockBody::Sse(chunks) => {
+                let sse_body = chunks
+                    .into_iter()
+                    .map(|chunk| format!("data: {}\n\n", chunk))
+                    .collect::<String>();
+                let mut builder = axum::response::Response::builder()
+                    .status(StatusCode::from_u16(self.status).unwrap_or(StatusCode::OK));
+                for (k, v) in &self.headers {
+                    builder = builder.header(k.as_str(), v.as_str());
+                }
+                if !self
+                    .headers
+                    .iter()
+                    .any(|(k, _)| k.to_lowercase() == "content-type")
+                {
+                    builder = builder.header("content-type", "text/event-stream");
+                }
+                builder.body(axum::body::Body::from(sse_body)).unwrap()
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Recording types
@@ -41,9 +136,10 @@ pub struct RecordedRequest {
     pub body: Vec<u8>,
 }
 
-struct SharedState {
+pub(crate) struct SharedState {
     recorded: Mutex<VecDeque<RecordedRequest>>,
     max_recorded: usize,
+    dynamic_routes: DashMap<RouteKey, MockResponse>,
 }
 
 impl SharedState {
@@ -51,6 +147,7 @@ impl SharedState {
         Self {
             recorded: Mutex::new(VecDeque::new()),
             max_recorded,
+            dynamic_routes: DashMap::new(),
         }
     }
 
@@ -161,23 +258,188 @@ impl MockUpstream {
             // OpenAI-compatible JSON endpoints
             .route("/v1/chat/completions", post(chat_completions))
             .route("/v1/models", get(models))
-            // SSE streaming
-            .route("/v1/chat/completions/stream", post(stream_chat_completions))
             // Utility
             .route("/echo", post(echo))
             .route("/status/{code}", get(status))
-            // Error simulation
-            .route("/error/timeout", get(error_timeout))
-            .route("/error/disconnect", get(error_disconnect))
+            // Error simulation (delay-free only)
             .route("/error/500", get(error_500))
-            .route("/error/slow-body", post(error_slow_body))
+            // Response header test
+            .route("/response-headers", get(response_with_bad_headers))
             // WebSocket (future use)
             .route("/ws/echo", get(ws_echo))
-            .route("/ws/stream", get(ws_stream))
             // WebTransport stub (future use)
             .route("/wt/stub", get(wt_stub))
+            // Dynamic route fallback - catches all unmatched paths
+            .fallback(dynamic_handler)
             .with_state(state)
     }
+}
+
+// ---------------------------------------------------------------------------
+// MockHandle — lightweight Send + Sync reference to a running mock server
+// ---------------------------------------------------------------------------
+
+/// A lightweight, `Send + Sync` handle to a running mock server.
+///
+/// Unlike [`MockUpstream`], this type does not own the server lifecycle
+/// (no shutdown sender or task handle) and can be stored in a `static`.
+pub struct MockHandle {
+    addr: SocketAddr,
+    state: Arc<SharedState>,
+}
+
+impl MockHandle {
+    pub fn port(&self) -> u16 {
+        self.addr.port()
+    }
+
+    /// Access the shared state for MockGuard creation.
+    pub(crate) fn shared_state(&self) -> Arc<SharedState> {
+        Arc::clone(&self.state)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MockGuard — RAII guard for per-test mock registration
+// ---------------------------------------------------------------------------
+
+/// RAII guard that registers mocks with a unique path prefix and cleans them up on drop.
+///
+/// Each test can create a `MockGuard` to register custom mock responses without
+/// interfering with other parallel tests. The guard generates a unique path prefix
+/// (e.g., `/t-{uuid}`) and all registered mocks use this prefix.
+///
+/// # Example
+/// ```ignore
+/// let mut guard = MockGuard::new();
+/// guard.json("POST", "/v1/chat/completions", 200, json!({"id": "test"}));
+///
+/// // Create routes using guard.path() to get the prefixed path
+/// let route_path = guard.path("/v1/chat/completions");
+/// // route_path is something like "/t-abc123/v1/chat/completions"
+/// ```
+pub struct MockGuard {
+    test_prefix: String,
+    registered_keys: Vec<RouteKey>,
+    state: Arc<SharedState>,
+}
+
+impl MockGuard {
+    /// Create a new guard with a unique test prefix.
+    pub fn new() -> Self {
+        let test_prefix = format!("/t-{}", uuid::Uuid::new_v4().as_simple());
+        Self {
+            test_prefix,
+            registered_keys: Vec::new(),
+            state: shared_mock().shared_state(),
+        }
+    }
+
+    /// Path prefix for this test's routes.
+    pub fn prefix(&self) -> &str {
+        &self.test_prefix
+    }
+
+    /// Get the full prefixed path for route configuration.
+    ///
+    /// Use this when creating routes to match the registered mock.
+    pub fn path(&self, path: &str) -> String {
+        format!("{}{}", self.test_prefix, path)
+    }
+
+    /// Register a mock response for this test.
+    pub fn mock(&mut self, method: &str, path: &str, response: MockResponse) -> &mut Self {
+        let full_path = self.path(path);
+        let key = RouteKey {
+            method: method.to_uppercase(),
+            path: full_path,
+        };
+        self.state.dynamic_routes.insert(key.clone(), response);
+        self.registered_keys.push(key);
+        self
+    }
+
+    /// Register a gated mock response that stalls until the returned sender fires.
+    ///
+    /// - Send `()` on the sender to release the response.
+    /// - Drop the sender without sending to simulate a connection abort.
+    pub fn mock_gated(
+        &mut self,
+        method: &str,
+        path: &str,
+        response: MockResponse,
+    ) -> oneshot::Sender<()> {
+        let (tx, rx) = oneshot::channel();
+        let gated = MockResponse {
+            status: response.status,
+            headers: response.headers,
+            body: MockBody::Channel {
+                body: Box::new(response.body),
+                gate: Arc::new(tokio::sync::Mutex::new(Some(rx))),
+            },
+        };
+        self.mock(method, path, gated);
+        tx
+    }
+
+    /// Get recorded requests matching this test's prefix.
+    pub async fn recorded_requests(&self) -> Vec<RecordedRequest> {
+        self.state
+            .recorded
+            .lock()
+            .await
+            .iter()
+            .filter(|r| r.uri.starts_with(&self.test_prefix))
+            .cloned()
+            .collect()
+    }
+}
+
+impl Default for MockGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for MockGuard {
+    fn drop(&mut self) {
+        // Clean up all registered routes
+        for key in &self.registered_keys {
+            self.state.dynamic_routes.remove(key);
+        }
+    }
+}
+
+/// Return a reference to the process-global shared mock server.
+///
+/// The server is started lazily on first call on a dedicated background
+/// thread with its own tokio runtime, so it survives individual
+/// `#[tokio::test]` runtime teardowns.
+pub fn shared_mock() -> &'static MockHandle {
+    static SHARED: std::sync::OnceLock<MockHandle> = std::sync::OnceLock::new();
+    SHARED.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("failed to create mock runtime");
+            let handle = rt.block_on(async {
+                let mock = MockUpstream::start().await;
+                let h = MockHandle {
+                    addr: mock.addr,
+                    state: Arc::clone(&mock.state),
+                };
+                // Prevent Drop from shutting down the server.
+                std::mem::forget(mock);
+                h
+            });
+            tx.send(handle).expect("failed to send mock handle");
+            // Park this thread forever to keep the runtime (and its spawned
+            // tasks, including the mock server) alive for the process lifetime.
+            loop {
+                std::thread::park();
+            }
+        });
+        rx.recv().expect("failed to receive mock handle")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -234,66 +496,6 @@ async fn models(
 }
 
 // ---------------------------------------------------------------------------
-// SSE streaming handler
-// ---------------------------------------------------------------------------
-
-async fn stream_chat_completions(
-    State(state): State<Arc<SharedState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>> {
-    state
-        .record("POST", &uri.to_string(), &headers, &body)
-        .await;
-
-    let words = ["Hello", " from", " mock", " server"];
-
-    let stream = async_stream::stream! {
-        for (i, word) in words.iter().enumerate() {
-            let mut delta = serde_json::Map::new();
-            if i == 0 {
-                delta.insert("role".into(), Value::String("assistant".into()));
-            }
-            delta.insert("content".into(), Value::String((*word).into()));
-
-            let chunk = json!({
-                "id": "chatcmpl-mock-stream",
-                "object": "chat.completion.chunk",
-                "created": 1_234_567_890_u64,
-                "model": "gpt-4-mock",
-                "choices": [{
-                    "index": 0,
-                    "delta": delta,
-                    "finish_reason": Value::Null
-                }]
-            });
-            yield Ok(Event::default().data(chunk.to_string()));
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        // Final chunk with finish_reason
-        let final_chunk = json!({
-            "id": "chatcmpl-mock-stream",
-            "object": "chat.completion.chunk",
-            "created": 1_234_567_890_u64,
-            "model": "gpt-4-mock",
-            "choices": [{
-                "index": 0,
-                "delta": {},
-                "finish_reason": "stop"
-            }]
-        });
-        yield Ok(Event::default().data(final_chunk.to_string()));
-
-        // OpenAI DONE sentinel
-        yield Ok(Event::default().data("[DONE]"));
-    };
-
-    Sse::new(stream)
-}
-
-// ---------------------------------------------------------------------------
 // Utility handlers
 // ---------------------------------------------------------------------------
 
@@ -342,43 +544,8 @@ async fn status(
 }
 
 // ---------------------------------------------------------------------------
-// Error simulation handlers
+// Error simulation handlers (delay-free only)
 // ---------------------------------------------------------------------------
-
-async fn error_timeout(
-    State(state): State<Arc<SharedState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    state.record("GET", &uri.to_string(), &headers, &[]).await;
-    // Sleep indefinitely so the client times out
-    tokio::time::sleep(Duration::from_secs(3600)).await;
-    StatusCode::OK
-}
-
-async fn error_disconnect(
-    State(state): State<Arc<SharedState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-) -> axum::response::Response {
-    state.record("GET", &uri.to_string(), &headers, &[]).await;
-
-    // Stream partial data then abort with an error
-    let stream = async_stream::stream! {
-        yield Ok::<_, std::io::Error>(Bytes::from("partial response data..."));
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        yield Err(std::io::Error::new(
-            std::io::ErrorKind::ConnectionAborted,
-            "simulated disconnect",
-        ));
-    };
-
-    axum::response::Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/plain")
-        .body(axum::body::Body::from_stream(stream))
-        .expect("response builder should not fail")
-}
 
 async fn error_500(
     State(state): State<Arc<SharedState>>,
@@ -395,32 +562,6 @@ async fn error_500(
         }
     });
     (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(resp))
-}
-
-async fn error_slow_body(
-    State(state): State<Arc<SharedState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> axum::response::Response {
-    state
-        .record("POST", &uri.to_string(), &headers, &body)
-        .await;
-
-    let stream = async_stream::stream! {
-        yield Ok::<_, std::io::Error>(Bytes::from("chunk1\n"));
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        yield Ok(Bytes::from("chunk2\n"));
-        // Stall forever
-        tokio::time::sleep(Duration::from_secs(3600)).await;
-        yield Ok(Bytes::from("should never arrive"));
-    };
-
-    axum::response::Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/plain")
-        .body(axum::body::Body::from_stream(stream))
-        .expect("response builder should not fail")
 }
 
 // ---------------------------------------------------------------------------
@@ -456,29 +597,31 @@ async fn handle_ws_echo(mut socket: WebSocket) {
     }
 }
 
-async fn ws_stream(
+// ---------------------------------------------------------------------------
+// Response header test handler
+// ---------------------------------------------------------------------------
+
+async fn response_with_bad_headers(
     State(state): State<Arc<SharedState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    ws: WebSocketUpgrade,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     state.record("GET", &uri.to_string(), &headers, &[]).await;
-    ws.on_upgrade(handle_ws_stream)
-}
 
-async fn handle_ws_stream(mut socket: WebSocket) {
-    for i in 0..5_u32 {
-        let msg = json!({"seq": i, "data": format!("message {i}")});
-        if socket
-            .send(Message::Text(msg.to_string().into()))
-            .await
-            .is_err()
-        {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let _ = socket.send(Message::Close(None)).await;
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .header("x-custom-safe", "keep-me")
+        // Hop-by-hop headers that should be stripped
+        // (avoid transfer-encoding — it confuses the HTTP transport layer)
+        .header("proxy-authenticate", "Basic realm=mock")
+        .header("trailer", "X-Checksum")
+        .header("upgrade", "websocket")
+        // Internal x-oagw-* headers that should be stripped
+        .header("x-oagw-debug", "true")
+        .header("x-oagw-trace-id", "mock-trace-123")
+        .body(axum::body::Body::from(r#"{"ok":true}"#))
+        .expect("response builder should not fail")
 }
 
 // ---------------------------------------------------------------------------
@@ -497,4 +640,144 @@ async fn wt_stub(
         "description": "Placeholder for future WebTransport support"
     });
     (StatusCode::NOT_IMPLEMENTED, axum::Json(resp))
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic route handler (catch-all for MockGuard-registered routes)
+// ---------------------------------------------------------------------------
+
+/// Return an immediate 502 response when the gate sender is dropped.
+///
+/// Uses an empty non-streaming body so hyper can write it instantly and
+/// release the connection task — avoiding leaked tasks that prevent
+/// the test process from exiting.
+fn abort_response() -> axum::response::Response {
+    axum::response::Response::builder()
+        .status(StatusCode::BAD_GATEWAY)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            r#"{"error":"mock: gate sender dropped — simulated connection abort"}"#,
+        ))
+        .expect("response builder should not fail")
+}
+
+async fn dynamic_handler(
+    State(state): State<Arc<SharedState>>,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    state
+        .record(method.as_ref(), &uri.to_string(), &headers, &body)
+        .await;
+
+    let path = uri.path().to_string();
+    let key = RouteKey {
+        method: method.to_string(),
+        path: path.clone(),
+    };
+
+    // Check dynamic registry for exact match
+    if let Some(entry) = state.dynamic_routes.get(&key) {
+        let response = entry.value().clone();
+        drop(entry); // Release the lock before async operations
+
+        // Handle channel-gated responses
+        if let MockBody::Channel { gate, .. } = &response.body {
+            let receiver = gate.lock().await.take();
+            if let Some(rx) = receiver {
+                match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
+                    Ok(Ok(())) => {} // Gate opened — deliver inner body
+                    Ok(Err(_)) | Err(_) => return abort_response(),
+                }
+            }
+        }
+
+        return response.into_axum_response();
+    }
+
+    // No match in dynamic registry - return 404
+    axum::response::Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({"error": "not found", "path": path}).to_string(),
+        ))
+        .unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for MockGuard
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_guard_generates_unique_prefix() {
+        let guard1 = MockGuard::new();
+        let guard2 = MockGuard::new();
+
+        assert!(guard1.prefix().starts_with("/t-"));
+        assert!(guard2.prefix().starts_with("/t-"));
+        assert_ne!(guard1.prefix(), guard2.prefix());
+    }
+
+    #[test]
+    fn mock_guard_path_helper_prepends_prefix() {
+        let guard = MockGuard::new();
+        let full_path = guard.path("/v1/chat/completions");
+
+        assert!(full_path.starts_with(guard.prefix()));
+        assert!(full_path.ends_with("/v1/chat/completions"));
+    }
+
+    #[test]
+    fn mock_guard_registers_and_cleans_up_routes() {
+        // Create a guard and track its specific routes
+        let key1;
+        let key2;
+
+        {
+            let mut guard = MockGuard::new();
+            guard.mock(
+                "POST",
+                "/test",
+                MockResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: MockBody::Json(json!({"ok": true})),
+                },
+            );
+            guard.mock(
+                "GET",
+                "/test2",
+                MockResponse {
+                    status: 201,
+                    headers: vec![],
+                    body: MockBody::Json(json!({"created": true})),
+                },
+            );
+
+            key1 = RouteKey {
+                method: "POST".into(),
+                path: guard.path("/test"),
+            };
+            key2 = RouteKey {
+                method: "GET".into(),
+                path: guard.path("/test2"),
+            };
+
+            // Routes should be registered
+            assert!(guard.state.dynamic_routes.contains_key(&key1));
+            assert!(guard.state.dynamic_routes.contains_key(&key2));
+        }
+
+        // After guard is dropped, routes should be cleaned up
+        let state = shared_mock().shared_state();
+        assert!(!state.dynamic_routes.contains_key(&key1));
+        assert!(!state.dynamic_routes.contains_key(&key2));
+    }
 }

@@ -42,6 +42,8 @@ impl DataPlaneServiceImpl {
     ) -> anyhow::Result<Self> {
         let http_client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
+            // Never follow redirects — upstream could redirect to internal/metadata IPs.
+            .redirect(reqwest::redirect::Policy::none())
             // No overall timeout — SSE streams run indefinitely.
             // Request-header timeout is applied via tokio::time::timeout below.
             .build()?;
@@ -75,10 +77,11 @@ impl DataPlaneService for DataPlaneServiceImpl {
     ) -> Result<http::Response<Body>, DomainError> {
         let instance_uri = req.uri().to_string();
 
-        // Parse alias and path_suffix from URI (collect to owned before consuming req).
+        // Normalize and parse alias and path_suffix from URI.
         let (alias, path_suffix) = {
             let path = req.uri().path();
-            let trimmed = path.strip_prefix('/').unwrap_or(path);
+            let normalized = normalize_path(path);
+            let trimmed = normalized.strip_prefix('/').unwrap_or(&normalized);
             match trimmed.find('/') {
                 Some(pos) => (trimmed[..pos].to_string(), trimmed[pos..].to_string()),
                 None => (trimmed.to_string(), String::new()),
@@ -296,7 +299,8 @@ impl DataPlaneService for DataPlaneServiceImpl {
 
         // 9. Build streaming response.
         let status = response.status();
-        let resp_headers = response.headers().clone();
+        let mut resp_headers = response.headers().clone();
+        headers::sanitize_response_headers(&mut resp_headers);
 
         let body_stream: BodyStream = Box::pin(
             response
@@ -316,5 +320,56 @@ impl DataPlaneService for DataPlaneServiceImpl {
         resp.extensions_mut().insert(ErrorSource::Upstream);
 
         Ok(resp)
+    }
+}
+
+/// Normalize a URL path: collapse consecutive slashes and resolve `.`/`..` segments.
+/// Segments that would escape above the root are discarded.
+fn normalize_path(path: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            s => segments.push(s),
+        }
+    }
+    let mut result = String::with_capacity(path.len());
+    if path.starts_with('/') {
+        result.push('/');
+    }
+    result.push_str(&segments.join("/"));
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_path;
+
+    #[test]
+    fn normalize_collapses_double_slashes() {
+        assert_eq!(normalize_path("/alias//v1//chat"), "/alias/v1/chat");
+    }
+
+    #[test]
+    fn normalize_resolves_dot_dot() {
+        assert_eq!(normalize_path("/alias/../admin/secret"), "/admin/secret");
+    }
+
+    #[test]
+    fn normalize_clamps_above_root() {
+        assert_eq!(normalize_path("/alias/../../etc/passwd"), "/etc/passwd");
+    }
+
+    #[test]
+    fn normalize_resolves_single_dot() {
+        assert_eq!(normalize_path("/alias/./v1/chat"), "/alias/v1/chat");
+    }
+
+    #[test]
+    fn normalize_preserves_clean_path() {
+        assert_eq!(normalize_path("/alias/v1/chat"), "/alias/v1/chat");
     }
 }

@@ -28,6 +28,30 @@ impl ControlPlaneServiceImpl {
     }
 }
 
+/// Maximum length for an upstream alias.
+const MAX_ALIAS_LENGTH: usize = 253;
+
+/// Validate an alias: non-empty, max length, safe charset (alphanumeric + `.:-_`).
+fn validate_alias(alias: &str) -> Result<(), DomainError> {
+    if alias.is_empty() {
+        return Err(DomainError::validation("alias must not be empty"));
+    }
+    if alias.len() > MAX_ALIAS_LENGTH {
+        return Err(DomainError::validation(format!(
+            "alias must not exceed {MAX_ALIAS_LENGTH} characters"
+        )));
+    }
+    if !alias
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '-' | '_'))
+    {
+        return Err(DomainError::validation(
+            "alias contains invalid characters; only alphanumeric, '.', ':', '-', '_' are allowed",
+        ));
+    }
+    Ok(())
+}
+
 /// Generate an alias from the upstream's server endpoints.
 /// Single endpoint: host (standard port omitted) or host:port.
 fn generate_alias(upstream: &Upstream) -> String {
@@ -48,7 +72,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
         ctx: &SecurityContext,
         req: CreateUpstreamRequest,
     ) -> Result<Upstream, DomainError> {
-        let tenant_id = ctx.tenant_id();
+        let tenant_id = ctx.subject_tenant_id();
         let id = Uuid::new_v4();
 
         let upstream = Upstream {
@@ -70,6 +94,8 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
             .clone()
             .unwrap_or_else(|| generate_alias(&upstream));
 
+        validate_alias(&alias)?;
+
         let upstream = Upstream { alias, ..upstream };
 
         self.upstreams
@@ -79,7 +105,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
     }
 
     async fn get_upstream(&self, ctx: &SecurityContext, id: Uuid) -> Result<Upstream, DomainError> {
-        let tenant_id = ctx.tenant_id();
+        let tenant_id = ctx.subject_tenant_id();
         self.upstreams
             .get_by_id(tenant_id, id)
             .await
@@ -91,7 +117,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
         ctx: &SecurityContext,
         query: &ListQuery,
     ) -> Result<Vec<Upstream>, DomainError> {
-        let tenant_id = ctx.tenant_id();
+        let tenant_id = ctx.subject_tenant_id();
         self.upstreams
             .list(tenant_id, query)
             .await
@@ -104,7 +130,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
         id: Uuid,
         req: UpdateUpstreamRequest,
     ) -> Result<Upstream, DomainError> {
-        let tenant_id = ctx.tenant_id();
+        let tenant_id = ctx.subject_tenant_id();
         let mut existing = self
             .upstreams
             .get_by_id(tenant_id, id)
@@ -119,6 +145,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
             existing.protocol = protocol;
         }
         if let Some(alias) = req.alias {
+            validate_alias(&alias)?;
             existing.alias = alias;
         }
         if let Some(auth) = req.auth {
@@ -147,7 +174,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
     }
 
     async fn delete_upstream(&self, ctx: &SecurityContext, id: Uuid) -> Result<(), DomainError> {
-        let tenant_id = ctx.tenant_id();
+        let tenant_id = ctx.subject_tenant_id();
         // Cascade delete routes.
         let _ = self.routes.delete_by_upstream(tenant_id, id).await;
         self.upstreams
@@ -163,7 +190,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
         ctx: &SecurityContext,
         req: CreateRouteRequest,
     ) -> Result<Route, DomainError> {
-        let tenant_id = ctx.tenant_id();
+        let tenant_id = ctx.subject_tenant_id();
         // Validate that the upstream exists and belongs to this tenant.
         self.upstreams
             .get_by_id(tenant_id, req.upstream_id)
@@ -191,7 +218,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
     }
 
     async fn get_route(&self, ctx: &SecurityContext, id: Uuid) -> Result<Route, DomainError> {
-        let tenant_id = ctx.tenant_id();
+        let tenant_id = ctx.subject_tenant_id();
         self.routes
             .get_by_id(tenant_id, id)
             .await
@@ -204,7 +231,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
         upstream_id: Uuid,
         query: &ListQuery,
     ) -> Result<Vec<Route>, DomainError> {
-        let tenant_id = ctx.tenant_id();
+        let tenant_id = ctx.subject_tenant_id();
         self.routes
             .list_by_upstream(tenant_id, upstream_id, query)
             .await
@@ -217,7 +244,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
         id: Uuid,
         req: UpdateRouteRequest,
     ) -> Result<Route, DomainError> {
-        let tenant_id = ctx.tenant_id();
+        let tenant_id = ctx.subject_tenant_id();
         let mut existing = self
             .routes
             .get_by_id(tenant_id, id)
@@ -250,7 +277,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
     }
 
     async fn delete_route(&self, ctx: &SecurityContext, id: Uuid) -> Result<(), DomainError> {
-        let tenant_id = ctx.tenant_id();
+        let tenant_id = ctx.subject_tenant_id();
         self.routes
             .delete(tenant_id, id)
             .await
@@ -264,7 +291,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
         ctx: &SecurityContext,
         alias: &str,
     ) -> Result<Upstream, DomainError> {
-        let tenant_id = ctx.tenant_id();
+        let tenant_id = ctx.subject_tenant_id();
         let upstream = self
             .upstreams
             .get_by_alias(tenant_id, alias)
@@ -285,7 +312,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
         method: &str,
         path: &str,
     ) -> Result<Route, DomainError> {
-        let tenant_id = ctx.tenant_id();
+        let tenant_id = ctx.subject_tenant_id();
         self.routes
             .find_matching(tenant_id, upstream_id, method, path)
             .await
@@ -313,9 +340,10 @@ mod tests {
 
     fn test_ctx(tenant_id: Uuid) -> SecurityContext {
         SecurityContext::builder()
-            .tenant_id(tenant_id)
+            .subject_tenant_id(tenant_id)
             .subject_id(Uuid::new_v4())
             .build()
+            .expect("test security context")
     }
 
     fn make_create_upstream(alias: Option<&str>) -> CreateUpstreamRequest {
@@ -435,6 +463,45 @@ mod tests {
         };
         let u2 = svc.create_upstream(&ctx, req).await.unwrap();
         assert_eq!(u2.alias, "api.openai.com:8443");
+    }
+
+    #[tokio::test]
+    async fn alias_rejects_path_traversal() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let err = svc
+            .create_upstream(&ctx, make_create_upstream(Some("../../admin")))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DomainError::Validation { .. }));
+    }
+
+    #[tokio::test]
+    async fn alias_rejects_empty() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let err = svc
+            .create_upstream(&ctx, make_create_upstream(Some("")))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DomainError::Validation { .. }));
+    }
+
+    #[tokio::test]
+    async fn alias_rejects_slashes() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let err = svc
+            .create_upstream(&ctx, make_create_upstream(Some("foo/bar")))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DomainError::Validation { .. }));
     }
 
     #[tokio::test]

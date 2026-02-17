@@ -11,12 +11,11 @@ use uuid::Uuid;
 use crate::api::rest::routes::test_router;
 
 use super::api_v1::ApiV1;
-use super::mock::MockUpstream;
+use super::mock::shared_mock;
 use super::{TestCpBuilder, TestDpBuilder, build_test_app_state};
 
 /// Fully-wired test environment for OAGW integration tests.
 pub struct AppHarness {
-    mock: MockUpstream,
     facade: Arc<dyn ServiceGatewayClientV1>,
     ctx: SecurityContext,
     router: axum::Router,
@@ -31,12 +30,9 @@ impl AppHarness {
         ApiV1::new(self)
     }
 
-    pub fn mock(&self) -> &MockUpstream {
-        &self.mock
-    }
-
+    /// Port of the shared mock server (started lazily on first call).
     pub fn mock_port(&self) -> u16 {
-        self.mock.addr().port()
+        shared_mock().port()
     }
 
     pub fn facade(&self) -> &dyn ServiceGatewayClientV1 {
@@ -71,8 +67,6 @@ impl AppHarnessBuilder {
     }
 
     pub async fn build(self) -> AppHarness {
-        let mock = MockUpstream::start().await;
-
         let hub = ClientHub::new();
 
         let mut cp_builder = TestCpBuilder::new();
@@ -88,14 +82,14 @@ impl AppHarnessBuilder {
         let app_state = build_test_app_state(&hub, cp_builder, dp_builder);
 
         let ctx = SecurityContext::builder()
-            .tenant_id(Uuid::new_v4())
+            .subject_tenant_id(Uuid::new_v4())
             .subject_id(Uuid::new_v4())
-            .build();
+            .build()
+            .expect("test security context");
 
         let router = test_router(app_state.state, ctx.clone());
 
         AppHarness {
-            mock,
             facade: app_state.facade,
             ctx,
             router,

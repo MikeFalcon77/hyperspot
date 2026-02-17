@@ -201,7 +201,8 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
 
 fn domain_err_to_sdk(err: DomainError) -> ServiceGatewayError {
     match err {
-        DomainError::NotFound { entity, id } => ServiceGatewayError::RouteNotFound {
+        DomainError::NotFound { entity, id } => ServiceGatewayError::NotFound {
+            entity: entity.to_string(),
             instance: format!("{entity}/{id}"),
         },
         DomainError::Conflict { detail } => ServiceGatewayError::ValidationError {
@@ -706,7 +707,10 @@ mod tests {
             id: Uuid::nil(),
         };
         let sdk_err = domain_err_to_sdk(err);
-        assert!(matches!(sdk_err, ServiceGatewayError::RouteNotFound { .. }));
+        assert!(matches!(
+            sdk_err,
+            ServiceGatewayError::NotFound { ref entity, .. } if entity == "upstream"
+        ));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use axum::Router;
 use modkit::api::OpenApiRegistry;
-use modkit::api::operation_builder::{AuthReqAction, AuthReqResource, LicenseFeature};
+use modkit::api::operation_builder::LicenseFeature;
 
 use crate::module::AppState;
 
@@ -8,43 +8,7 @@ mod proxy;
 mod route;
 mod upstream;
 
-pub(super) enum Resource {
-    Upstreams,
-    Routes,
-}
-
-pub(super) enum Action {
-    Read,
-    Create,
-    Update,
-    Delete,
-}
-
 pub(super) struct License;
-
-impl AsRef<str> for Resource {
-    fn as_ref(&self) -> &'static str {
-        match self {
-            Resource::Upstreams => "upstreams",
-            Resource::Routes => "routes",
-        }
-    }
-}
-
-impl AuthReqResource for Resource {}
-
-impl AsRef<str> for Action {
-    fn as_ref(&self) -> &'static str {
-        match self {
-            Action::Read => "read",
-            Action::Create => "create",
-            Action::Update => "update",
-            Action::Delete => "delete",
-        }
-    }
-}
-
-impl AuthReqAction for Action {}
 
 impl AsRef<str> for License {
     fn as_ref(&self) -> &'static str {
@@ -82,7 +46,7 @@ pub fn test_router(state: AppState, ctx: modkit_security::SecurityContext) -> Ro
         .route(
             "/oagw/v1/upstreams/{id}",
             get(upstream_h::get_upstream)
-                .put(upstream_h::update_upstream)
+                .patch(upstream_h::update_upstream)
                 .delete(upstream_h::delete_upstream),
         )
         // Route CRUD
@@ -90,7 +54,7 @@ pub fn test_router(state: AppState, ctx: modkit_security::SecurityContext) -> Ro
         .route(
             "/oagw/v1/routes/{id}",
             get(route_h::get_route)
-                .put(route_h::update_route)
+                .patch(route_h::update_route)
                 .delete(route_h::delete_route),
         )
         .route(

@@ -17,6 +17,7 @@ pub(crate) const ERR_INVALID_TARGET_HOST: &str =
 pub(crate) const ERR_UNKNOWN_TARGET_HOST: &str =
     "gts.x.core.errors.err.v1~x.oagw.routing.unknown_target_host.v1";
 pub(crate) const ERR_AUTH_FAILED: &str = "gts.x.core.errors.err.v1~x.oagw.auth.failed.v1";
+pub(crate) const ERR_NOT_FOUND: &str = "gts.x.core.errors.err.v1~x.oagw.resource.not_found.v1";
 pub(crate) const ERR_ROUTE_NOT_FOUND: &str = "gts.x.core.errors.err.v1~x.oagw.route.not_found.v1";
 pub(crate) const ERR_PAYLOAD_TOO_LARGE: &str =
     "gts.x.core.errors.err.v1~x.oagw.payload.too_large.v1";
@@ -42,7 +43,10 @@ fn gts_type(err: &DomainError) -> &str {
         DomainError::InvalidTargetHost { .. } => ERR_INVALID_TARGET_HOST,
         DomainError::UnknownTargetHost { .. } => ERR_UNKNOWN_TARGET_HOST,
         DomainError::AuthenticationFailed { .. } => ERR_AUTH_FAILED,
-        DomainError::NotFound { .. } => ERR_ROUTE_NOT_FOUND,
+        DomainError::NotFound {
+            entity: "route", ..
+        } => ERR_ROUTE_NOT_FOUND,
+        DomainError::NotFound { .. } => ERR_NOT_FOUND,
         DomainError::PayloadTooLarge { .. } => ERR_PAYLOAD_TOO_LARGE,
         DomainError::RateLimitExceeded { .. } => ERR_RATE_LIMIT_EXCEEDED,
         DomainError::SecretNotFound { .. } => ERR_SECRET_NOT_FOUND,

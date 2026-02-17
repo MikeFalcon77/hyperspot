@@ -16,6 +16,9 @@ pub enum ServiceGatewayError {
     #[error("{detail}")]
     AuthenticationFailed { detail: String, instance: String },
 
+    #[error("{entity} not found")]
+    NotFound { entity: String, instance: String },
+
     #[error("no matching route found")]
     RouteNotFound { instance: String },
 

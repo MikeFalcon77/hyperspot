@@ -33,10 +33,10 @@ impl<'a> ApiV1<'a> {
         RequestCase::new(self.harness, Method::GET, "/oagw/v1/upstreams")
     }
 
-    pub fn put_upstream(&self, id: &str) -> RequestCase<'a> {
+    pub fn patch_upstream(&self, id: &str) -> RequestCase<'a> {
         RequestCase::new(
             self.harness,
-            Method::PUT,
+            Method::PATCH,
             format!("/oagw/v1/upstreams/{id}"),
         )
     }
@@ -67,8 +67,8 @@ impl<'a> ApiV1<'a> {
         )
     }
 
-    pub fn put_route(&self, id: &str) -> RequestCase<'a> {
-        RequestCase::new(self.harness, Method::PUT, format!("/oagw/v1/routes/{id}"))
+    pub fn patch_route(&self, id: &str) -> RequestCase<'a> {
+        RequestCase::new(self.harness, Method::PATCH, format!("/oagw/v1/routes/{id}"))
     }
 
     pub fn delete_route(&self, id: &str) -> RequestCase<'a> {

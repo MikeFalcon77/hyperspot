@@ -86,29 +86,23 @@ impl Body {
         }
     }
 
-    /// Extract the inner `Bytes`.
+    /// Try to extract the inner `Bytes`.
     ///
-    /// # Panics
-    ///
-    /// Panics if this is not `Body::Bytes`.
-    #[must_use]
-    pub fn expect_bytes(self) -> Bytes {
+    /// Returns `Err(self)` if this is not `Body::Bytes`.
+    pub fn try_into_bytes(self) -> Result<Bytes, Self> {
         match self {
-            Body::Bytes(b) => b,
-            other => panic!("expected Body::Bytes, got {other:?}"),
+            Body::Bytes(b) => Ok(b),
+            other => Err(other),
         }
     }
 
-    /// Extract the inner `BodyStream`.
+    /// Try to extract the inner `BodyStream`.
     ///
-    /// # Panics
-    ///
-    /// Panics if this is not `Body::Stream`.
-    #[must_use]
-    pub fn expect_stream(self) -> BodyStream {
+    /// Returns `Err(self)` if this is not `Body::Stream`.
+    pub fn try_into_stream(self) -> Result<BodyStream, Self> {
         match self {
-            Body::Stream(s) => s,
-            other => panic!("expected Body::Stream, got {other:?}"),
+            Body::Stream(s) => Ok(s),
+            other => Err(other),
         }
     }
 }
@@ -241,14 +235,20 @@ mod tests {
     }
 
     #[test]
-    fn expect_bytes_succeeds() {
+    fn try_into_bytes_succeeds() {
         let body = Body::Bytes(Bytes::from("data"));
-        assert_eq!(body.expect_bytes(), Bytes::from("data"));
+        assert_eq!(body.try_into_bytes().unwrap(), Bytes::from("data"));
     }
 
     #[test]
-    #[should_panic(expected = "expected Body::Bytes")]
-    fn expect_bytes_panics_on_empty() {
-        let _ = Body::Empty.expect_bytes();
+    fn try_into_bytes_fails_on_empty() {
+        let body = Body::Empty;
+        assert!(body.try_into_bytes().is_err());
+    }
+
+    #[test]
+    fn try_into_stream_fails_on_bytes() {
+        let body = Body::Bytes(Bytes::from("data"));
+        assert!(body.try_into_stream().is_err());
     }
 }

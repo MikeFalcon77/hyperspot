@@ -4,7 +4,7 @@ use modkit::api::operation_builder::OperationBuilder;
 
 use super::super::dto;
 use super::super::handlers;
-use super::{Action, License, Resource};
+use super::License;
 
 pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Router {
     // POST /oagw/v1/upstreams — Create upstream
@@ -13,7 +13,7 @@ pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("Create upstream")
         .description("Create a new upstream service configuration")
         .tag("upstreams")
-        .require_auth(&Resource::Upstreams, &Action::Create)
+        .authenticated()
         .require_license_features::<License>([])
         .json_request::<dto::CreateUpstreamRequest>(openapi, "Upstream configuration")
         .handler(handlers::upstream::create_upstream)
@@ -38,7 +38,7 @@ pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Rou
             "integer",
         )
         .query_param_typed("offset", false, "Number of results to skip", "integer")
-        .require_auth(&Resource::Upstreams, &Action::Read)
+        .authenticated()
         .require_license_features::<License>([])
         .handler(handlers::upstream::list_upstreams)
         .json_response_with_schema::<Vec<dto::UpstreamResponse>>(
@@ -56,7 +56,7 @@ pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .description("Retrieve a specific upstream by its GTS identifier")
         .tag("upstreams")
         .path_param("id", "Upstream GTS identifier")
-        .require_auth(&Resource::Upstreams, &Action::Read)
+        .authenticated()
         .require_license_features::<License>([])
         .handler(handlers::upstream::get_upstream)
         .json_response_with_schema::<dto::UpstreamResponse>(
@@ -67,14 +67,14 @@ pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .standard_errors(openapi)
         .register(router, openapi);
 
-    // PUT /oagw/v1/upstreams/{id} — Update upstream
-    router = OperationBuilder::put("/oagw/v1/upstreams/{id}")
+    // PATCH /oagw/v1/upstreams/{id} — Update upstream
+    router = OperationBuilder::patch("/oagw/v1/upstreams/{id}")
         .operation_id("oagw.update_upstream")
         .summary("Update upstream")
-        .description("Update an existing upstream service configuration")
+        .description("Partially update an existing upstream service configuration")
         .tag("upstreams")
         .path_param("id", "Upstream GTS identifier")
-        .require_auth(&Resource::Upstreams, &Action::Update)
+        .authenticated()
         .require_license_features::<License>([])
         .json_request::<dto::UpdateUpstreamRequest>(openapi, "Upstream update data")
         .handler(handlers::upstream::update_upstream)
@@ -93,7 +93,7 @@ pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .description("Delete an upstream and cascade-delete its routes")
         .tag("upstreams")
         .path_param("id", "Upstream GTS identifier")
-        .require_auth(&Resource::Upstreams, &Action::Delete)
+        .authenticated()
         .require_license_features::<License>([])
         .handler(handlers::upstream::delete_upstream)
         .json_response(http::StatusCode::NO_CONTENT, "Upstream deleted")

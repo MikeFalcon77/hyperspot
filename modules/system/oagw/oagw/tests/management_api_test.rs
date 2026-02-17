@@ -127,7 +127,7 @@ async fn update_upstream_preserves_id() {
 
     let resp = h
         .api_v1()
-        .put_upstream(&gts_id)
+        .patch_upstream(&gts_id)
         .with_body(serde_json::json!({"alias": "openai-v2"}))
         .expect_status(200)
         .await;
@@ -384,7 +384,7 @@ async fn update_route_changes_fields() {
 
     let resp = h
         .api_v1()
-        .put_route(&route_gts_id)
+        .patch_route(&route_gts_id)
         .with_body(serde_json::json!({
             "priority": 10,
             "tags": ["updated"],

@@ -155,7 +155,9 @@ impl SystemCapability for OutboundApiGatewayModule {
 
         let upstreams = provisioning.list_upstreams().await?;
         for u in &upstreams {
-            let ctx = SecurityContext::builder().tenant_id(u.tenant_id).build();
+            let ctx = SecurityContext::builder()
+                .subject_tenant_id(u.tenant_id)
+                .build()?;
             let created = app_state
                 .cp
                 .create_upstream(&ctx, u.request.clone())
@@ -173,7 +175,9 @@ impl SystemCapability for OutboundApiGatewayModule {
 
         let routes = provisioning.list_routes().await?;
         for r in &routes {
-            let ctx = SecurityContext::builder().tenant_id(r.tenant_id).build();
+            let ctx = SecurityContext::builder()
+                .subject_tenant_id(r.tenant_id)
+                .build()?;
             let created = app_state
                 .cp
                 .create_route(&ctx, r.request.clone())
