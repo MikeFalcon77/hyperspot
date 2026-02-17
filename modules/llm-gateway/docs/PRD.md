@@ -311,7 +311,7 @@ Cross-cutting concern — applies to all operations, no dedicated UC.
 
 ## 6. Non-Functional Requirements
 
-#### Scalability
+### Scalability
 
 - [ ] `p1` - **ID**: `cpt-cf-llm-gateway-nfr-scalability-v1`
 Horizontal scaling without state coordination. Stateless design with exception for temporary async job state.

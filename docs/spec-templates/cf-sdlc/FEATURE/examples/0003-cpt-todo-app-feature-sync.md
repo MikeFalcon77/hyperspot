@@ -65,8 +65,8 @@ Implement cross-device task synchronization via WebSocket with fallback to HTTP 
 
 ## 6. Acceptance Criteria
 
-- [ ] WebSocket connection established on app load
-- [ ] Task changes sync across devices within 5 seconds
-- [ ] Offline changes queued and synced when connection restored
-- [ ] Graceful fallback to HTTP polling if WebSocket unavailable
-- [ ] Conflict resolution handles concurrent edits correctly
+See Definitions of Done (`cpt-examples-todo-app-dod-sync`) for acceptance criteria.
+
+## 7. Additional Context (optional)
+
+None
