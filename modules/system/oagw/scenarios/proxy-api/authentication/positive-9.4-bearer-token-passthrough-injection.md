@@ -10,9 +10,9 @@
       { "scheme": "https", "host": "api.example.com", "port": 443 }
     ]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "auth": {
-    "type": "gts.x.core.oagw.plugin.auth.v1~x.core.oagw.bearer.v1",
+    "type": "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.bearer.v1",
     "config": {
       "secret_ref": "cred://api/static-bearer-token"
     }

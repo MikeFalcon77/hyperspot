@@ -1,41 +1,41 @@
 # PRD: Outbound API Gateway (OAGW)
 
 <!-- TOC START -->
+
 ## Table of Contents
 
 - [Overview](#overview)
-  - [Key Concepts](#key-concepts)
-  - [Target Users](#target-users)
-  - [Problems Solved](#problems-solved)
-  - [Success Criteria](#success-criteria)
-  - [Deployment Flexibility](#deployment-flexibility)
+    - [Key Concepts](#key-concepts)
+    - [Target Users](#target-users)
+    - [Problems Solved](#problems-solved)
+    - [Success Criteria](#success-criteria)
 - [Actors](#actors)
-  - [Human](#human)
-  - [System](#system)
+    - [Human](#human)
+    - [System](#system)
 - [Functional Requirements](#functional-requirements)
-  - [Upstream Management](#upstream-management)
-  - [Route Management](#route-management)
-  - [Enable/Disable Semantics](#enabledisable-semantics)
-  - [Request Proxying](#request-proxying)
-  - [Authentication Injection](#authentication-injection)
-  - [Rate Limiting](#rate-limiting)
-  - [Header Transformation](#header-transformation)
-  - [Plugin System](#plugin-system)
-  - [Streaming Support](#streaming-support)
-  - [Configuration Layering](#configuration-layering)
-  - [Hierarchical Configuration Override](#hierarchical-configuration-override)
-  - [Alias Resolution and Shadowing](#alias-resolution-and-shadowing)
+    - [Upstream Management](#upstream-management)
+    - [Route Management](#route-management)
+    - [Enable/Disable Semantics](#enabledisable-semantics)
+    - [Request Proxying](#request-proxying)
+    - [Authentication Injection](#authentication-injection)
+    - [Rate Limiting](#rate-limiting)
+    - [Header Transformation](#header-transformation)
+    - [Plugin System](#plugin-system)
+    - [Streaming Support](#streaming-support)
+    - [Configuration Layering](#configuration-layering)
+    - [Hierarchical Configuration Override](#hierarchical-configuration-override)
+    - [Alias Resolution and Shadowing](#alias-resolution-and-shadowing)
 - [Use Cases](#use-cases)
-  - [Proxy HTTP Request](#proxy-http-request)
-  - [Configure Upstream](#configure-upstream)
-  - [Configure Route](#configure-route)
-  - [Rate Limit Exceeded](#rate-limit-exceeded)
-  - [SSE Streaming](#sse-streaming)
+    - [Proxy HTTP Request](#proxy-http-request)
+    - [Configure Upstream](#configure-upstream)
+    - [Configure Route](#configure-route)
+    - [Rate Limit Exceeded](#rate-limit-exceeded)
+    - [SSE Streaming](#sse-streaming)
 - [Non-Functional Requirements](#non-functional-requirements)
 - [Built-in Plugins](#built-in-plugins)
-  - [Auth Plugins (`gts.x.core.oagw.plugin.auth.v1~*`)](#auth-plugins-gtsxcoreoagwpluginauthv1)
-  - [Guard Plugins (`gts.x.core.oagw.plugin.guard.v1~*`)](#guard-plugins-gtsxcoreoagwpluginguardv1)
-  - [Transform Plugins (`gts.x.core.oagw.plugin.transform.v1~*`)](#transform-plugins-gtsxcoreoagwplugintransformv1)
+    - [Auth Plugins](#auth-plugins)
+    - [Guard Plugins](#guard-plugins)
+    - [Transform Plugins](#transform-plugins)
 - [Error Codes](#error-codes)
 - [API Endpoints](#api-endpoints)
 - [Dependencies](#dependencies)
@@ -46,31 +46,22 @@
 
 OAGW manages all outbound API requests from CyberFabric to external services.
 
-**Component Architecture**: OAGW is composed of three distinct components that work together:
-- **API Handler**: Entry point for all requests, handles incoming auth/rate limiting, routes to CP or DP
-- **Data Plane (CP)**: Orchestrates proxy requests, executes calls to external services
-- **Control Plane (DP)**: Manages configuration data (upstreams/routes/plugins) with multi-layer caching
+**Architecture**: OAGW is implemented as a single ModKit module (`oagw` crate) with internal service isolation via domain traits:
 
-**Deployment Flexibility**: Modkit framework supports both single-executable (all components in-process) and microservice (components deployed separately) deployment modes.
+- **Control Plane** (`ControlPlaneService`): Manages configuration data (upstreams, routes) with repository access
+- **Data Plane** (`DataPlaneService`): Orchestrates proxy requests, resolves configuration via Control Plane, executes auth plugins, and forwards HTTP calls to external services
 
 See [DESIGN.md](./DESIGN.md#component-architecture) for detailed architecture.
 
-**Terminology Note**: Due to historical naming, crate names don't match component terminology:
-- `oagw-cp` crate implements the **Data Plane** (proxy/request processing)
-- `oagw-dp` crate implements the **Control Plane** (config management)
-
-Throughout this document we use industry-standard terminology. See DESIGN.md for full mapping details.
-
 ### Key Concepts
 
-| Concept  | Definition                                                                                |
-|----------|-------------------------------------------------------------------------------------------|
-| Upstream | External service target (scheme/host/port, protocol, auth, headers, rate limits)          |
-| Route    | API path on an upstream. Matches by method/path/query (HTTP), service/method (gRPC), etc. |
-| Plugin   | Modular processor: Auth (credential injection), Guard (validation), Transform (mutation)  |
-| API Handler | Entry point component that routes requests based on path                               |
-| Data Plane | Orchestrates proxy requests and executes calls to external services                  |
-| Control Plane | Manages configuration data with database access and multi-layer caching                 |
+| Concept       | Definition                                                                                |
+|---------------|-------------------------------------------------------------------------------------------|
+| Upstream      | External service target (scheme/host/port, protocol, auth, headers, rate limits)          |
+| Route         | API path on an upstream. Matches by method/path/query (HTTP), service/method (gRPC), etc. |
+| Plugin        | Modular processor: Auth (credential injection), Guard (validation), Transform (mutation)  |
+| Data Plane    | Internal service that orchestrates proxy requests and executes calls to external services |
+| Control Plane | Internal service that manages configuration data with repository access                   |
 
 ### Target Users
 
@@ -91,27 +82,6 @@ Throughout this document we use industry-standard terminology. See DESIGN.md for
 - Zero credential exposure in logs/errors
 - 99.9% availability
 - Complete audit trail
-
-### Deployment Flexibility
-
-OAGW supports two deployment modes via the modkit framework:
-
-**Single-Executable Mode**:
-- All three components (API Handler, CP, DP) run in a single process
-- Communication via direct in-process function calls (zero serialization overhead)
-- Simpler deployment, ideal for development and small-scale deployments
-- Shared in-memory resources (L1 cache, connection pools)
-
-**Microservice Mode**:
-- Components deployed as separate services (each horizontally scalable)
-- Communication via RPC (modkit provides transparent transport)
-- Independent scaling: scale CP for proxy load, scale DP for config operations
-- Example topology: 1 API Handler, 10 CP instances, 2 DP instances
-- Shared L2 cache (Redis) for config across DP instances
-
-**Deployment Abstraction**: OAGW code is deployment-agnostic. Modkit handles service discovery, load balancing, and transparent RPC based on deployment configuration.
-
-For module structure and deployment architecture, see [DESIGN.md](./DESIGN.md#module-structure).
 
 ## Actors
 
@@ -150,14 +120,17 @@ CRUD for routes. Routes define matching rules (method, path, query allowlist) ma
 Upstreams and routes support an `enabled` boolean field (default: `true`).
 
 **Behavior**:
+
 - **Disabled upstream**: All proxy requests rejected with `503 Service Unavailable` (gateway error). Upstream remains visible in list/get operations.
 - **Disabled route**: Route excluded from matching; request falls through to next match or returns 404
 
 **Hierarchical Inheritance**:
+
 - If ancestor tenant disables an upstream, it is disabled for all descendants
 - Descendant cannot re-enable an ancestor-disabled resource
 
 **Use Cases**:
+
 - Temporary maintenance without deleting configuration
 - Emergency circuit break at management layer
 - Gradual rollout (enable route for subset of tenants)
@@ -167,6 +140,7 @@ Upstreams and routes support an `enabled` boolean field (default: `true`).
 Proxy requests via `{METHOD} /api/oagw/v1/proxy/{alias}[/{path}][?{query}]`. Resolves upstream by alias, matches route, transforms and forwards.
 
 **Component Flow**:
+
 1. API Handler receives request at `/api/oagw/v1/proxy/*`
 2. Routes to Data Plane
 3. Data Plane calls Control Plane for config resolution (upstream, route)
@@ -193,15 +167,16 @@ Transform request/response headers: set/add/remove, passthrough control, automat
 
 OAGW provides extensibility through a plugin system with three plugin types:
 
-- **Auth** (`gts.x.core.oagw.plugin.auth.v1~*`): Credential injection (API key, OAuth2, Bearer token, Basic auth)
-- **Guard** (`gts.x.core.oagw.plugin.guard.v1~*`): Validation/policy enforcement, can reject requests (timeout, CORS, rate limiting)
-- **Transform** (`gts.x.core.oagw.plugin.transform.v1~*`): Request/response mutation (logging, metrics, request ID)
+- **Auth** (`gts.x.core.oagw.auth_plugin.v1~*`): Credential injection (API key, OAuth2, Bearer token, Basic auth)
+- **Guard** (`gts.x.core.oagw.guard_plugin.v1~*`): Validation/policy enforcement, can reject requests (timeout, CORS, rate limiting)
+- **Transform** (`gts.x.core.oagw.transform_plugin.v1~*`): Request/response mutation (logging, metrics, request ID)
 
 **Component**: Data Plane executes all plugins during proxy request processing. Plugins are defined in Control Plane (CRUD via `/api/oagw/v1/plugins/*`) and loaded by Data Plane.
 
 **Plugin Types**:
-- **Built-in plugins**: Included in Data Plane crate (`oagw-cp`), implemented in Rust
-- **External plugins**: Separate modkit modules implementing plugin traits from `oagw-core`
+
+- **Built-in plugins**: Included in `oagw` crate (`infra/plugin/`), implemented in Rust
+- **External plugins**: Separate modkit modules implementing plugin traits from `oagw-sdk`
 
 **Execution order**: Auth → Guards → Transform(request) → Upstream → Transform(response/error)
 
@@ -209,7 +184,8 @@ Plugin chain composition: upstream plugins execute before route plugins.
 
 Plugin API contract: plugin definitions are immutable after creation.
 
-Justification: immutability guarantees deterministic behavior for attached routes/upstreams, improves auditability, and avoids in-place source mutation risks. Updates are performed by creating a new plugin version and re-binding references.
+Justification: immutability guarantees deterministic behavior for attached routes/upstreams, improves auditability, and avoids in-place source mutation risks. Updates are performed
+by creating a new plugin version and re-binding references.
 
 Circuit breaker is a core gateway resilience capability (configured as core policy), not a plugin.
 
@@ -244,7 +220,8 @@ Configurations defined by ancestor tenants can be overridden by descendants base
 - **Tags (discovery metadata)**: Merged top-to-bottom with add-only semantics:
   `effective_tags = union(ancestor_tags..., descendant_tags)`. Descendants can add tags but cannot remove inherited tags.
 
-If upstream creation resolves to an existing upstream definition (binding-style flow), request tags are treated as tenant-local additions for effective discovery; they do not mutate ancestor tags.
+If upstream creation resolves to an existing upstream definition (binding-style flow), request tags are treated as tenant-local additions for effective discovery; they do not
+mutate ancestor tags.
 
 **Example**:
 
@@ -408,25 +385,25 @@ Forward events as received, handle connection lifecycle (open/close/error).
 
 ## Built-in Plugins
 
-### Auth Plugins (`gts.x.core.oagw.plugin.auth.v1~*`)
+### Auth Plugins
 
-- `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.noop.v1` - No authentication
-- `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.apikey.v1` - API key injection (header/query)
-- `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.basic.v1` - HTTP Basic authentication
-- `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.oauth2.client_cred.v1` - OAuth2 client credentials flow
-- `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.oauth2.client_cred_basic.v1` - OAuth2 with Basic auth
-- `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.bearer.v1` - Bearer token injection
+- `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.noop.v1` - No authentication
+- `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1` - API key injection (header/query)
+- `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.basic.v1` - HTTP Basic authentication
+- `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.oauth2_client_cred.v1` - OAuth2 client credentials flow
+- `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.oauth2_client_cred_basic.v1` - OAuth2 with Basic auth
+- `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.bearer.v1` - Bearer token injection
 
-### Guard Plugins (`gts.x.core.oagw.plugin.guard.v1~*`)
+### Guard Plugins
 
-- `gts.x.core.oagw.plugin.guard.v1~x.core.oagw.timeout.v1` - Request timeout enforcement
-- `gts.x.core.oagw.plugin.guard.v1~x.core.oagw.cors.v1` - CORS preflight validation
+- `gts.x.core.oagw.guard_plugin.v1~x.core.oagw.timeout.v1` - Request timeout enforcement
+- `gts.x.core.oagw.guard_plugin.v1~x.core.oagw.cors.v1` - CORS preflight validation
 
-### Transform Plugins (`gts.x.core.oagw.plugin.transform.v1~*`)
+### Transform Plugins
 
-- `gts.x.core.oagw.plugin.transform.v1~x.core.oagw.logging.v1` - Request/response logging
-- `gts.x.core.oagw.plugin.transform.v1~x.core.oagw.metrics.v1` - Prometheus metrics collection
-- `gts.x.core.oagw.plugin.transform.v1~x.core.oagw.request_id.v1` - X-Request-ID propagation
+- `gts.x.core.oagw.transform_plugin.v1~x.core.oagw.logging.v1` - Request/response logging
+- `gts.x.core.oagw.transform_plugin.v1~x.core.oagw.metrics.v1` - Prometheus metrics collection
+- `gts.x.core.oagw.transform_plugin.v1~x.core.oagw.request_id.v1` - X-Request-ID propagation
 
 ## Error Codes
 
@@ -447,7 +424,8 @@ Forward events as received, handle connection lifecycle (open/close/error).
 All requests enter through API Handler, which routes based on path:
 
 **Management API** (routed to Control Plane):
-```
+
+```text
 POST/GET/PUT/DELETE /api/oagw/v1/upstreams[/{id}]
 POST/GET/PUT/DELETE /api/oagw/v1/routes[/{id}]
 POST/GET/DELETE /api/oagw/v1/plugins[/{id}]
@@ -455,11 +433,13 @@ GET /api/oagw/v1/plugins/{id}/source
 ```
 
 **Proxy API** (routed to Data Plane):
-```
+
+```text
 {METHOD} /api/oagw/v1/proxy/{alias}[/{path}][?{query}]
 ```
 
 **Request Flow**:
+
 - Management operations: `API Handler → Control Plane`
 - Proxy operations: `API Handler → Data Plane → Control Plane (config) → Data Plane (execute)`
 

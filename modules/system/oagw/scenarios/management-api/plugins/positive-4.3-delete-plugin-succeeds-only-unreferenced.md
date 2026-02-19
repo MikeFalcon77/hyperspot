@@ -2,11 +2,11 @@
 
 ## Scenario A: delete unreferenced plugin
 
-1. Create plugin `gts.x.core.oagw.plugin.guard.v1~<uuid>`.
+1. Create plugin `gts.x.core.oagw.guard_plugin.v1~<uuid>`.
 2. Ensure it is not referenced by any upstream/route.
 
 ```http
-DELETE /api/oagw/v1/plugins/gts.x.core.oagw.plugin.guard.v1~<uuid> HTTP/1.1
+DELETE /api/oagw/v1/plugins/gts.x.core.oagw.guard_plugin.v1~<uuid> HTTP/1.1
 Host: oagw.example.com
 Authorization: Bearer <tenant-token>
 ```
@@ -20,7 +20,7 @@ Expected:
 2. Attach it to an upstream or route.
 
 ```http
-DELETE /api/oagw/v1/plugins/gts.x.core.oagw.plugin.guard.v1~<uuid> HTTP/1.1
+DELETE /api/oagw/v1/plugins/gts.x.core.oagw.guard_plugin.v1~<uuid> HTTP/1.1
 Host: oagw.example.com
 Authorization: Bearer <tenant-token>
 ```

@@ -10,9 +10,9 @@
       { "scheme": "grpc", "host": "<grpc-upstream-host>", "port": 443 }
     ]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.grpc.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.grpc.v1",
   "auth": {
-    "type": "gts.x.core.oagw.plugin.auth.v1~x.core.oagw.apikey.v1",
+    "type": "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1",
     "config": {
       "header": "x-api-key",
       "secret_ref": "cred://grpc/api-key"

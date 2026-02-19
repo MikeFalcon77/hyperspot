@@ -14,7 +14,7 @@ Content-Type: application/json
       { "scheme": "https", "host": "httpbin.org", "port": 443 }
     ]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "alias": "httpbin.org"
 }
 ```
@@ -54,7 +54,7 @@ Content-Type: application/json
       { "scheme": "https", "host": "httpbin.org", "port": 443 }
     ]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "alias": "httpbin.org",
   "enabled": false
 }
@@ -86,7 +86,7 @@ Content-Type: application/json
       { "scheme": "https", "host": "httpbin.org", "port": 443 }
     ]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "alias": "httpbin.org",
   "enabled": true
 }

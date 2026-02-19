@@ -4,7 +4,7 @@
 
 - Upstream endpoint:
   - `scheme`: `wt`
-  - `protocol`: `gts.x.core.oagw.protocol.v1~x.core.http.v1` (or a dedicated protocol if introduced)
+  - `protocol`: `gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1` (or a dedicated protocol if introduced)
 
 ## Inbound request
 

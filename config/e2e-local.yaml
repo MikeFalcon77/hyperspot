@@ -204,6 +204,12 @@ modules:
       file: "settings.db"
     config: {}
 
+  oagw:
+    config:
+      proxy_timeout_secs: 2
+      credentials:
+        "cred://openai-key": "sk-test-e2e-fake-key"  # Test-only fake key, not a real credential
+
 # OpenTelemetry tracing configuration
 tracing:
   enabled: false

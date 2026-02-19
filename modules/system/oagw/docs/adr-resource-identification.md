@@ -399,7 +399,7 @@ Content-Type: application/json
   "server": {
     "endpoints": [{ "scheme": "https", "host": "api.openai.com", "port": 443 }]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "tags": ["openai", "llm", "chat"],
   "auth": { "type": "...", "config": { ... } }
 }
@@ -428,7 +428,7 @@ Content-Type: application/json
   "server": {
     "endpoints": [{ "scheme": "https", "host": "10.0.1.1", "port": 443 }]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "alias": "my-internal-service",
   "tags": ["internal", "api"]
 }
@@ -545,7 +545,7 @@ Auth configuration references secrets via `cred_store` (Vault). OAGW does not ma
 ```json
 {
   "auth": {
-    "type": "gts.x.core.oagw.plugin.auth.v1~x.core.oagw.apikey.v1",
+    "type": "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1",
     "config": {
       "header": "Authorization",
       "prefix": "Bearer ",
@@ -671,10 +671,10 @@ X-Tenant-ID: partner-uuid
   "server": {
     "endpoints": [{ "scheme": "https", "host": "api.openai.com", "port": 443 }]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "tags": ["openai", "llm"],
   "auth": {
-    "type": "gts.x.core.oagw.plugin.auth.v1~x.core.oagw.apikey.v1",
+    "type": "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1",
     "config": { 
       "header": "Authorization", 
       "prefix": "Bearer ",
@@ -688,7 +688,7 @@ X-Tenant-ID: partner-uuid
   },
   "plugins": {
     "sharing": "inherit",
-    "items": ["gts.x.core.oagw.plugin.filter.v1~x.core.oagw.logging.v1"]
+    "items": ["gts.x.core.oagw.filter_plugin.v1~x.core.oagw.logging.v1"]
   }
 }
 ```
@@ -703,9 +703,9 @@ X-Tenant-ID: customer-uuid
   "server": {
     "endpoints": [{ "scheme": "https", "host": "api.openai.com", "port": 443 }]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "auth": {
-    "type": "gts.x.core.oagw.plugin.auth.v1~x.core.oagw.apikey.v1",
+    "type": "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1",
     "config": { 
       "header": "Authorization", 
       "prefix": "Bearer ",
@@ -756,9 +756,9 @@ X-Tenant-ID: customer-uuid
   "server": {
     "endpoints": [{ "scheme": "https", "host": "api.openai.com", "port": 443 }]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "auth": {
-    "type": "gts.x.core.oagw.plugin.auth.v1~x.core.oagw.apikey.v1",
+    "type": "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1",
     "config": { 
       "header": "Authorization", 
       "prefix": "Bearer ",

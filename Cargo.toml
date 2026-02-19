@@ -69,6 +69,8 @@ members = [
     "modules/system/authz-resolver/authz-resolver-sdk",
     "modules/system/authz-resolver/authz-resolver",
     "modules/system/authz-resolver/plugins/static-authz-plugin",
+    "modules/system/oagw/oagw",
+    "modules/system/oagw/oagw-sdk",
 ]
 exclude = ["fuzz"]
 resolver = "3"

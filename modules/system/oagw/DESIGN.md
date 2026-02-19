@@ -1,155 +1,155 @@
 # OAGW Outbound API Gateway Design Document
 
 <!-- TOC START -->
-
 ## Table of Contents
 
 - [Context](#context)
-    - [Component Architecture](#component-architecture)
-    - [Core Capabilities](#core-capabilities)
+  - [Component Architecture](#component-architecture)
+  - [Terminology Note](#terminology-note)
+  - [Core Capabilities](#core-capabilities)
 - [Architecture](#architecture)
-    - [Key Concepts](#key-concepts)
-    - [Request Flow](#request-flow)
-        - [Management Operations Flow](#management-operations-flow)
-        - [Proxy Operations Flow](#proxy-operations-flow)
-    - [Module Structure](#module-structure)
-    - [Out of Scope](#out-of-scope)
-    - [Security Considerations](#security-considerations)
-    - [Plugin System Overview](#plugin-system-overview)
+  - [Key Concepts](#key-concepts)
+  - [Request Flow](#request-flow)
+    - [Management Operations Flow](#management-operations-flow)
+    - [Proxy Operations Flow](#proxy-operations-flow)
+  - [Module Structure](#module-structure)
+  - [Out of Scope](#out-of-scope)
+  - [Security Considerations](#security-considerations)
+  - [Plugin System Overview](#plugin-system-overview)
 - [Core Subsystems](#core-subsystems)
-    - [Request Routing](#request-routing)
-        - [Routing Flow](#routing-flow)
-        - [Route Matching Algorithm](#route-matching-algorithm)
-        - [Headers Transformation](#headers-transformation)
-        - [Guard Rules](#guard-rules)
-        - [Body Validation Rules](#body-validation-rules)
-        - [Transformation Rules](#transformation-rules)
-    - [Alias Resolution](#alias-resolution)
-        - [Alias Generation Rules](#alias-generation-rules)
-        - [Resolution Algorithm](#resolution-algorithm)
-        - [Shadowing Behavior](#shadowing-behavior)
-        - [Alias Uniqueness](#alias-uniqueness)
-        - [Multi-Endpoint Load Balancing](#multi-endpoint-load-balancing)
-    - [Plugin System](#plugin-system)
-        - [Plugin Types](#plugin-types)
-        - [Plugin Identification](#plugin-identification)
-        - [Plugin Lifecycle Management](#plugin-lifecycle-management)
-        - [Plugin Layering](#plugin-layering)
-        - [Plugin Execution Order](#plugin-execution-order)
-        - [Starlark Context API](#starlark-context-api)
-        - [Sandbox Restrictions](#sandbox-restrictions)
+  - [Request Routing](#request-routing)
+    - [Routing Flow](#routing-flow)
+    - [Route Matching Algorithm](#route-matching-algorithm)
+    - [Headers Transformation](#headers-transformation)
+    - [Guard Rules](#guard-rules)
+    - [Body Validation Rules](#body-validation-rules)
+    - [Transformation Rules](#transformation-rules)
+  - [Alias Resolution](#alias-resolution)
+    - [Alias Generation Rules](#alias-generation-rules)
+    - [Resolution Algorithm](#resolution-algorithm)
+    - [Shadowing Behavior](#shadowing-behavior)
+    - [Alias Uniqueness](#alias-uniqueness)
+    - [Multi-Endpoint Load Balancing](#multi-endpoint-load-balancing)
+  - [Plugin System](#plugin-system)
+    - [Plugin Types](#plugin-types)
+    - [Plugin Identification](#plugin-identification)
+    - [Plugin Lifecycle Management](#plugin-lifecycle-management)
+    - [Plugin Layering](#plugin-layering)
+    - [Plugin Execution Order](#plugin-execution-order)
+    - [Starlark Context API](#starlark-context-api)
+    - [Sandbox Restrictions](#sandbox-restrictions)
 - [Hierarchical Configuration](#hierarchical-configuration)
-    - [Configuration Sharing Modes](#configuration-sharing-modes)
-    - [Shareable Configuration Fields](#shareable-configuration-fields)
-    - [Merge Strategies](#merge-strategies)
-    - [Configuration Resolution Algorithm](#configuration-resolution-algorithm)
-    - [Example: Partner Shares OpenAI Upstream with Customer](#example-partner-shares-openai-upstream-with-customer)
-    - [Secret Access Control](#secret-access-control)
-    - [Permissions and Access Control](#permissions-and-access-control)
-    - [Schema Updates](#schema-updates)
+  - [Configuration Sharing Modes](#configuration-sharing-modes)
+  - [Shareable Configuration Fields](#shareable-configuration-fields)
+  - [Merge Strategies](#merge-strategies)
+  - [Configuration Resolution Algorithm](#configuration-resolution-algorithm)
+  - [Example: Partner Shares OpenAI Upstream with Customer](#example-partner-shares-openai-upstream-with-customer)
+  - [Secret Access Control](#secret-access-control)
+  - [Permissions and Access Control](#permissions-and-access-control)
+  - [Schema Updates](#schema-updates)
 - [Type System](#type-system)
-    - [Upstream](#upstream)
-    - [Route](#route)
-    - [Auth Plugin](#auth-plugin)
-    - [Guard Plugin](#guard-plugin)
-    - [Transform Plugin](#transform-plugin)
+  - [Upstream](#upstream)
+  - [Route](#route)
+  - [Auth Plugin](#auth-plugin)
+  - [Guard Plugin](#guard-plugin)
+  - [Transform Plugin](#transform-plugin)
 - [REST API](#rest-api)
-    - [Error Response Format](#error-response-format)
-    - [Error Source Distinction](#error-source-distinction)
-        - [X-OAGW-Target-Host Error Examples](#x-oagw-target-host-error-examples)
-    - [Management API](#management-api)
-        - [Upstream Endpoints](#upstream-endpoints)
-        - [Route Endpoints](#route-endpoints)
-        - [Plugin Endpoints](#plugin-endpoints)
-    - [Proxy API](#proxy-api)
-        - [Proxy Endpoint](#proxy-endpoint)
-        - [API Call Examples](#api-call-examples)
+  - [Error Response Format](#error-response-format)
+  - [Error Source Distinction](#error-source-distinction)
+    - [X-OAGW-Target-Host Error Examples](#x-oagw-target-host-error-examples)
+  - [Management API](#management-api)
+    - [Upstream Endpoints](#upstream-endpoints)
+    - [Route Endpoints](#route-endpoints)
+    - [Plugin Endpoints](#plugin-endpoints)
+  - [Proxy API](#proxy-api)
+    - [Proxy Endpoint](#proxy-endpoint)
+    - [API Call Examples](#api-call-examples)
 - [Database Persistence](#database-persistence)
-    - [Data Model](#data-model)
-        - [Resource Identification Pattern](#resource-identification-pattern)
-        - [Entity Relationship](#entity-relationship)
-        - [Upstream Table](#upstream-table)
-        - [Route Table](#route-table)
-        - [Plugin Table](#plugin-table)
-    - [Common Queries](#common-queries)
-        - [Find Upstream by Alias (with tenant hierarchy and enabled inheritance)](#find-upstream-by-alias-with-tenant-hierarchy-and-enabled-inheritance)
-        - [List Upstreams for Tenant (with shadowing and enabled inheritance)](#list-upstreams-for-tenant-with-shadowing-and-enabled-inheritance)
-        - [Find Matching Route for Request](#find-matching-route-for-request)
-        - [Resolve Effective Configuration](#resolve-effective-configuration)
-        - [List Routes by Upstream](#list-routes-by-upstream)
-        - [Track Plugin Usage](#track-plugin-usage)
-        - [Delete Garbage-Collected Plugins](#delete-garbage-collected-plugins)
+  - [Data Model](#data-model)
+    - [Resource Identification Pattern](#resource-identification-pattern)
+    - [Entity Relationship](#entity-relationship)
+    - [Upstream Table](#upstream-table)
+    - [Route Table](#route-table)
+    - [Plugin Table](#plugin-table)
+  - [Common Queries](#common-queries)
+    - [Find Upstream by Alias (with tenant hierarchy and enabled inheritance)](#find-upstream-by-alias-with-tenant-hierarchy-and-enabled-inheritance)
+    - [List Upstreams for Tenant (with shadowing and enabled inheritance)](#list-upstreams-for-tenant-with-shadowing-and-enabled-inheritance)
+    - [Find Matching Route for Request](#find-matching-route-for-request)
+    - [Resolve Effective Configuration](#resolve-effective-configuration)
+    - [List Routes by Upstream](#list-routes-by-upstream)
+    - [Track Plugin Usage](#track-plugin-usage)
+    - [Delete Garbage-Collected Plugins](#delete-garbage-collected-plugins)
 - [Metrics and Observability](#metrics-and-observability)
-    - [Core Metrics](#core-metrics)
-    - [Cardinality Management](#cardinality-management)
-    - [Histogram Buckets](#histogram-buckets)
-    - [Metrics Endpoint](#metrics-endpoint)
+  - [Core Metrics](#core-metrics)
+  - [Cardinality Management](#cardinality-management)
+  - [Histogram Buckets](#histogram-buckets)
+  - [Metrics Endpoint](#metrics-endpoint)
 - [Audit Logging](#audit-logging)
-    - [Log Format](#log-format)
-    - [What is Logged](#what-is-logged)
-    - [What is NOT Logged](#what-is-not-logged)
-    - [Log Levels](#log-levels)
+  - [Log Format](#log-format)
+  - [What is Logged](#what-is-logged)
+  - [What is NOT Logged](#what-is-not-logged)
+  - [Log Levels](#log-levels)
 - [Error Handling](#error-handling)
-    - [Error Types](#error-types)
+  - [Error Types](#error-types)
 - [Review](#review)
 - [Future Developments](#future-developments)
 - [Feature Breakdown by Phase](#feature-breakdown-by-phase)
-    - [Phase 0 (p0): MVP - OpenAI Integration Ready](#phase-0-p0-mvp-openai-integration-ready)
-        - [[ ] F-P0-001: Module Scaffold + SDK Boundary](#f-p0-001-module-scaffold-sdk-boundary)
-        - [[ ] F-P0-002: DB Schema + SeaORM Entities (Upstream, Route)](#f-p0-002-db-schema-seaorm-entities-upstream-route)
-        - [[ ] F-P0-003: Types Registry Registration (Schemas + Builtins)](#f-p0-003-types-registry-registration-schemas-builtins)
-        - [[ ] F-P0-004: Management API - Upstream CRUD (Minimal)](#f-p0-004-management-api-upstream-crud-minimal)
-        - [[ ] F-P0-005: Management API - Route CRUD (HTTP Only)](#f-p0-005-management-api-route-crud-http-only)
-        - [[ ] F-P0-006: Proxy Endpoint - Basic Routing (HTTP)](#f-p0-006-proxy-endpoint-basic-routing-http)
-        - [[ ] F-P0-007: Request/Body Validation Guardrail Set (HTTP)](#f-p0-007-requestbody-validation-guardrail-set-http)
-        - [[ ] F-P0-008: Header Transformation + SSRF Baseline](#f-p0-008-header-transformation-ssrf-baseline)
-        - [[ ] F-P0-009: Builtin Auth Plugin - API Key Injection (OpenAI)](#f-p0-009-builtin-auth-plugin-api-key-injection-openai)
-        - [[ ] F-P0-010: Rate Limiting (Basic Token Bucket)](#f-p0-010-rate-limiting-basic-token-bucket)
-        - [[ ] F-P0-011: Streaming Proxy Support (HTTP + SSE)](#f-p0-011-streaming-proxy-support-http-sse)
-        - [[ ] F-P0-012: Minimal Error Surface (Gateway vs Upstream)](#f-p0-012-minimal-error-surface-gateway-vs-upstream)
-    - [Phase 1 (p1): Production-Ready Minimal](#phase-1-p1-production-ready-minimal)
-        - [[ ] F-P1-001: RFC 9457 Problem Details Everywhere](#f-p1-001-rfc-9457-problem-details-everywhere)
-        - [[ ] F-P1-002: AuthN/Z + Tenant Scoping (Management + Proxy)](#f-p1-002-authnz-tenant-scoping-management-proxy)
-        - [[ ] F-P1-003: Secure ORM Repository Hardening (No Raw SQL)](#f-p1-003-secure-orm-repository-hardening-no-raw-sql)
-        - [[ ] F-P1-004: Outbound HTTP Client Reliability (Pooling + Timeouts)](#f-p1-004-outbound-http-client-reliability-pooling-timeouts)
-        - [[ ] F-P1-005: Structured Audit Logging (Proxy + Config Changes)](#f-p1-005-structured-audit-logging-proxy-config-changes)
-        - [[ ] F-P1-006: Metrics + /metrics Endpoint (Auth-Protected)](#f-p1-006-metrics-metrics-endpoint-auth-protected)
-        - [[ ] F-P1-007: Header/Request Smuggling Defenses (Strict Parsing)](#f-p1-007-headerrequest-smuggling-defenses-strict-parsing)
-        - [[ ] F-P1-008: SSRF Guardrails (DNS/IP + Scheme Rules)](#f-p1-008-ssrf-guardrails-dnsip-scheme-rules)
-        - [[ ] F-P1-009: OpenAI “Usable in Prod” E2E Test Suite](#f-p1-009-openai-usable-in-prod-e2e-test-suite)
-    - [Phase 2 (p2): Scalability & Operational Maturity](#phase-2-p2-scalability-operational-maturity)
-        - [[ ] F-P2-001: Circuit Breaker (Config + Enforcement)](#f-p2-001-circuit-breaker-config-enforcement)
-        - [[ ] F-P2-002: Concurrency Control (In-Flight Limits)](#f-p2-002-concurrency-control-in-flight-limits)
-        - [[ ] F-P2-003: Backpressure Queueing (Bounded, Worker-Pool)](#f-p2-003-backpressure-queueing-bounded-worker-pool)
-        - [[ ] F-P2-004: Multi-Endpoint Load Balancing + Health](#f-p2-004-multi-endpoint-load-balancing-health)
-        - [[ ] F-P2-005: HTTP/2 Negotiation + Safe Capability Cache](#f-p2-005-http2-negotiation-safe-capability-cache)
-        - [[ ] F-P2-006: Config Caching + Invalidation](#f-p2-006-config-caching-invalidation)
-        - [[ ] F-P2-007: Graceful Shutdown + Draining](#f-p2-007-graceful-shutdown-draining)
-        - [[ ] F-P2-008: Operational Admin Surface (Protected)](#f-p2-008-operational-admin-surface-protected)
-    - [Phase 3 (p3): Advanced Product Features / Enterprise](#phase-3-p3-advanced-product-features-enterprise)
-        - [[ ] F-P3-001: Tenant Hierarchy Awareness (Core)](#f-p3-001-tenant-hierarchy-awareness-core)
-        - [[ ] F-P3-002: Alias Resolution + Shadowing (Hierarchy)](#f-p3-002-alias-resolution-shadowing-hierarchy)
-        - [[ ] F-P3-003: Hierarchical Configuration Sharing Modes (Upstream + Route)](#f-p3-003-hierarchical-configuration-sharing-modes-upstream-route)
-        - [[ ] F-P3-004: Resource Identification & Binding Model Alignment](#f-p3-004-resource-identification-binding-model-alignment)
-        - [[ ] F-P3-005: Rate Limiting Advanced Semantics](#f-p3-005-rate-limiting-advanced-semantics)
-        - [[ ] F-P3-006: Plugin Framework (Builtin + Custom)](#f-p3-006-plugin-framework-builtin-custom)
-        - [[ ] F-P3-007: Starlark Runtime + Sandbox](#f-p3-007-starlark-runtime-sandbox)
-        - [[ ] F-P3-008: Plugin Persistence + Management API](#f-p3-008-plugin-persistence-management-api)
-        - [[ ] F-P3-009: Plugin Usage Tracking + Garbage Collection Job](#f-p3-009-plugin-usage-tracking-garbage-collection-job)
-        - [[ ] F-P3-010: Builtin Plugin Suite (Auth/Guard/Transform)](#f-p3-010-builtin-plugin-suite-authguardtransform)
-        - [[ ] F-P3-011: CORS (Preflight + Policy Enforcement)](#f-p3-011-cors-preflight-policy-enforcement)
-        - [[ ] F-P3-012: Protocol Expansion (WebSocket + WebTransport)](#f-p3-012-protocol-expansion-websocket-webtransport)
-        - [[ ] F-P3-013: Streaming Lifecycle Semantics (Non-HTTP/1)](#f-p3-013-streaming-lifecycle-semantics-non-http1)
-        - [[ ] F-P3-014: Full OData Query Support on List Endpoints](#f-p3-014-full-odata-query-support-on-list-endpoints)
-    - [Phase 4 (p4): Nice-to-Have / Long Tail](#phase-4-p4-nice-to-have-long-tail)
-        - [[ ] F-P4-001: TLS Certificate Pinning](#f-p4-001-tls-certificate-pinning)
-        - [[ ] F-P4-002: Mutual TLS (mTLS) to Upstreams](#f-p4-002-mutual-tls-mtls-to-upstreams)
-        - [[ ] F-P4-003: Distributed Tracing (OpenTelemetry)](#f-p4-003-distributed-tracing-opentelemetry)
-        - [[ ] F-P4-004: gRPC Proxying + Optional JSON Transcoding](#f-p4-004-grpc-proxying-optional-json-transcoding)
-        - [[ ] F-P4-005: WebTransport (wt) Advanced Refinements](#f-p4-005-webtransport-wt-advanced-refinements)
-        - [[ ] F-P4-006: Starlark Standard Library Extensions (Carefully Scoped)](#f-p4-006-starlark-standard-library-extensions-carefully-scoped)
-        - [[ ] F-P4-007: Advanced Metrics and Diagnostics](#f-p4-007-advanced-metrics-and-diagnostics)
-        - [[ ] F-P4-008: No-Automatic-Retry Invariant](#f-p4-008-no-automatic-retry-invariant)
+  - [Phase 0 (p0): MVP - OpenAI Integration Ready](#phase-0-p0-mvp-openai-integration-ready)
+    - [[ ] F-P0-001: Module Scaffold + SDK Boundary](#f-p0-001-module-scaffold-sdk-boundary)
+    - [[ ] F-P0-002: DB Schema + SeaORM Entities (Upstream, Route)](#f-p0-002-db-schema-seaorm-entities-upstream-route)
+    - [[ ] F-P0-003: Types Registry Registration (Schemas + Builtins)](#f-p0-003-types-registry-registration-schemas-builtins)
+    - [[ ] F-P0-004: Management API - Upstream CRUD (Minimal)](#f-p0-004-management-api-upstream-crud-minimal)
+    - [[ ] F-P0-005: Management API - Route CRUD (HTTP Only)](#f-p0-005-management-api-route-crud-http-only)
+    - [[ ] F-P0-006: Proxy Endpoint - Basic Routing (HTTP)](#f-p0-006-proxy-endpoint-basic-routing-http)
+    - [[ ] F-P0-007: Request/Body Validation Guardrail Set (HTTP)](#f-p0-007-requestbody-validation-guardrail-set-http)
+    - [[ ] F-P0-008: Header Transformation + SSRF Baseline](#f-p0-008-header-transformation-ssrf-baseline)
+    - [[ ] F-P0-009: Builtin Auth Plugin - API Key Injection (OpenAI)](#f-p0-009-builtin-auth-plugin-api-key-injection-openai)
+    - [[ ] F-P0-010: Rate Limiting (Basic Token Bucket)](#f-p0-010-rate-limiting-basic-token-bucket)
+    - [[ ] F-P0-011: Streaming Proxy Support (HTTP + SSE)](#f-p0-011-streaming-proxy-support-http-sse)
+    - [[ ] F-P0-012: Minimal Error Surface (Gateway vs Upstream)](#f-p0-012-minimal-error-surface-gateway-vs-upstream)
+  - [Phase 1 (p1): Production-Ready Minimal](#phase-1-p1-production-ready-minimal)
+    - [[ ] F-P1-001: RFC 9457 Problem Details Everywhere](#f-p1-001-rfc-9457-problem-details-everywhere)
+    - [[ ] F-P1-002: AuthN/Z + Tenant Scoping (Management + Proxy)](#f-p1-002-authnz-tenant-scoping-management-proxy)
+    - [[ ] F-P1-003: Secure ORM Repository Hardening (No Raw SQL)](#f-p1-003-secure-orm-repository-hardening-no-raw-sql)
+    - [[ ] F-P1-004: Outbound HTTP Client Reliability (Pooling + Timeouts)](#f-p1-004-outbound-http-client-reliability-pooling-timeouts)
+    - [[ ] F-P1-005: Structured Audit Logging (Proxy + Config Changes)](#f-p1-005-structured-audit-logging-proxy-config-changes)
+    - [[ ] F-P1-006: Metrics + /metrics Endpoint (Auth-Protected)](#f-p1-006-metrics-metrics-endpoint-auth-protected)
+    - [[ ] F-P1-007: Header/Request Smuggling Defenses (Strict Parsing)](#f-p1-007-headerrequest-smuggling-defenses-strict-parsing)
+    - [[ ] F-P1-008: SSRF Guardrails (DNS/IP + Scheme Rules)](#f-p1-008-ssrf-guardrails-dnsip-scheme-rules)
+    - [[ ] F-P1-009: OpenAI “Usable in Prod” E2E Test Suite](#f-p1-009-openai-usable-in-prod-e2e-test-suite)
+  - [Phase 2 (p2): Scalability & Operational Maturity](#phase-2-p2-scalability-operational-maturity)
+    - [[ ] F-P2-001: Circuit Breaker (Config + Enforcement)](#f-p2-001-circuit-breaker-config-enforcement)
+    - [[ ] F-P2-002: Concurrency Control (In-Flight Limits)](#f-p2-002-concurrency-control-in-flight-limits)
+    - [[ ] F-P2-003: Backpressure Queueing (Bounded, Worker-Pool)](#f-p2-003-backpressure-queueing-bounded-worker-pool)
+    - [[ ] F-P2-004: Multi-Endpoint Load Balancing + Health](#f-p2-004-multi-endpoint-load-balancing-health)
+    - [[ ] F-P2-005: HTTP/2 Negotiation + Safe Capability Cache](#f-p2-005-http2-negotiation-safe-capability-cache)
+    - [[ ] F-P2-006: Config Caching + Invalidation](#f-p2-006-config-caching-invalidation)
+    - [[ ] F-P2-007: Graceful Shutdown + Draining](#f-p2-007-graceful-shutdown-draining)
+    - [[ ] F-P2-008: Operational Admin Surface (Protected)](#f-p2-008-operational-admin-surface-protected)
+  - [Phase 3 (p3): Advanced Product Features / Enterprise](#phase-3-p3-advanced-product-features-enterprise)
+    - [[ ] F-P3-001: Tenant Hierarchy Awareness (Core)](#f-p3-001-tenant-hierarchy-awareness-core)
+    - [[ ] F-P3-002: Alias Resolution + Shadowing (Hierarchy)](#f-p3-002-alias-resolution-shadowing-hierarchy)
+    - [[ ] F-P3-003: Hierarchical Configuration Sharing Modes (Upstream + Route)](#f-p3-003-hierarchical-configuration-sharing-modes-upstream-route)
+    - [[ ] F-P3-004: Resource Identification & Binding Model Alignment](#f-p3-004-resource-identification-binding-model-alignment)
+    - [[ ] F-P3-005: Rate Limiting Advanced Semantics](#f-p3-005-rate-limiting-advanced-semantics)
+    - [[ ] F-P3-006: Plugin Framework (Builtin + Custom)](#f-p3-006-plugin-framework-builtin-custom)
+    - [[ ] F-P3-007: Starlark Runtime + Sandbox](#f-p3-007-starlark-runtime-sandbox)
+    - [[ ] F-P3-008: Plugin Persistence + Management API](#f-p3-008-plugin-persistence-management-api)
+    - [[ ] F-P3-009: Plugin Usage Tracking + Garbage Collection Job](#f-p3-009-plugin-usage-tracking-garbage-collection-job)
+    - [[ ] F-P3-010: Builtin Plugin Suite (Auth/Guard/Transform)](#f-p3-010-builtin-plugin-suite-authguardtransform)
+    - [[ ] F-P3-011: CORS (Preflight + Policy Enforcement)](#f-p3-011-cors-preflight-policy-enforcement)
+    - [[ ] F-P3-012: Protocol Expansion (WebSocket + WebTransport)](#f-p3-012-protocol-expansion-websocket-webtransport)
+    - [[ ] F-P3-013: Streaming Lifecycle Semantics (Non-HTTP/1)](#f-p3-013-streaming-lifecycle-semantics-non-http1)
+    - [[ ] F-P3-014: Full OData Query Support on List Endpoints](#f-p3-014-full-odata-query-support-on-list-endpoints)
+  - [Phase 4 (p4): Nice-to-Have / Long Tail](#phase-4-p4-nice-to-have-long-tail)
+    - [[ ] F-P4-001: TLS Certificate Pinning](#f-p4-001-tls-certificate-pinning)
+    - [[ ] F-P4-002: Mutual TLS (mTLS) to Upstreams](#f-p4-002-mutual-tls-mtls-to-upstreams)
+    - [[ ] F-P4-003: Distributed Tracing (OpenTelemetry)](#f-p4-003-distributed-tracing-opentelemetry)
+    - [[ ] F-P4-004: gRPC Proxying + Optional JSON Transcoding](#f-p4-004-grpc-proxying-optional-json-transcoding)
+    - [[ ] F-P4-005: WebTransport (wt) Advanced Refinements](#f-p4-005-webtransport-wt-advanced-refinements)
+    - [[ ] F-P4-006: Starlark Standard Library Extensions (Carefully Scoped)](#f-p4-006-starlark-standard-library-extensions-carefully-scoped)
+    - [[ ] F-P4-007: Advanced Metrics and Diagnostics](#f-p4-007-advanced-metrics-and-diagnostics)
+    - [[ ] F-P4-008: No-Automatic-Retry Invariant](#f-p4-008-no-automatic-retry-invariant)
 - [Implementation Tracking](#implementation-tracking)
 
 <!-- TOC END -->
@@ -161,44 +161,20 @@ The Outbound API Gateway (OAGW) provides a centralized layer for routing, authen
 
 ### Component Architecture
 
-OAGW is designed with three distinct components to enable independent scaling and clear separation of concerns:
+OAGW is implemented as a single module (`oagw` crate) with internal service isolation via domain traits:
 
-1. **API Handler**: Entry point for all requests. Handles incoming authentication, rate limiting, and routes requests to either Data Plane (proxy operations) or Control Plane (
-   configuration management).
+1. **Control Plane** (`ControlPlaneService` trait): Manages configuration data. Handles CRUD operations for upstreams/routes, alias resolution, and repository access. Implemented in `domain/services/management.rs`.
 
-2. **Control Plane (DP)**: Manages configuration data and provides fast config resolution. Handles CRUD operations for upstreams/routes/plugins, owns database access, and
-   implements multi-layer caching (L1 in-memory + optional L2 Redis).
-
-3. **Data Plane (CP)**: Orchestrates proxy requests to external services. Calls Control Plane for configuration resolution, validates policies, executes HTTP calls to upstream
-   services, and manages plugin execution.
+2. **Data Plane** (`DataPlaneService` trait): Orchestrates proxy requests to external services. Resolves upstream/route configuration via Control Plane, executes auth plugins, builds outbound HTTP requests, and forwards them to upstream services. Implemented in `infra/proxy/service.rs`.
 
 **Request Flow**:
 
-- Management operations (`POST /upstreams`, `PUT /routes`, etc.) → API Handler → **Control Plane**
-- Proxy operations (`GET /proxy/{alias}/*`) → API Handler → **Data Plane** → Control Plane (config resolution) → Data Plane (execute)
+- Management operations (`POST /upstreams`, `PUT /routes`, etc.) → REST handler → **ControlPlaneService** → Repository
+- Proxy operations (`GET /proxy/{alias}/*`) → REST handler → **DataPlaneService** → ControlPlaneService (config resolution) → HTTP client (upstream call)
 
-**Deployment**: Modkit framework handles both single-executable and microservice deployment modes, wiring components via in-process function calls or RPC transparently.
+**Deployment**: Single-executable via ModKit framework. All services are wired in-process through trait-based dependency injection.
 
-For detailed architectural decisions, see:
-
-- [ADR: Component Architecture](./docs/adr-component-architecture.md)
-- [ADR: Request Routing](./docs/adr-request-routing.md)
-
-### Terminology Note
-
-**Crate Names vs. Component Terminology**: Due to historical naming decisions, crate names do not align with component terminology:
-
-| Crate Name | Component Responsibility            | Standard Terminology |
-|------------|-------------------------------------|----------------------|
-| `oagw-cp`  | Configuration management, CRUD      | Control Plane        |
-| `oagw-dp`  | Proxy execution, request processing | Data Plane           |
-
-Throughout this document, we use industry-standard terminology:
-
-- **Control Plane** = configuration/policy management (implemented in `oagw-cp` crate)
-- **Data Plane** = request processing/proxying (implemented in `oagw-dp` crate)
-
-When reading code or crate references, remember this mapping.
+For detailed architectural decisions, see [ADR: Component Architecture](./docs/adr-component-architecture.md).
 
 ### Core Capabilities
 
@@ -227,62 +203,47 @@ Service Dependencies Map
 - **Upstream Service**: External services that the OAGW interacts with to fulfill API requests.
 - **Route**: A defined path in the OAGW that maps incoming requests to specific upstream services.
 - **Plugin**: Modular components that can be applied to requests for additional functionality (e.g., logging, transformation, authentication).
-- **API Handler**: Entry point component that routes requests based on path
-- **Data Plane (CP)**: Orchestrates proxy requests and executes calls to external services
-- **Control Plane (DP)**: Manages configuration data with multi-layer caching
+- **Data Plane**: Internal service that orchestrates proxy requests and executes calls to external services (`DataPlaneService` trait)
+- **Control Plane**: Internal service that manages configuration data and resolution (`ControlPlaneService` trait)
 
 ### Request Flow
 
 #### Management Operations Flow
 
-Configuration management operations (CRUD for upstreams, routes, plugins) flow directly to Control Plane:
+Configuration management operations (CRUD for upstreams, routes) flow through REST handlers to ControlPlaneService:
 
 ```
 Client Request: POST /api/oagw/v1/upstreams
 │
-└─→ API Handler
-    ├─ Incoming authentication (validate Bearer token)
-    ├─ Incoming rate limiting
-    └─ Route to Control Plane (oagw-dp)
-        │
-        └─→ Control Plane (oagw-dp)
-            ├─ Validate request (permissions, schema)
-            ├─ Write to database
-            ├─ Invalidate caches (L1, L2)
-            └─ Return result
+└─→ REST Handler (api/rest/handlers/management.rs)
+    ├─ Extract SecurityContext (authentication via modkit-auth)
+    ├─ Parse and validate request DTO
+    └─→ ControlPlaneService (domain/services/management.rs)
+        ├─ Extract tenant_id from SecurityContext
+        ├─ Convert DTO → domain model
+        ├─ Write to repository (infra/storage/)
+        └─ Return domain model → DTO → HTTP response
 ```
 
 #### Proxy Operations Flow
 
-Proxy requests flow through Data Plane which calls Control Plane for config resolution:
+Proxy requests flow through REST handler to DataPlaneService, which calls ControlPlaneService internally:
 
 ```
 Client Request: GET /api/oagw/v1/proxy/openai/v1/chat/completions
 │
-└─→ API Handler
-    ├─ Incoming authentication
-    ├─ Incoming rate limiting
-    └─ Route to Data Plane (oagw-cp)
-        │
-        └─→ Data Plane (oagw-cp) - Proxy Orchestration
-            ├─ Check DP L1 cache for upstream config
-            │  └─ (miss) → Call CP.resolve_upstream("openai", tenant_id)
-            │                │
-            │                └─→ Control Plane (oagw-dp) - Config Resolution
-            │                    ├─ Check CP L1 cache
-            │                    ├─ Check CP L2 cache (Redis, if enabled)
-            │                    ├─ Query database (if cache miss)
-            │                    └─ Return UpstreamConfig
-            │
-            ├─ Check DP L1 cache for route config
-            │  └─ (miss) → Call CP.resolve_route(upstream_id, path)
-            │
-            ├─ Execute auth plugin (inject credentials)
-            ├─ Execute guard plugins (validate, rate limit)
-            ├─ Execute transform plugins (modify request)
-            ├─ HTTP call to external service (api.openai.com)
-            ├─ Execute transform plugins (modify response)
-            └─ Return response to client
+└─→ REST Handler (api/rest/handlers/proxy.rs)
+    ├─ Extract SecurityContext
+    ├─ Parse alias ("openai") and path suffix from URI
+    └─→ DataPlaneService (infra/proxy/service.rs)
+        ├─ ControlPlaneService.resolve_upstream("openai", tenant_id)
+        │   └─ Repository lookup by alias + tenant
+        ├─ ControlPlaneService.resolve_route(upstream_id, path)
+        │   └─ Repository lookup by upstream + path match
+        ├─ Execute auth plugin (inject credentials via AuthPluginRegistry)
+        ├─ Build outbound HTTP request (headers, query params, body)
+        ├─ HTTP call to external service (api.openai.com)
+        └─ Return response → HTTP response to client
 ```
 
 For detailed flow diagrams and caching strategies, see:
@@ -293,43 +254,52 @@ For detailed flow diagrams and caching strategies, see:
 
 ### Module Structure
 
-OAGW is organized into separate library crates, allowing modkit to wire them together in either single-executable or microservice deployment modes:
+OAGW is organized as two crates with internal DDD-Light layering in the main module:
 
 ```
 modules/system/oagw/
-├── oagw-sdk/          # Public API traits, models, errors
-│                      # Exports: OAGWClientV1, AuthPlugin, GuardPlugin, TransformPlugin traits
-│                      # Used by: external consumers, other modules
+├── oagw-sdk/              # Public API: ServiceGatewayClientV1 trait, models, errors
+│   └── src/
+│       ├── lib.rs         # Re-exports
+│       ├── api.rs         # ServiceGatewayClientV1 trait definition
+│       ├── models.rs      # SDK types (Upstream, Route, CreateUpstreamRequest, etc.)
+│       └── error.rs       # ServiceGatewayError
 │
-├── oagw-core/         # Shared internals: plugin traits, utilities
-│                      # Exports: ControlPlaneService, DataPlaneService traits
-│                      # Used by: oagw-api, oagw-cp, oagw-dp, plugin modules
-│
-├── oagw-api/          # API Handler implementation
-│                      # Implements: request routing, incoming auth/rate limiting
-│                      # Routes: /proxy/* → CP, /upstreams/* → DP
-│
-├── oagw-cp/           # Data Plane implementation
-│                      # Implements: ControlPlaneService trait
-│                      # Responsibilities: proxy orchestration, plugin execution
-│                      # Includes: built-in plugins (auth, guard, transform)
-│
-└── oagw-dp/           # Control Plane implementation
-                       # Implements: DataPlaneService trait
-                       # Responsibilities: config CRUD, L1/L2 caching, DB access
+└── oagw/                  # Single module crate with internal service isolation
+    └── src/
+        ├── lib.rs         # Public exports
+        ├── module.rs      # ModKit module wiring
+        ├── config.rs      # OagwConfig
+        ├── api/rest/      # Transport layer
+        │   ├── handlers/  # Axum HTTP handlers (management + proxy)
+        │   ├── routes/    # OperationBuilder route registration
+        │   ├── dto.rs     # REST DTOs (serde + utoipa)
+        │   ├── error.rs   # Error response mapping
+        │   └── extractors.rs
+        ├── domain/        # Business logic (no infra dependencies)
+        │   ├── services/  # ControlPlaneService + DataPlaneService traits & impls
+        │   ├── plugin/    # AuthPlugin trait definition
+        │   ├── dto.rs     # Internal domain types (ProxyContext, ProxyResponse, etc.)
+        │   ├── repo.rs    # Repository traits (UpstreamRepository, RouteRepository)
+        │   └── error.rs   # DomainError
+        └── infra/         # Infrastructure implementations
+            ├── proxy/     # DataPlaneServiceImpl (reqwest HTTP client)
+            ├── storage/   # Repository impls (DashMap-based in-memory stores)
+            ├── plugin/    # AuthPluginRegistry + built-in plugins (ApiKey, NoOp)
+            └── type_provisioning.rs  # GTS type registration
 ```
 
 **Crate Naming Conventions**:
 
-- Directory names: hyphenated (`oagw-sdk`, `oagw-cp`)
-- Package names: `cf-` prefix (`cf-oagw-sdk`, `cf-oagw-cp`)
-- Library names: underscored (`oagw_sdk`, `oagw_cp`)
+- Directory names: hyphenated (`oagw-sdk`, `oagw`)
+- Package names: `cf-` prefix (`cf-oagw-sdk`, `cf-oagw`)
+- Library names: underscored (`oagw_sdk`, `oagw`)
 
 **Plugin Modules** (external):
 
 - Naming: `cf-oagw-plugin-<name>` (e.g., `cf-oagw-plugin-oauth2`, `cf-oagw-plugin-jwt-auth`)
-- Implement: Plugin traits from `oagw-sdk`
-- Registered: Via modkit during CP initialization
+- Implement: `AuthPlugin` trait from `oagw-sdk`
+- Registered: Via `AuthPluginRegistry` during module initialization
 
 For module structure decisions and trade-offs, see [ADR: Component Architecture](./docs/adr-component-architecture.md).
 
@@ -385,19 +355,19 @@ The `:authority` pseudo-header does NOT replace `X-OAGW-Target-Host` for routing
 
 OAGW provides a plugin system for extending request/response processing. Plugins are executed by Data Plane during proxy operations.
 
-**Plugin Types** (defined in `oagw-core`):
+**Plugin Types** (defined in `oagw-sdk`):
 
-1. **AuthPlugin** (`gts.x.core.oagw.plugin.auth.v1~*`)
+1. **AuthPlugin** (`gts.x.core.oagw.auth_plugin.v1~*`)
     - Purpose: Inject authentication credentials into requests
     - Examples: API key, OAuth2, Bearer token, Basic auth
     - Execution: Once per request, before guards
 
-2. **GuardPlugin** (`gts.x.core.oagw.plugin.guard.v1~*`)
+2. **GuardPlugin** (`gts.x.core.oagw.guard_plugin.v1~*`)
     - Purpose: Validate requests and enforce policies (can reject)
     - Examples: Timeout enforcement, CORS validation, rate limiting
     - Execution: After auth, before transform
 
-3. **TransformPlugin** (`gts.x.core.oagw.plugin.transform.v1~*`)
+3. **TransformPlugin** (`gts.x.core.oagw.transform_plugin.v1~*`)
     - Purpose: Modify request/response/error data
     - Examples: Logging, metrics collection, request ID propagation
     - Execution: Before and after proxy call
@@ -414,7 +384,7 @@ Incoming Request
   -> Return to client
 ```
 
-**Built-in Plugins** (included in `oagw-cp`):
+**Built-in Plugins** (included in `oagw` crate, `infra/plugin/`):
 
 - Auth: `ApiKeyAuthPlugin`, `BasicAuthPlugin`, `BearerTokenAuthPlugin`, `OAuth2ClientCredPlugin`
 - Guard: `TimeoutGuardPlugin`, `CorsGuardPlugin`, `RateLimitGuardPlugin`
@@ -438,9 +408,9 @@ All OAGW API requests require Bearer token authentication.
 |--------------------------------------------------------------|----------------------------------------|
 | `gts.x.core.oagw.upstream.v1~:{create;override;read;delete}` | Create/Override, read, delete upstream |
 | `gts.x.core.oagw.route.v1~:{create;override;read;delete}`    | Create/Override, read, delete route    |
-| `gts.x.core.oagw.plugin.auth.v1~:{create;read;delete}`       | Create, read, delete auth plugin       |
-| `gts.x.core.oagw.plugin.guard.v1~:{create;read;delete}`      | Create, read, delete guard plugin      |
-| `gts.x.core.oagw.plugin.transform.v1~:{create;read;delete}`  | Create, read, delete transform plugin  |
+| `gts.x.core.oagw.auth_plugin.v1~:{create;read;delete}`       | Create, read, delete auth plugin       |
+| `gts.x.core.oagw.guard_plugin.v1~:{create;read;delete}`      | Create, read, delete guard plugin      |
+| `gts.x.core.oagw.transform_plugin.v1~:{create;read;delete}`  | Create, read, delete transform plugin  |
 
 **Proxy API** (`/api/oagw/v1/proxy/{alias}/*`):
 
@@ -817,9 +787,9 @@ For detailed alias resolution and compatibility rules, see [ADR: Resource Identi
 
 #### Plugin Types
 
-- `gts.x.core.oagw.plugin.auth.v1~*` - Authentication plugin for credential injection. Only upstream level. One per upstream.
-- `gts.x.core.oagw.plugin.guard.v1~*` - Validation and policy enforcement plugin. Can reject requests. Upstream/Route levels. Multiple per level.
-- `gts.x.core.oagw.plugin.transform.v1~*` - Request/response transformation plugin. Upstream/Route levels. Multiple per level.
+- `gts.x.core.oagw.auth_plugin.v1~*` - Authentication plugin for credential injection. Only upstream level. One per upstream.
+- `gts.x.core.oagw.guard_plugin.v1~*` - Validation and policy enforcement plugin. Can reject requests. Upstream/Route levels. Multiple per level.
+- `gts.x.core.oagw.transform_plugin.v1~*` - Request/response transformation plugin. Upstream/Route levels. Multiple per level.
 
 Plugins can be built-in or custom Starlark scripts.
 
@@ -829,15 +799,15 @@ All plugins are identified using **anonymous GTS identifiers** in the API, but s
 
 **Builtin Plugins** (system-provided):
 
-- API: Named GTS identifier `gts.x.core.oagw.plugin.{type}.v1~x.core.oagw.{name}.v1`
+- API: Named GTS identifier `gts.x.core.oagw.{type}_plugin.v1~x.core.oagw.{name}.v1`
 - Hardcoded in Rust, no database storage
-- Example: `gts.x.core.oagw.plugin.transform.v1~x.core.oagw.logging.v1`
+- Example: `gts.x.core.oagw.transform_plugin.v1~x.core.oagw.logging.v1`
 
 **Custom Plugins** (tenant-defined Starlark):
 
-- API: Anonymous GTS identifier `gts.x.core.oagw.plugin.{type}.v1~{uuid}`
+- API: Anonymous GTS identifier `gts.x.core.oagw.{type}_plugin.v1~{uuid}`
 - Database: UUID only (without GTS prefix)
-- Example API: `gts.x.core.oagw.plugin.guard.v1~550e8400-e29b-41d4-a716-446655440000`
+- Example API: `gts.x.core.oagw.guard_plugin.v1~550e8400-e29b-41d4-a716-446655440000`
 - Example DB: `550e8400-e29b-41d4-a716-446655440000`
 
 #### Plugin Lifecycle Management
@@ -862,8 +832,8 @@ All plugins are identified using **anonymous GTS identifiers** in the API, but s
   "upstream": {
     "plugins": {
       "items": [
-        "gts.x.core.oagw.plugin.transform.v1~x.core.oagw.logging.v1",
-        "gts.x.core.oagw.plugin.guard.v1~550e8400-e29b-41d4-a716-446655440000"
+        "gts.x.core.oagw.transform_plugin.v1~x.core.oagw.logging.v1",
+        "gts.x.core.oagw.guard_plugin.v1~550e8400-e29b-41d4-a716-446655440000"
       ]
     }
   }
@@ -1123,10 +1093,10 @@ def merge_tags(ancestor_tags, descendant_tags):
   "server": {
     "endpoints": [ { "scheme": "https", "host": "api.openai.com", "port": 443 } ]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "alias": "api.openai.com",
   "auth": {
-    "type": "gts.x.core.oagw.plugin.auth.v1~x.core.oagw.apikey.v1",
+    "type": "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1",
     "sharing": "inherit",
     "config": {
       "header": "Authorization",
@@ -1148,7 +1118,7 @@ def merge_tags(ancestor_tags, descendant_tags):
   "plugins": {
     "sharing": "inherit",
     "items": [
-      "gts.x.core.oagw.plugin.transform.v1~x.core.oagw.logging.v1"
+      "gts.x.core.oagw.transform_plugin.v1~x.core.oagw.logging.v1"
     ]
   }
 }
@@ -1161,9 +1131,9 @@ def merge_tags(ancestor_tags, descendant_tags):
   "server": {
     "endpoints": [ { "scheme": "https", "host": "api.openai.com", "port": 443 } ]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "auth": {
-    "type": "gts.x.core.oagw.plugin.auth.v1~x.core.oagw.apikey.v1",
+    "type": "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1",
     "config": {
       "header": "Authorization",
       "prefix": "Bearer ",
@@ -1178,7 +1148,7 @@ def merge_tags(ancestor_tags, descendant_tags):
   },
   "plugins": {
     "items": [
-      "gts.x.core.oagw.plugin.transform.v1~x.core.oagw.metrics.v1"
+      "gts.x.core.oagw.transform_plugin.v1~x.core.oagw.metrics.v1"
     ]
   }
 }
@@ -1189,7 +1159,7 @@ def merge_tags(ancestor_tags, descendant_tags):
 ```json
 {
   "auth": {
-    "type": "gts.x.core.oagw.plugin.auth.v1~x.core.oagw.apikey.v1",
+    "type": "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1",
     "config": {
       "secret_ref": "cred://my-own-openai-key"
     },
@@ -1204,8 +1174,8 @@ def merge_tags(ancestor_tags, descendant_tags):
   },
   "plugins": {
     "items": [
-      "gts.x.core.oagw.plugin.transform.v1~x.core.oagw.logging.v1",
-      "gts.x.core.oagw.plugin.transform.v1~x.core.oagw.metrics.v1"
+      "gts.x.core.oagw.transform_plugin.v1~x.core.oagw.logging.v1",
+      "gts.x.core.oagw.transform_plugin.v1~x.core.oagw.metrics.v1"
     ],
     "note": "partner.plugins + customer.plugins (sharing: inherit)"
   }
@@ -1365,8 +1335,8 @@ For detailed resource identification and binding model, see [ADR: Resource Ident
     "protocol": {
       "type": "string",
       "enum": [
-        "gts.x.core.oagw.protocol.v1~x.core.http.v1",
-        "gts.x.core.oagw.protocol.v1~x.core.grpc.v1"
+        "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+        "gts.x.core.oagw.protocol.v1~x.core.oagw.grpc.v1"
       ],
       "format": "gts-identifier",
       "description": "Protocol used to connect to the upstream service."
@@ -1378,7 +1348,7 @@ For detailed resource identification and binding model, see [ADR: Resource Ident
           "type": "string",
           "format": "gts-identifier",
           "examples": [
-            "gts.x.core.oagw.plugin.auth.v1~x.core.oagw.apikey.v1"
+            "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1"
           ],
           "description": "Authentication plugin type for the upstream service."
         },
@@ -1864,7 +1834,7 @@ Examples:
 
 ### Auth Plugin
 
-**Base type**: `gts.x.core.oagw.plugin.auth.v1~`
+**Base type**: `gts.x.core.oagw.auth_plugin.v1~`
 
 Auth plugins handle outbound authentication to upstream services. Only one auth plugin per upstream.
 
@@ -1882,16 +1852,16 @@ Auth plugins handle outbound authentication to upstream services. Only one auth 
       "type": "string",
       "format": "gts-identifier",
       "examples": [
-        "gts.x.core.oagw.plugin.auth.v1~x.core.oagw.apikey.v1",
-        "gts.x.core.oagw.plugin.auth.v1~acme.billing.custom_auth.v1"
+        "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1",
+        "gts.x.core.oagw.auth_plugin.v1~acme.billing.oagw.custom_auth.v1"
       ]
     },
     "type": {
       "type": "string",
       "format": "gts-identifier",
       "enum": [
-        "gts.x.core.oagw.plugin.type.v1~x.core.oagw.builtin.v1",
-        "gts.x.core.oagw.plugin.type.v1~x.core.oagw.starlark.v1"
+        "gts.x.core.oagw.plugin_type.v1~x.core.oagw.builtin.v1",
+        "gts.x.core.oagw.plugin_type.v1~x.core.oagw.starlark.v1"
       ]
     },
     "config_schema": {
@@ -1911,16 +1881,16 @@ Auth plugins handle outbound authentication to upstream services. Only one auth 
 
 **Builtin Authentication Plugins**
 
-- `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.noop.v1`
-- `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.apikey.v1`
-- `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.basic.v1`
-- `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.oauth2.client_cred.v1`
-- `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.oauth2.client_cred_basic.v1`
-- `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.bearer.v1`
+- `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.noop.v1`
+- `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1`
+- `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.basic.v1`
+- `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.oauth2_client_cred.v1`
+- `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.oauth2_client_cred_basic.v1`
+- `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.bearer.v1`
 
 ### Guard Plugin
 
-**Base type**: `gts.x.core.oagw.plugin.guard.v1~`
+**Base type**: `gts.x.core.oagw.guard_plugin.v1~`
 
 Guard plugins validate requests and enforce policies. Can reject requests before they reach upstream. Multiple guard plugins per upstream/route.
 
@@ -1936,16 +1906,16 @@ Guard plugins validate requests and enforce policies. Can reject requests before
       "type": "string",
       "format": "gts-identifier",
       "examples": [
-        "gts.x.core.oagw.plugin.guard.v1~x.core.oagw.timeout.v1",
-        "gts.x.core.oagw.plugin.guard.v1~acme.security.request_validator.v1"
+        "gts.x.core.oagw.guard_plugin.v1~x.core.oagw.timeout.v1",
+        "gts.x.core.oagw.guard_plugin.v1~acme.security.oagw.request_validator.v1"
       ]
     },
     "type": {
       "type": "string",
       "format": "gts-identifier",
       "enum": [
-        "gts.x.core.oagw.plugin.type.v1~x.core.oagw.builtin.v1",
-        "gts.x.core.oagw.plugin.type.v1~x.core.oagw.starlark.v1"
+        "gts.x.core.oagw.plugin_type.v1~x.core.oagw.builtin.v1",
+        "gts.x.core.oagw.plugin_type.v1~x.core.oagw.starlark.v1"
       ]
     },
     "config_schema": {
@@ -1967,14 +1937,14 @@ Guard plugins validate requests and enforce policies. Can reject requests before
 
 | Plugin ID                                                | Description                 |
 |----------------------------------------------------------|-----------------------------|
-| `gts.x.core.oagw.plugin.guard.v1~x.core.oagw.timeout.v1` | Request timeout enforcement |
-| `gts.x.core.oagw.plugin.guard.v1~x.core.oagw.cors.v1`    | CORS preflight validation   |
+| `gts.x.core.oagw.guard_plugin.v1~x.core.oagw.timeout.v1` | Request timeout enforcement |
+| `gts.x.core.oagw.guard_plugin.v1~x.core.oagw.cors.v1`    | CORS preflight validation   |
 
 **Note**: Circuit breaker is **core functionality** (not a plugin). See [ADR: Circuit Breaker](./docs/adr-circuit-breaker.md) for configuration and fallback strategies.
 
 ### Transform Plugin
 
-**Base type**: `gts.x.core.oagw.plugin.transform.v1~`
+**Base type**: `gts.x.core.oagw.transform_plugin.v1~`
 
 Transform plugins mutate requests and responses. Multiple transform plugins per upstream/route, executed in order.
 
@@ -1990,16 +1960,16 @@ Transform plugins mutate requests and responses. Multiple transform plugins per 
       "type": "string",
       "format": "gts-identifier",
       "examples": [
-        "gts.x.core.oagw.plugin.transform.v1~x.core.oagw.logging.v1",
-        "gts.x.core.oagw.plugin.transform.v1~acme.billing.redact_pii.v1"
+        "gts.x.core.oagw.transform_plugin.v1~x.core.oagw.logging.v1",
+        "gts.x.core.oagw.transform_plugin.v1~acme.billing.oagw.redact_pii.v1"
       ]
     },
     "type": {
       "type": "string",
       "format": "gts-identifier",
       "enum": [
-        "gts.x.core.oagw.plugin.type.v1~x.core.oagw.builtin.v1",
-        "gts.x.core.oagw.plugin.type.v1~x.core.oagw.starlark.v1"
+        "gts.x.core.oagw.plugin_type.v1~x.core.oagw.builtin.v1",
+        "gts.x.core.oagw.plugin_type.v1~x.core.oagw.starlark.v1"
       ]
     },
     "phase": {
@@ -2028,9 +1998,9 @@ Transform plugins mutate requests and responses. Multiple transform plugins per 
 
 | Plugin ID                                                       | Phase                    | Description                        |
 |-----------------------------------------------------------------|--------------------------|------------------------------------|
-| `gts.x.core.oagw.plugin.transform.v1~x.core.oagw.logging.v1`    | request, response, error | Request/response logging           |
-| `gts.x.core.oagw.plugin.transform.v1~x.core.oagw.metrics.v1`    | request, response        | Prometheus metrics                 |
-| `gts.x.core.oagw.plugin.transform.v1~x.core.oagw.request_id.v1` | request, response        | X-Request-ID injection/propagation |
+| `gts.x.core.oagw.transform_plugin.v1~x.core.oagw.logging.v1`    | request, response, error | Request/response logging           |
+| `gts.x.core.oagw.transform_plugin.v1~x.core.oagw.metrics.v1`    | request, response        | Prometheus metrics                 |
+| `gts.x.core.oagw.transform_plugin.v1~x.core.oagw.request_id.v1` | request, response        | X-Request-ID injection/propagation |
 
 **Starlark Plugin Context API**:
 
@@ -2099,7 +2069,7 @@ ctx.respond(status, body)       # Halt chain, return custom response
 
 ```json
 {
-  "id": "gts.x.core.oagw.plugin.guard.v1~550e8400-e29b-41d4-a716-446655440000",
+  "id": "gts.x.core.oagw.guard_plugin.v1~550e8400-e29b-41d4-a716-446655440000",
   "tenant_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
   "name": "request_validator",
   "description": "Validates request headers and body size",
@@ -2115,7 +2085,7 @@ ctx.respond(status, body)       # Halt chain, return custom response
 }
 ```
 
-**Plugin Source** (stored in `source_code` field or fetched via `GET /api/oagw/v1/plugins/gts.x.core.oagw.plugin.guard.v1~550e8400-e29b-41d4-a716-446655440000/source`):
+**Plugin Source** (stored in `source_code` field or fetched via `GET /api/oagw/v1/plugins/gts.x.core.oagw.guard_plugin.v1~550e8400-e29b-41d4-a716-446655440000/source`):
 
 ```starlark
 def on_request(ctx):
@@ -2134,7 +2104,7 @@ def on_request(ctx):
 
 ```json
 {
-  "id": "gts.x.core.oagw.plugin.transform.v1~6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "id": "gts.x.core.oagw.transform_plugin.v1~6ba7b810-9dad-11d1-80b4-00c04fd430c8",
   "tenant_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
   "name": "redact_pii",
   "description": "Redacts PII fields from response",
@@ -2150,7 +2120,7 @@ def on_request(ctx):
 }
 ```
 
-**Plugin Source** (stored in `source_code` field or fetched via `GET /api/oagw/v1/plugins/gts.x.core.oagw.plugin.transform.v1~6ba7b810-9dad-11d1-80b4-00c04fd430c8/source`):
+**Plugin Source** (stored in `source_code` field or fetched via `GET /api/oagw/v1/plugins/gts.x.core.oagw.transform_plugin.v1~6ba7b810-9dad-11d1-80b4-00c04fd430c8/source`):
 
 ```starlark
 def on_response(ctx):
@@ -2167,7 +2137,7 @@ def on_response(ctx):
 
 ```json
 {
-  "id": "gts.x.core.oagw.plugin.transform.v1~8f8e8400-e29b-41d4-a716-446655440001",
+  "id": "gts.x.core.oagw.transform_plugin.v1~8f8e8400-e29b-41d4-a716-446655440001",
   "tenant_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
   "name": "path_rewriter",
   "description": "Rewrites request paths and adds API version",
@@ -2417,14 +2387,14 @@ Content-Type: application/problem+json
 
 **Note**:
 
-- `{id}` is anonymous GTS identifier: `gts.x.core.oagw.plugin.{type}.v1~{uuid}` (e.g., `gts.x.core.oagw.plugin.guard.v1~6ba7b810-9dad-11d1-80b4-00c04fd430c8`)
+- `{id}` is anonymous GTS identifier: `gts.x.core.oagw.{type}_plugin.v1~{uuid}` (e.g., `gts.x.core.oagw.guard_plugin.v1~6ba7b810-9dad-11d1-80b4-00c04fd430c8`)
 - Plugins are **immutable** - no PUT/UPDATE endpoint
 - DELETE fails with `409 Conflict` if plugin is referenced by any upstream/route
 
 **Plugin Deletion Behavior**:
 
 ```http
-DELETE /api/oagw/v1/plugins/gts.x.core.oagw.plugin.guard.v1~550e8400-e29b-41d4-a716-446655440000
+DELETE /api/oagw/v1/plugins/gts.x.core.oagw.guard_plugin.v1~550e8400-e29b-41d4-a716-446655440000
 ```
 
 **Success** (plugin not in use):
@@ -2444,7 +2414,7 @@ Content-Type: application/problem+json
   "title": "Plugin In Use",
   "status": 409,
   "detail": "Plugin is referenced by 3 upstream(s) and 2 route(s)",
-  "plugin_id": "gts.x.core.oagw.plugin.guard.v1~550e8400-e29b-41d4-a716-446655440000",
+  "plugin_id": "gts.x.core.oagw.guard_plugin.v1~550e8400-e29b-41d4-a716-446655440000",
   "referenced_by": {
     "upstreams": ["gts.x.core.oagw.upstream.v1~..."],
     "routes": ["gts.x.core.oagw.route.v1~..."]
@@ -2550,11 +2520,11 @@ All resources use **anonymous GTS identifiers** in the REST API but store UUIDs 
 |----------|-------------------------------------------|----------|------------------------------------------------------------------------|----------------------------------------|
 | Upstream | `gts.x.core.oagw.upstream.v1~{uuid}`      | UUID     | `gts.x.core.oagw.upstream.v1~7c9e6679-7425-40de-944b-e07fc1f90ae7`     | `7c9e6679-7425-40de-944b-e07fc1f90ae7` |
 | Route    | `gts.x.core.oagw.route.v1~{uuid}`         | UUID     | `gts.x.core.oagw.route.v1~550e8400-e29b-41d4-a716-446655440000`        | `550e8400-e29b-41d4-a716-446655440000` |
-| Plugin   | `gts.x.core.oagw.plugin.{type}.v1~{uuid}` | UUID     | `gts.x.core.oagw.plugin.guard.v1~6ba7b810-9dad-11d1-80b4-00c04fd430c8` | `6ba7b810-9dad-11d1-80b4-00c04fd430c8` |
+| Plugin   | `gts.x.core.oagw.{type}_plugin.v1~{uuid}` | UUID     | `gts.x.core.oagw.guard_plugin.v1~6ba7b810-9dad-11d1-80b4-00c04fd430c8` | `6ba7b810-9dad-11d1-80b4-00c04fd430c8` |
 
 **API Layer**: Parses anonymous GTS identifier, extracts UUID after `~`, uses UUID for database operations.
 
-**Exception**: Builtin plugins use named GTS identifiers (e.g., `gts.x.core.oagw.plugin.transform.v1~x.core.oagw.logging.v1`) and are not stored in database.
+**Exception**: Builtin plugins use named GTS identifiers (e.g., `gts.x.core.oagw.transform_plugin.v1~x.core.oagw.logging.v1`) and are not stored in database.
 
 #### Entity Relationship
 
@@ -2593,7 +2563,7 @@ CREATE TABLE oagw_upstream
     -- Example: {"endpoints": [{"scheme": "https", "host": "api.openai.com", "port": 443}]}
 
     protocol   VARCHAR(100) NOT NULL,
-    -- Example: "gts.x.core.oagw.protocol.v1~x.core.http.v1"
+    -- Example: "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1"
 
     -- Auth configuration (JSONB)
     auth       JSONB,
@@ -2604,7 +2574,7 @@ CREATE TABLE oagw_upstream
 
     -- Plugin references
     plugins    JSONB,
-    -- Example: {"sharing": "inherit", "items": ["gts.x.core.oagw.plugin.transform.v1~x.core.oagw.logging.v1"]}
+    -- Example: {"sharing": "inherit", "items": ["gts.x.core.oagw.transform_plugin.v1~x.core.oagw.logging.v1"]}
 
     -- Rate limiting
     rate_limit JSONB,
@@ -2732,7 +2702,7 @@ CREATE INDEX idx_plugin_enabled ON oagw_plugin (tenant_id, enabled) WHERE enable
 CREATE INDEX idx_plugin_gc ON oagw_plugin (gc_eligible_at) WHERE gc_eligible_at IS NOT NULL;
 
 -- Note: Plugins are addressed in API as anonymous GTS identifiers:
--- Example: gts.x.core.oagw.plugin.guard.v1~550e8400-e29b-41d4-a716-446655440000
+-- Example: gts.x.core.oagw.guard_plugin.v1~550e8400-e29b-41d4-a716-446655440000
 -- The UUID after ~ maps to this table's id column
 ```
 
@@ -3107,7 +3077,7 @@ Structured JSON logs sent to stdout, ingested by centralized logging system (e.g
 #### [ ] F-P0-003: Types Registry Registration (Schemas + Builtins)
 
 - Register GTS schemas for `gts.x.core.oagw.upstream.v1~`, `gts.x.core.oagw.route.v1~`, and HTTP protocol identifier.
-- Register builtin plugin identifiers needed for MVP: `gts.x.core.oagw.plugin.auth.v1~x.core.oagw.noop.v1` and `...~x.core.oagw.apikey.v1`.
+- Register builtin plugin identifiers needed for MVP: `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.noop.v1` and `...~x.core.oagw.apikey.v1`.
 - Ensure API layer parses anonymous GTS IDs (`...~{uuid}`) and validates schema/type correctness before DB operations.
 - Add OpenAPI schema exposure for upstream/route DTOs (enough to test Management API from generated clients).
 

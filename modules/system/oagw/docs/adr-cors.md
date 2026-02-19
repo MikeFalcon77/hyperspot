@@ -57,7 +57,7 @@ Implement CORS as a guard plugin. Configurable per upstream/route.
   "plugins": {
     "items": [
       {
-        "type": "gts.x.core.oagw.plugin.guard.v1~x.core.oagw.cors.v1",
+        "type": "gts.x.core.oagw.guard_plugin.v1~x.core.oagw.cors.v1",
         "config": {
           "allowed_origins": [ "https://app.example.com", "https://admin.example.com" ],
           "allowed_methods": [ "GET", "POST", "PUT", "DELETE" ],

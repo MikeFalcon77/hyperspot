@@ -16,7 +16,7 @@ Content-Type: application/json
       { "scheme": "https", "host": "api.openai.com", "port": 443 }
     ]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "alias": "api.openai.com",
   "tags": ["openai", "llm", "chat"]
 }

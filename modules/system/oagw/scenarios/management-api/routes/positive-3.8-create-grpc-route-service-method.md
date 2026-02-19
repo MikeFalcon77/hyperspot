@@ -10,7 +10,7 @@
       { "scheme": "grpc", "host": "grpc.example.com", "port": 443 }
     ]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.grpc.v1"
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.grpc.v1"
 }
 ```
 

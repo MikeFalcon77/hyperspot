@@ -14,7 +14,7 @@ Content-Type: application/json
       { "scheme": "https", "host": "10.0.1.1", "port": 443 }
     ]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1"
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1"
 }
 ```
 

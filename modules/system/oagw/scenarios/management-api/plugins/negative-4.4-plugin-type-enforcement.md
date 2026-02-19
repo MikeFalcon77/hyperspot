@@ -3,7 +3,7 @@
 ## Setup
 
 Create a guard plugin id:
-- `gts.x.core.oagw.plugin.guard.v1~<uuid>`
+- `gts.x.core.oagw.guard_plugin.v1~<uuid>`
 
 ## Attempt: attach guard plugin as upstream auth
 
@@ -19,10 +19,10 @@ Content-Type: application/json
       { "scheme": "https", "host": "httpbin.org", "port": 443 }
     ]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1",
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
   "alias": "httpbin.org",
   "auth": {
-    "type": "gts.x.core.oagw.plugin.guard.v1~<uuid>",
+    "type": "gts.x.core.oagw.guard_plugin.v1~<uuid>",
     "config": {}
   }
 }

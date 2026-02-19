@@ -1,173 +1,137 @@
 # ADR: Component Architecture
 
-- **Status**: Accepted
+- **Status**: Superseded
 - **Date**: 2026-02-09
 - **Deciders**: OAGW Team
+- **Superseded By**: Single-module implementation with internal trait-based service isolation (2026-02-17). The original multi-crate design was simplified during implementation to a single `oagw` crate with DDD-Light layering (`domain/infra/api`). The CP/DP separation is preserved as internal domain traits, not separate crates.
 
 ## Context and Problem Statement
 
-OAGW is being designed as a greenfield project without existing code. We need to establish the architectural foundation for how components are organized, how they communicate, and
-how deployment flexibility is achieved.
+OAGW is being designed as a greenfield project without existing code. We need to establish the architectural foundation for how components are organized and how separation of concerns is achieved.
 
 **Key Requirements**:
 
-- Support both single-executable and microservice deployment modes
 - Clear separation of concerns between configuration management and request execution
-- Enable independent scaling of different concerns
+- Testability of each concern in isolation
 - Minimize latency through efficient communication patterns
 
 ## Decision Drivers
 
-- Testability: Each component should be testable in isolation
-- Deployment flexibility: Support multiple deployment topologies without code changes
+- Testability: Each service should be testable in isolation via trait mocking
 - Separation of concerns: Configuration management vs request execution
-- Performance: Minimize overhead in communication between components
-- Maintainability: Clear boundaries and responsibilities
+- Performance: Direct in-process function calls with zero serialization overhead
+- Maintainability: Clear boundaries and responsibilities via domain trait interfaces
+- Simplicity: Avoid multi-crate coordination overhead when not needed
 
 ## Decision
 
-OAGW is composed of three distinct components, packaged as separate library crates:
+OAGW is implemented as a single module (`oagw` crate) with internal service isolation via domain traits and DDD-Light layering:
 
-### Components
+### Internal Services
 
-**1. API Handler (`oagw-api`)**
+**1. Control Plane (`ControlPlaneService` trait)**
 
-- **Responsibility**: Entry point for all HTTP requests
+- **Location**: Trait in `domain/services/mod.rs`, impl in `domain/services/management.rs`
+- **Responsibility**: Manage configuration data
 - **Functions**:
-    - Incoming authentication (validate Bearer tokens)
-    - Incoming rate limiting (protect gateway from overload)
-    - Path-based routing to CP or DP
-- **Routes**:
-    - `/api/oagw/v1/proxy/*` → Data Plane
-    - `/api/oagw/v1/upstreams/*`, `/routes/*`, `/plugins/*` → Control Plane
+    - CRUD operations for upstreams and routes
+    - Alias resolution for proxy requests
+    - Tenant-scoped repository access
+- **Dependencies**: `UpstreamRepository`, `RouteRepository` (domain traits)
 
-**2. Data Plane (`oagw-cp`)**
+**2. Data Plane (`DataPlaneService` trait)**
 
+- **Location**: Trait in `domain/services/mod.rs`, impl in `infra/proxy/service.rs`
 - **Responsibility**: Orchestrate proxy requests to external services
 - **Functions**:
     - Call Control Plane for config resolution (upstream, route)
-    - Execute auth plugins (credential injection)
-    - Execute guard plugins (validation, rate limiting)
-    - Execute transform plugins (request/response mutation)
-    - Make HTTP calls to external services
-    - L1 cache for hot configs (1000 entries, LRU)
-- **Dependencies**: Control Plane (config resolution), cred_store (secret retrieval)
-
-**3. Control Plane (`oagw-dp`)**
-
-- **Responsibility**: Manage configuration data with multi-layer caching
-- **Functions**:
-    - CRUD operations for upstreams/routes/plugins
-    - Config resolution with hierarchical tenant inheritance
-    - L1 cache (in-memory, 10k entries, LRU)
-    - Optional L2 cache (Redis, shared across instances)
-    - Database access (source of truth)
-    - Cache invalidation on config writes
-- **Dependencies**: modkit-db (database), types_registry (schema validation)
+    - Execute auth plugins (credential injection via `AuthPluginRegistry`)
+    - Build and send HTTP requests to upstream services
+    - Strip sensitive/hop-by-hop headers from responses
+- **Dependencies**: `ControlPlaneService`, `AuthPluginRegistry`, `CredentialRepository`, `reqwest::Client`
 
 ### Module Structure
 
-```
+```text
 modules/system/oagw/
-├── oagw-sdk/          # Public API traits, models, errors
-│                      # OAGWClientV1, AuthPlugin, GuardPlugin, TransformPlugin
-├── oagw-core/         # Shared internals, service traits
-│                      # ControlPlaneService, DataPlaneService
-├── oagw-api/          # API Handler implementation
-├── oagw-cp/           # Data Plane implementation
-├── oagw-dp/           # Control Plane implementation
+├── oagw-sdk/              # Public API: ServiceGatewayClientV1 trait, models, errors
+└── oagw/                  # Single module crate
+    └── src/
+        ├── api/rest/      # Transport layer (handlers, routes, DTOs)
+        ├── domain/        # Business logic (traits, models, errors)
+        │   └── services/  # ControlPlaneService + DataPlaneService
+        └── infra/         # Infrastructure (proxy, storage, plugins)
 ```
 
-### Communication Patterns
+### Internal Communication
 
-**Single-Executable Mode**:
+All services communicate via in-process trait method calls. There is no inter-service RPC or serialization:
 
-- All components instantiated in same process
-- Trait method calls are direct function calls (zero serialization)
-- Example: `cp.proxy_request(req)` → direct Rust function call
-
-**Microservice Mode**:
-
-- Components deployed as separate services
-- Modkit provides transparent RPC adapters for trait calls
-- Example: `cp.proxy_request(req)` → gRPC or HTTP call
-- Service discovery and load balancing handled by modkit
-
-### Deployment Abstraction
-
-OAGW code is deployment-agnostic:
-
-- Uses trait interfaces: `ControlPlaneService`, `DataPlaneService`
-- Modkit wires components based on deployment configuration
-- No hardcoded assumptions about communication transport
+- REST handlers call `ControlPlaneService` or `DataPlaneService` directly
+- `DataPlaneServiceImpl` holds an `Arc<dyn ControlPlaneService>` for config resolution
+- Services are wired together during ModKit module initialization in `module.rs`
 
 ## Consequences
 
 ### Positive
 
-- **Clear separation of concerns**: Each component has well-defined responsibilities
-- **Testability**: Components can be unit tested in isolation with mock implementations
-- **Deployment flexibility**: Single-exec for development, microservices for production
-- **Independent scaling**: Scale CP for proxy load, scale DP for config operations
-- **Performance**: Zero overhead in single-exec mode, transparent RPC in microservice mode
-- **Maintainability**: Clear boundaries reduce coupling
+- **Clear separation of concerns**: CP and DP have well-defined responsibilities via trait boundaries
+- **Testability**: Services are tested in isolation via trait mocking (e.g., `MockControlPlaneService`)
+- **Performance**: Zero overhead — direct Rust function calls, no serialization or RPC
+- **Simplicity**: Single crate eliminates multi-crate coordination, versioning, and build complexity
+- **Maintainability**: DDD-Light layering (`domain/infra/api`) enforced by dylint linters
 
 ### Negative
 
-- **Complexity**: Three components instead of monolith increases coordination complexity
-- **Testing overhead**: Need integration tests for component communication
-- **Initial development**: More upfront design work for interfaces
+- **No independent scaling**: CP and DP cannot be scaled separately (acceptable for current workload)
+- **Single deployment unit**: All concerns must be deployed together
 
 ### Risks
 
-- **Network latency** (microservice mode): CP → DP calls add latency. Mitigated by CP L1 cache.
-- **Service dependencies**: CP depends on DP availability. Mitigated by fail-open with cached config.
-- **Deployment coordination**: Multiple services require orchestration. Handled by modkit.
+- **Future scaling needs**: If CP and DP need independent scaling, extraction into separate crates would require refactoring. Mitigated by clean trait boundaries — the domain traits already define the split points.
 
 ## Alternatives Considered
 
-### Alternative 1: Monolithic Service
+### Alternative 1: Multi-Crate Architecture (Original Design)
 
-Single service handling both configuration and proxy operations.
-
-**Pros**:
-
-- Simpler deployment
-- No inter-component communication overhead
-
-**Cons**:
-
-- Cannot scale concerns independently
-- Configuration writes and proxy requests compete for resources
-- Harder to optimize for different workload characteristics
-- Mixing concerns makes testing more complex
-
-**Rejected**: Insufficient scaling flexibility for production workloads.
-
-### Alternative 2: Two Components (No API Handler)
-
-CP and DP, with CP handling both proxy and routing.
+Three separate library crates (`oagw`, `oagw-cp`, `oagw-dp`) with modkit wiring for both single-executable and microservice deployment.
 
 **Pros**:
 
-- Fewer components
-- Slightly simpler
+- Independent scaling of CP and DP
+- Microservice deployment option
 
 **Cons**:
 
-- CP becomes responsible for routing logic
-- Cannot optimize API Handler separately
-- Loses clear entry point abstraction
+- Multi-crate coordination overhead (dependency management, versioning)
+- Microservice mode not needed for current scale
+- Additional complexity without clear benefit
 
-**Rejected**: API Handler provides valuable abstraction and unified ingress control.
+**Not adopted**: The single-module approach provides the same testability and separation of concerns with less complexity. The trait boundaries are preserved, making future extraction straightforward if needed.
+
+### Alternative 2: Monolithic Service (No Internal Separation)
+
+Single crate with no CP/DP trait distinction — all logic in handlers.
+
+**Pros**:
+
+- Simplest possible structure
+
+**Cons**:
+
+- Hard to test proxy orchestration independently
+- No clear boundary between config management and request execution
+- Mixing concerns makes maintenance harder
+
+**Rejected**: Trait-based separation provides essential testability and maintainability.
 
 ## Related ADRs
 
-- [ADR: Request Routing](./adr-request-routing.md) - How requests flow between components
+- [ADR: Request Routing](./adr-request-routing.md) - How requests flow through handlers to services
 - [ADR: Control Plane Caching](./adr-data-plane-caching.md) - Multi-layer cache strategy
-- [ADR: State Management](./adr-state-management.md) - CP L1 cache and state distribution
+- [ADR: State Management](./adr-state-management.md) - State distribution patterns
 
 ## References
 
-- Modkit framework documentation (component wiring and deployment)
+- Modkit framework documentation (module lifecycle and dependency injection)
 - CyberFabric module patterns: `tenant_resolver`, `types_registry`

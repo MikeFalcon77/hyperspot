@@ -160,7 +160,7 @@ async fn handle_request(req: Request<Body>) -> Response<Body> {
     "grpc_enabled": true
   },
   "upstream": {
-    "protocol": "gts.x.core.oagw.protocol.v1~x.core.grpc.v1",
+    "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.grpc.v1",
     "server": {
       "endpoints": [
         {"scheme": "grpc", "host": "grpc-service.example.com", "port": 50051}

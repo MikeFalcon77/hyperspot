@@ -13,7 +13,7 @@ Create one upstream with multiple endpoints (same scheme/port/protocol).
       { "scheme": "https", "host": "eu.vendor.com", "port": 443 }
     ]
   },
-  "protocol": "gts.x.core.oagw.protocol.v1~x.core.http.v1"
+  "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1"
 }
 ```
 
