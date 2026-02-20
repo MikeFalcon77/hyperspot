@@ -49,6 +49,7 @@ ignore = [
 # Allow-list of SPDX license IDs
 allow = [
   "MIT",
+  "MIT-0",
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",

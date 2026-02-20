@@ -232,8 +232,7 @@ impl De0901GtsStringPattern {
         }
 
         // Use GtsOps::parse_id() for validation - it gives us parsed segments
-        let ops = GtsOps::new(None, None, 0);
-        let result = ops.parse_id(s);
+        let result = GtsOps::parse_id(s);
 
         if !result.ok {
             cx.span_lint(DE0901_GTS_STRING_PATTERN, span, |diag| {
@@ -308,8 +307,7 @@ impl De0901GtsStringPattern {
             return;
         }
 
-        let ops = GtsOps::new(None, None, 0);
-        let result = ops.parse_id(s);
+        let result = GtsOps::parse_id(s);
 
         if !result.ok {
             cx.span_lint(DE0901_GTS_STRING_PATTERN, span, |diag| {
@@ -328,8 +326,7 @@ impl De0901GtsStringPattern {
         let s = s.trim();
 
         // For resource_pattern calls, we allow wildcards but still validate the GTS structure
-        let ops = GtsOps::new(None, None, 0);
-        let result = ops.parse_id(s);
+        let result = GtsOps::parse_id(s);
 
         if !result.ok {
             cx.span_lint(DE0901_GTS_STRING_PATTERN, span, |diag| {

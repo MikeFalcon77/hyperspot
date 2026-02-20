@@ -17,47 +17,10 @@ pub struct ProductV1<P: gts::GtsSchema> {
     pub properties: P,
 }
 
-#[derive(Debug)]
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,
-    // Should trigger DE0901 - invalid GTS schema_id (missing trailing tilde)
-    schema_id = "gts.x.core.events.type.v1",
-    description = "Missing trailing tilde",
-    properties = "id"
-)]
-pub struct MissingTildeV1<P: gts::GtsSchema> {
-    pub id: GtsInstanceId,
-    pub properties: P,
-}
-
-#[derive(Debug)]
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,
-    // Should trigger DE0901 - invalid GTS schema_id (invalid hyphen)
-    schema_id = "gts.x.core.events-type.v1~",
-    description = "Invalid hyphen in component",
-    properties = "id"
-)]
-pub struct InvalidCharV1<P: gts::GtsSchema> {
-    pub id: GtsInstanceId,
-    pub properties: P,
-}
-
-#[derive(Debug)]
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,
-    // Should trigger DE0901 - invalid GTS schema_id (wildcard not allowed)
-    schema_id = "gts.x.*.events.type.v1~",
-    description = "Wildcards not allowed in schema_id",
-    properties = "id"
-)]
-pub struct WildcardSchemaV1<P: gts::GtsSchema> {
-    pub id: GtsInstanceId,
-    pub properties: P,
-}
+// NOTE: Structs with invalid schema_ids (missing tilde, hyphen, wildcard) were removed.
+// gts 0.8.0's struct_to_gts_schema macro now validates schema_ids at compile time,
+// rejecting them before the lint can run. String literal checks in main() still
+// cover these scenarios at the lint level.
 
 fn main() {
     // Error 1: Incomplete chained segments (missing type component)
