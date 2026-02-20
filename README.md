@@ -117,6 +117,12 @@ See [NEW_MODULE.md](guidelines/NEW_MODULE.md), but also [MODKIT UNIFIED SYSTEM](
 - **[NEW_MODULE.md](guidelines/NEW_MODULE.md), [MODKIT UNIFIED SYSTEM](docs/modkit_unified_system/README.md) and [MODKIT_PLUGINS.md](docs/MODKIT_PLUGINS.md)** - how to add new modules.
 - **[Contributing](CONTRIBUTING.md)** - Development workflow and coding standards
 
+## Security
+
+Cyber Fabric applies defense-in-depth security across the entire development lifecycle — from Rust's compile-time safety guarantees and custom architectural lints, through compile-time tenant isolation and PDP/PEP authorization enforcement, to continuous fuzzing, dependency auditing, and automated security scanning in CI.
+
+See **[Security Overview](docs/security/SECURITY.md)** for the full breakdown, including: Secure ORM with compile-time tenant scoping, authentication/authorization architecture (NIST SP 800-162 PDP/PEP model), 90+ Clippy deny-level rules, custom dylint architectural lints, cargo-deny advisory checks, ClusterFuzzLite continuous fuzzing, CodeQL/Scorecard/Snyk/Aikido scanners, and AI-powered PR review bots.
+
 ## Specification Templates
 
 Cyber Fabric uses industry-standard specification templates (IEEE, ISO, MADR) to drive development. Specs are written *before* implementation and live alongside the code in version control.

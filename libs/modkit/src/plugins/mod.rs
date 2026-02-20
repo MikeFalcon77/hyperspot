@@ -2,7 +2,6 @@ use std::future::Future;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
 
 use crate::gts::BaseModkitPluginV1;
@@ -139,7 +138,7 @@ pub fn choose_plugin_instance<'a, P>(
     instances: impl IntoIterator<Item = (&'a str, &'a serde_json::Value)>,
 ) -> Result<String, ChoosePluginError>
 where
-    P: DeserializeOwned + gts::GtsSchema,
+    P: for<'de> gts::GtsDeserialize<'de> + gts::GtsSchema,
 {
     let mut best: Option<(&str, i16)> = None;
     let mut count: usize = 0;
