@@ -1,6 +1,5 @@
 use super::super::config::{ConsoleFormat, LoggingConfig, Section};
 use anyhow::Context;
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -107,7 +106,7 @@ impl Write for RoutedWriterHandle {
 #[derive(Clone)]
 struct MultiFileRouter {
     default: Option<RotWriter>, // default file (from "default" section), optional
-    by_prefix: HashMap<String, RotWriter>, // subsystem → writer
+    by_prefix: Vec<(String, RotWriter)>, // subsystem → writer, sorted longest-prefix-first
 }
 
 impl MultiFileRouter {
@@ -290,7 +289,7 @@ fn build_target_file(config: &ConfigData, has_default_file: bool) -> Targets {
 fn build_file_router(config: &ConfigData, base_dir: &Path) -> MultiFileRouter {
     let mut router = MultiFileRouter {
         default: None,
-        by_prefix: HashMap::with_capacity(config.crate_sections.len()),
+        by_prefix: Vec::with_capacity(config.crate_sections.len()),
     };
 
     if let Some(section) = config.default_section {
@@ -299,9 +298,15 @@ fn build_file_router(config: &ConfigData, base_dir: &Path) -> MultiFileRouter {
 
     for (crate_name, section) in &config.crate_sections {
         if let Some(writer) = create_file_writer(Some(crate_name), section, base_dir) {
-            router.by_prefix.insert(crate_name.clone(), writer);
+            router.by_prefix.push((crate_name.clone(), writer));
         }
     }
+
+    // Sort by descending prefix length so longest (most specific) match wins.
+    // Ties broken lexicographically for determinism.
+    router
+        .by_prefix
+        .sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
 
     router
 }
@@ -563,9 +568,176 @@ mod tests {
 
         let router = MultiFileRouter {
             default: Some(rot),
-            by_prefix: HashMap::new(),
+            by_prefix: Vec::new(),
         };
 
         assert_concurrent_writes(&router, &log_path);
+    }
+
+    /// Helper: create a `RotWriter` for a temp path and return (writer, path).
+    fn tmp_writer(dir: &Path, name: &str) -> (RotWriter, std::path::PathBuf) {
+        let p = dir.join(name);
+        let w = create_rotating_writer_at_path(&p, 50 * 1024 * 1024, None, Some(1))
+            .expect("failed to create rotating writer");
+        (w, p)
+    }
+
+    #[test]
+    fn resolve_for_picks_longest_matching_prefix() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+
+        let (broad, broad_path) = tmp_writer(dir.path(), "broad.log");
+        let (specific, specific_path) = tmp_writer(dir.path(), "specific.log");
+
+        // Write markers so we can tell them apart
+        broad.0.lock().write_all(b"BROAD\n").unwrap();
+        specific.0.lock().write_all(b"SPECIFIC\n").unwrap();
+
+        let router = MultiFileRouter {
+            default: None,
+            by_prefix: vec![
+                ("hyperspot::api_gateway".into(), specific),
+                ("hyperspot".into(), broad),
+            ],
+        };
+
+        // "hyperspot::api_gateway::handler" should match the longer prefix
+        let mut handle = router
+            .resolve_for("hyperspot::api_gateway::handler")
+            .expect("should resolve");
+        handle.write_all(b"routed\n").unwrap();
+        handle.flush().unwrap();
+
+        let specific_content = std::fs::read_to_string(&specific_path).unwrap();
+        assert!(
+            specific_content.contains("routed"),
+            "expected write to land in specific log, got: {specific_content:?}"
+        );
+
+        let broad_content = std::fs::read_to_string(&broad_path).unwrap();
+        assert!(
+            !broad_content.contains("routed"),
+            "write should NOT appear in broad log, got: {broad_content:?}"
+        );
+    }
+
+    /// Verifies that `build_file_router` sorts `by_prefix` by descending length so
+    /// that the longest (most-specific) prefix wins even when the caller registers
+    /// a broad prefix before a specific one.
+    #[test]
+    fn build_file_router_sorts_prefixes_longest_match_wins() {
+        use crate::bootstrap::config::SectionFile;
+
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+
+        let broad_section = Section {
+            console_format: ConsoleFormat::default(),
+            console_level: None,
+            section_file: Some(SectionFile {
+                file: "broad.log".to_owned(),
+                file_level: None,
+            }),
+            max_age_days: None,
+            max_backups: Some(1),
+            max_size_mb: None,
+        };
+        let specific_section = Section {
+            console_format: ConsoleFormat::default(),
+            console_level: None,
+            section_file: Some(SectionFile {
+                file: "specific.log".to_owned(),
+                file_level: None,
+            }),
+            max_age_days: None,
+            max_backups: Some(1),
+            max_size_mb: None,
+        };
+
+        // Register broad BEFORE specific (reverse of preference order) so that
+        // build_file_router's sort step is what makes the specific prefix win.
+        let config = ConfigData {
+            default_section: None,
+            crate_sections: vec![
+                ("hyperspot".to_owned(), &broad_section),
+                ("hyperspot::api_gateway".to_owned(), &specific_section),
+            ],
+        };
+
+        let router = build_file_router(&config, dir.path());
+
+        let mut handle = router
+            .resolve_for("hyperspot::api_gateway::handler")
+            .expect("should resolve");
+        handle.write_all(b"routed\n").unwrap();
+        handle.flush().unwrap();
+
+        let specific_content = std::fs::read_to_string(dir.path().join("specific.log")).unwrap();
+        assert!(
+            specific_content.contains("routed"),
+            "expected write to land in specific log, got: {specific_content:?}"
+        );
+
+        let broad_content = std::fs::read_to_string(dir.path().join("broad.log")).unwrap();
+        assert!(
+            !broad_content.contains("routed"),
+            "write should NOT appear in broad log, got: {broad_content:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_for_exact_match() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let (writer, _) = tmp_writer(dir.path(), "exact.log");
+
+        let router = MultiFileRouter {
+            default: None,
+            by_prefix: vec![("hyperspot".into(), writer)],
+        };
+
+        // Exact match
+        assert!(
+            router.resolve_for("hyperspot").is_some(),
+            "exact target should match"
+        );
+        // Submodule match
+        assert!(
+            router.resolve_for("hyperspot::sub").is_some(),
+            "submodule target should match"
+        );
+        // Non-prefix string must NOT match
+        assert!(
+            router.resolve_for("hyperspot_extra").is_none(),
+            "non-prefix target should not match"
+        );
+        assert!(
+            router.resolve_for("other").is_none(),
+            "unrelated target should not match"
+        );
+    }
+
+    #[test]
+    fn resolve_for_falls_back_to_default() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let (default_writer, default_path) = tmp_writer(dir.path(), "default.log");
+
+        default_writer.0.lock().write_all(b"DEFAULT\n").unwrap();
+
+        let router = MultiFileRouter {
+            default: Some(default_writer),
+            by_prefix: vec![],
+        };
+
+        // Unknown target should fall back to default
+        let mut handle = router
+            .resolve_for("unknown_crate::module")
+            .expect("should fall back to default");
+        handle.write_all(b"fallback\n").unwrap();
+        handle.flush().unwrap();
+
+        let content = std::fs::read_to_string(&default_path).unwrap();
+        assert!(
+            content.contains("fallback"),
+            "expected write to land in default log, got: {content:?}"
+        );
     }
 }
