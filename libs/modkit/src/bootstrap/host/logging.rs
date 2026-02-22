@@ -1,10 +1,11 @@
 use super::super::config::{ConsoleFormat, LoggingConfig, Section};
 use anyhow::Context;
 use std::collections::HashMap;
-use std::io;
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use tracing_subscriber::{Layer, fmt, util::SubscriberInitExt};
 
 // ========== OTEL-agnostic layer type (compiles with/without the feature) ==========
@@ -49,22 +50,20 @@ impl<'a> fmt::MakeWriter<'a> for RotWriter {
 #[derive(Clone)]
 struct RotWriterHandle(Arc<Mutex<FileRotate<AppendTimestamp>>>);
 
-impl RotWriterHandle {
-    fn try_lock(
-        &mut self,
-    ) -> std::io::Result<std::sync::MutexGuard<'_, FileRotate<AppendTimestamp>>> {
-        self.0
-            .try_lock()
-            .map_err(|e| io::Error::other(format!("Lock failed: {e}")))
-    }
-}
-
 impl Write for RotWriterHandle {
+    // NOTE: Each call acquires/releases the lock independently. Callers needing
+    // atomicity for multi-part writes should use write_all() or write_fmt().
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.try_lock()?.write(buf)
+        self.0.lock().write(buf)
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        self.try_lock()?.flush()
+        self.0.lock().flush()
+    }
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        self.0.lock().write_all(buf)
+    }
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        self.0.lock().write_fmt(args)
     }
 }
 
@@ -83,6 +82,20 @@ impl Write for RoutedWriterHandle {
     fn flush(&mut self) -> std::io::Result<()> {
         if let Some(w) = &mut self.0 {
             w.flush()
+        } else {
+            Ok(())
+        }
+    }
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        if let Some(w) = &mut self.0 {
+            w.write_all(buf)
+        } else {
+            Ok(())
+        }
+    }
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        if let Some(w) = &mut self.0 {
+            w.write_fmt(args)
         } else {
             Ok(())
         }
@@ -475,4 +488,84 @@ fn init_minimal(
     };
 
     _ = subscriber.try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Helper: run concurrent write test through a given `MakeWriter` and verify output.
+    fn assert_concurrent_writes<'a, W>(writer: &'a W, log_path: &Path)
+    where
+        W: fmt::MakeWriter<'a> + Sync,
+        W::Writer: Write,
+    {
+        const NUM_THREADS: usize = 8;
+        const LINES_PER_THREAD: usize = 500;
+        const TOTAL_LINES: usize = NUM_THREADS * LINES_PER_THREAD;
+
+        std::thread::scope(|s| {
+            for thread_id in 0..NUM_THREADS {
+                s.spawn(move || {
+                    for line_no in 0..LINES_PER_THREAD {
+                        let mut handle = writer.make_writer();
+                        writeln!(handle, "thread={thread_id} line={line_no}")
+                            .expect("write must not fail");
+                    }
+                });
+            }
+        });
+
+        let content = std::fs::read_to_string(log_path).expect("failed to read log file");
+        let lines: Vec<&str> = content.lines().collect();
+
+        assert_eq!(
+            lines.len(),
+            TOTAL_LINES,
+            "expected {TOTAL_LINES} lines but found {} ({} records {})",
+            lines.len(),
+            lines.len().abs_diff(TOTAL_LINES),
+            if lines.len() < TOTAL_LINES {
+                "lost"
+            } else {
+                "extra"
+            },
+        );
+
+        // Verify every line is intact (no interleaved bytes)
+        for (i, line) in lines.iter().enumerate() {
+            assert!(
+                line.starts_with("thread=") && line.contains(" line="),
+                "corrupted line {i}: {line:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_writes_are_not_dropped() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let log_path = dir.path().join("test.log");
+
+        let writer = create_rotating_writer_at_path(&log_path, 50 * 1024 * 1024, None, Some(1))
+            .expect("failed to create rotating writer");
+
+        assert_concurrent_writes(&writer, &log_path);
+    }
+
+    #[test]
+    fn concurrent_writes_through_routed_writer() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let log_path = dir.path().join("routed.log");
+
+        let rot = create_rotating_writer_at_path(&log_path, 50 * 1024 * 1024, None, Some(1))
+            .expect("failed to create rotating writer");
+
+        let router = MultiFileRouter {
+            default: Some(rot),
+            by_prefix: HashMap::new(),
+        };
+
+        assert_concurrent_writes(&router, &log_path);
+    }
 }
