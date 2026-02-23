@@ -226,6 +226,8 @@ The system MUST allow users to upload image files (PNG, JPEG/JPG, WebP) to a cha
 **Rationale**: Users need to share visual content (screenshots, diagrams, photos) with the AI assistant and ask questions about what they see.
 **Actors**: `cpt-cf-mini-chat-actor-chat-user`
 
+All `attachment_ids` submitted with a message are strictly scoped to `(tenant_id, user_id, chat_id)` and validated before LLM invocation. No attachment validation may rely on provider-side failure; all checks MUST complete before any quota reserve or provider request is issued.
+
 #### Document Question Answering (File Search)
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-fr-file-search`

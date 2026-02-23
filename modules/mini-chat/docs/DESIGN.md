@@ -455,6 +455,17 @@ Request body:
 - `attachments.chat_id` matches the requested `chat_id`
 - `attachments.status == ready`
 
+##### Attachment Preflight Validation Invariant (P1)
+
+Attachment validation MUST occur before any provider request is issued and before any quota reserve is taken. For each `attachment_id` in the request:
+
+- It MUST belong to the same `tenant_id` as the request security context.
+- It MUST belong to the same `user_id` as the request security context.
+- It MUST belong to the same `chat_id` as the requested chat.
+- `status` MUST equal `ready`.
+
+If any of the above validations fail, the request MUST be rejected with an appropriate error before any provider call or quota reserve. No `attachment_id` validation may rely on provider-side failure.
+
 **Idempotency**: The idempotency key is `(chat_id, request_id)`. Behavior when `request_id` is provided:
 
 | State | Server behavior |
