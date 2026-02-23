@@ -2505,11 +2505,15 @@ After a turn reaches a terminal state, Mini Chat emits a usage event via EventMa
 | `request_id` | UUID | Idempotency key from the original request |
 | `event_type` | VARCHAR | Event name (e.g., `MiniChat.TurnCompleted`) |
 | `payload_json` | JSONB | Serialized event payload |
-| `status` | VARCHAR | `pending`, `sent`, or `failed` |
+| `status` | VARCHAR | `pending`, `in_flight`, `sent`, or `failed` |
 | `created_at` | TIMESTAMPTZ | Row creation time |
 | `updated_at` | TIMESTAMPTZ | Last status change |
 | `next_retry_at` | TIMESTAMPTZ | Earliest time for next delivery attempt |
 | `attempts` | INT | Number of delivery attempts (default 0) |
+| `claimed_by` | VARCHAR(128) | Pod/worker identifier that claimed this row (nullable) |
+| `claimed_until` | TIMESTAMPTZ | Lease expiry for the claim; row is reclaimable when `now() > claimed_until` (nullable) |
+| `sent_at` | TIMESTAMPTZ | Timestamp when event was successfully published (nullable) |
+| `last_error` | TEXT | Sanitized error from last failed delivery attempt (nullable). MUST NOT contain provider identifiers. |
 
 Unique constraint: `(turn_id, request_id)` — enforces at most one terminal outbox event per turn invocation at the database level. All finalizers MUST insert the outbox row within the same transaction as the guarded state transition (CAS on `chat_turns.state = 'running'`, section 5.3) and quota settlement. If an outbox INSERT fails with a unique-violation error, the finalizer MUST treat the event as already emitted and MUST NOT re-emit.
 
@@ -2521,6 +2525,82 @@ Unique constraint: `(turn_id, request_id)` — enforces at most one terminal out
 2. On success, set `status = 'sent'` and update `updated_at`.
 3. On transient failure, increment `attempts`, set `next_retry_at` with exponential backoff (e.g., `now() + min(2^attempts * base_delay, max_delay)`), keep `status = 'pending'`.
 4. On permanent failure (attempts exceed configured max), set `status = 'failed'` and emit an alert metric.
+
+#### Outbox Dispatcher Concurrency and Row Claiming (P1)
+
+At-least-once delivery is allowed; duplicates are possible (see Idempotency rule below). However, dispatchers MUST implement a row-claiming mechanism to minimize duplicate publishes under multi-pod concurrency. A dispatcher MUST NOT publish an outbox row unless it has atomically claimed it.
+
+**Row-claiming algorithm (Postgres)**:
+
+1. **Claim transaction** — within a single DB transaction:
+
+   ```sql
+   -- Step 1: select and lock unclaimed pending rows
+   SELECT id, payload_json, event_type, tenant_id, turn_id, request_id
+   FROM usage_outbox
+   WHERE status = 'pending'
+     AND next_retry_at <= now()
+   ORDER BY created_at
+   LIMIT :batch_size
+   FOR UPDATE SKIP LOCKED;
+
+   -- Step 2: atomically mark selected rows as in_flight
+   UPDATE usage_outbox
+   SET status = 'in_flight',
+       claimed_by = :worker_id,
+       claimed_until = now() + :lease_duration,
+       updated_at = now()
+   WHERE id = ANY(:selected_ids);
+   ```
+
+   `FOR UPDATE SKIP LOCKED` ensures that concurrent dispatchers never select the same rows. Commit the claim transaction before proceeding to publish.
+
+2. **Publish** — outside the claim transaction, publish each claimed event to EventManager.
+
+3. **On success** — update the row:
+
+   ```sql
+   UPDATE usage_outbox
+   SET status = 'sent',
+       sent_at = now(),
+       attempts = attempts + 1,
+       updated_at = now()
+   WHERE id = :row_id AND status = 'in_flight';
+   ```
+
+   `sent` is a terminal status; the row MUST NOT be modified further by any dispatcher.
+
+4. **On failure** — update the row:
+
+   ```sql
+   UPDATE usage_outbox
+   SET status = 'pending',
+       claimed_by = NULL,
+       claimed_until = NULL,
+       attempts = attempts + 1,
+       next_retry_at = now() + least(2 ^ attempts * :base_delay, :max_delay),
+       last_error = :sanitized_error,
+       updated_at = now()
+   WHERE id = :row_id AND status = 'in_flight';
+   ```
+
+   `last_error` MUST be sanitized to avoid provider identifier leakage (same redaction rules as audit events).
+
+**Lease expiry reclaim rule**: if `now() > claimed_until` and `status = 'in_flight'`, any dispatcher MAY reclaim the row by transitioning it back to `pending` (setting `claimed_by = NULL`, `claimed_until = NULL`). This handles the case where the claiming dispatcher crashes after the claim transaction but before publishing.
+
+**State transition invariant**: a row transitions `pending → in_flight → sent` monotonically. `sent` is terminal. The only non-forward transition is `in_flight → pending` on publish failure or lease expiry, which allows retry. A row MUST NOT transition from `sent` to any other status.
+
+**Crash safety**: the dispatcher MUST be safe under crashes at any point:
+
+- **Crash before claim commit**: no row is claimed; no side effects.
+- **Crash after claim commit but before publish**: the row remains `in_flight` until `claimed_until` expires, then becomes reclaimable by another dispatcher.
+- **Crash after publish but before marking `sent`**: the row remains `in_flight`, expires, and may be re-published. Consumer deduplication by `(tenant_id, turn_id, request_id)` absorbs the duplicate.
+
+**Operational guidance (P1 minimum)**:
+
+- Dispatchers MUST use bounded retries: after `max_attempts` (configurable, default: 10) consecutive failures, set `status = 'failed'` and emit the `mini_chat_outbox_failed_total` alert metric.
+- Dispatchers MUST expose observability counters: `mini_chat_outbox_claimed_total`, `mini_chat_outbox_sent_total`, `mini_chat_outbox_failed_total`, `mini_chat_outbox_lease_expired_total`.
+- Batch size, retry base delay, max delay, and lease duration are deployment-configurable. Specific default values are deferred to P2+ operational runbooks.
 
 **Idempotency rule**: consumers (CyberChatManager) MUST deduplicate events by `(tenant_id, turn_id, request_id)`. At-least-once delivery means duplicates are possible; the consumer is responsible for ignoring replayed events.
 
