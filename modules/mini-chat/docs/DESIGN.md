@@ -506,7 +506,11 @@ To support reconnect UX and reduce support reliance on direct DB inspection, the
 - `chat_id`
 - `request_id`
 - `state`: `running|done|error|cancelled`
+- `error_code` (nullable string) — terminal error code when `state` is `error` (e.g. `provider_error`, `orphan_timeout`). Null for non-error states and while running. Mapped from `chat_turns.error_code`. Provider identifiers and billing outcome are not exposed.
+- `assistant_message_id` (nullable UUID) — persisted assistant message ID when `state` is `done`. Null while running, on error, or on cancellation. Allows clients to fetch the assistant message directly without listing all messages.
 - `updated_at`
+
+Turn Status is authoritative for lifecycle state resolution and provides actionable context for disconnect recovery. Clients can use `error_code` to display an appropriate error message and `assistant_message_id` to fetch completed content, both without additional round-trips. Billing outcome, internal settlement details, and provider internals are not exposed via this endpoint in P1.
 
 **Internal-to-API state mapping**:
 

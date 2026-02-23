@@ -456,7 +456,7 @@
         "operationId": "getTurnStatus",
         "tags": ["turns"],
         "summary": "Get authoritative turn status",
-        "description": "Returns the server-side turn state for a given request_id. Used by the UI for disconnect recovery. Internal states map to API states: running->running, completed->done, failed->error, cancelled->cancelled.",
+        "description": "Returns the authoritative server-side turn state for a given request_id. Used by the UI for disconnect recovery. Internal states map to API states: running->running, completed->done, failed->error, cancelled->cancelled. Includes error_code (when state is 'error') and assistant_message_id (when state is 'done') so clients can resolve uncertainty after disconnect without additional round-trips. Billing outcome and provider internals are not exposed.",
         "responses": {
           "200": {
             "description": "Turn status.",
@@ -469,6 +469,8 @@
                   "chat_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
                   "request_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
                   "state": "done",
+                  "error_code": null,
+                  "assistant_message_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
                   "updated_at": "2025-06-15T10:36:30Z"
                 }
               }
@@ -1079,7 +1081,7 @@
       "TurnStatus": {
         "type": "object",
         "required": ["chat_id", "request_id", "state", "updated_at"],
-        "description": "Authoritative server-side turn state. Internal-to-API state mapping: running->running, completed->done, failed->error, cancelled->cancelled. Terminal states (done, error, cancelled) are immutable — once reached, the state never changes. Exactly one terminal outcome exists per (chat_id, request_id) pair. All terminal states indicate that quota settlement has been finalized atomically with the state transition. A state of 'done' guarantees that the full assistant message content is durably persisted and available for idempotent replay.",
+        "description": "Authoritative server-side turn state for lifecycle resolution and disconnect recovery. Internal-to-API state mapping: running->running, completed->done, failed->error, cancelled->cancelled. Terminal states (done, error, cancelled) are immutable — once reached, the state never changes. Exactly one terminal outcome exists per (chat_id, request_id) pair. All terminal states indicate that quota settlement has been finalized atomically with the state transition. A state of 'done' guarantees that the full assistant message content is durably persisted and available for idempotent replay. Optional fields (error_code, assistant_message_id) provide actionable context so clients can resolve uncertainty after disconnect without an additional round-trip. Billing outcome and provider internals are not exposed.",
         "properties": {
           "chat_id": {
             "type": "string",
@@ -1093,6 +1095,17 @@
             "type": "string",
             "enum": ["running", "done", "error", "cancelled"],
             "description": "Turn state. 'done', 'error', 'cancelled' are terminal and immutable. 'cancelled' indicates client disconnect or internal abort — no SSE error event was emitted. Use this endpoint to resolve state after disconnect."
+          },
+          "error_code": {
+            "type": "string",
+            "nullable": true,
+            "description": "Terminal error code when state is 'error' (e.g. 'provider_error', 'orphan_timeout', 'context_length_exceeded'). Null for non-error terminal states and while running. Mapped from internal chat_turns.error_code. Provider identifiers and billing outcome are not exposed."
+          },
+          "assistant_message_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Persisted assistant message ID when state is 'done'. Null while running, on error, or on cancellation. Clients can use this to fetch the assistant message via GET /v1/chats/{id}/messages without listing all messages."
           },
           "updated_at": {
             "type": "string",
