@@ -221,7 +221,7 @@ The system MUST allow users to upload image files (PNG, JPEG/JPG, WebP) to a cha
 - Images are included in the Responses API request input as multimodal content items (file ID references), allowing the assistant to reason about image content for that chat turn.
 - Images are NOT summarized on upload (no background summary task for images at P1).
 - Attachment access remains owner-only and tenant-isolated (same access rules as document attachments).
-- If the effective model (after any quota-driven downgrade) does not support image input, the system MUST reject with `unsupported_media` error (HTTP 415) before any provider call. This applies even when the user's selected model is image-capable but the effective model after downgrade is not. The system MUST NOT silently drop images or auto-upgrade to an image-capable model.
+- If the effective model (after any quota-driven downgrade) does not support image input, the system MUST reject with `unsupported_media` error (HTTP 415) before any provider call. This applies even when the user's selected model is image-capable but the effective model after downgrade is not. The system MUST NOT silently drop images or auto-upgrade to an image-capable model. **P1 catalog invariant**: all enabled models in the P1 catalog include `VISION_INPUT` capability (see DESIGN.md Model Catalog Configuration), so this rejection path is defensive and not expected to trigger in P1 deployments. It activates automatically if a future catalog introduces a model without `VISION_INPUT`.
 
 **Rationale**: Users need to share visual content (screenshots, diagrams, photos) with the AI assistant and ask questions about what they see.
 **Actors**: `cpt-cf-mini-chat-actor-chat-user`
@@ -760,7 +760,7 @@ Support and UX recovery flows SHOULD be able to query authoritative turn state b
 | `web_search_disabled` | 400 | Request includes `web_search.enabled=true` but the global `disable_web_search` kill switch is active |
 | `too_many_images` | 400 | Request includes more than the configured maximum images for a single turn |
 | `image_bytes_exceeded` | 413 | Request includes images whose total configured per-turn byte limit is exceeded |
-| `unsupported_media` | 415 | Request includes image input but the effective model does not support multimodal input |
+| `unsupported_media` | 415 | Request includes image input but the effective model does not support multimodal input. Defensive under P1 catalog invariant (all enabled models include `VISION_INPUT`); expected only on catalog misconfiguration or future non-vision models. |
 | `provider_error` | 502 | LLM provider returned an error |
 | `provider_timeout` | 504 | LLM provider request timed out |
 
@@ -1034,8 +1034,8 @@ Provider identifiers (`provider_file_id`, `provider_response_id`, `vector_store_
 - [ ] Image attachments do not appear in file_search citations
 - [ ] Quota limits for images are enforced: per-message image input limit and per-day image input limit reject requests that exceed configured caps
 - [ ] Audit events for turns with image input do not include raw image bytes; only attachment metadata (attachment_id, content_type, size_bytes, filename) is included
-- [ ] Submitting an image to a model that does not support multimodal input returns `unsupported_media` error (HTTP 415)
-- [ ] When premium quota is exhausted and the downgrade cascade selects an image-incapable model, image-bearing turns are rejected with `unsupported_media` (HTTP 415) before any outbound provider call; images are never silently dropped
+- [ ] Submitting an image to a model that does not support multimodal input returns `unsupported_media` error (HTTP 415) — defensive check; not expected under the P1 catalog invariant (all enabled models include `VISION_INPUT`)
+- [ ] If a future catalog introduces a non-vision model, the downgrade cascade selecting that model for an image-bearing turn MUST reject with `unsupported_media` (HTTP 415) before any outbound provider call; images are never silently dropped. Under the P1 catalog invariant this path is unreachable.
 - [ ] File search retrieval only considers documents attached to the current chat (each chat has its own dedicated vector store; no cross-chat leakage by design)
 - [ ] Full file text is not injected into the prompt; only top-k retrieved chunks are included
 - [ ] Per-chat document count and total file size limits are enforced; uploads exceeding limits are rejected
@@ -1078,7 +1078,7 @@ Provider identifiers (`provider_file_id`, `provider_response_id`, `vector_store_
 | Vector store data consistency on deletion | Orphaned files at provider | Idempotent cleanup with retry; reconciliation job for detecting orphans |
 | Large number of chats with documents creating many vector stores | Provider API limits on vector store count; increased storage costs | Monitor vector store count per user via metrics; enforce per-chat document limits; plan per-workspace aggregation (P2) |
 | Image spam / abuse driving excessive provider costs | Unexpected cost spikes from high-volume or large image uploads | Per-message image input cap (default: 4); per-user daily image input cap (default: 50); configurable byte limits; image-specific quota counters and metrics |
-| Provider model does not support multimodal input | Image-bearing requests fail | The domain service checks model capability before outbound call; rejects with `unsupported_media` (HTTP 415) if effective model lacks image support; operator configures which models support images |
+| Provider model does not support multimodal input | Image-bearing requests fail | The domain service checks model capability before outbound call; rejects with `unsupported_media` (HTTP 415) if effective model lacks image support; operator configures which models support images. P1 catalog invariant: all enabled models include `VISION_INPUT`, so this risk applies only if a future catalog introduces a non-vision model. |
 
 ## 13. Open Questions
 

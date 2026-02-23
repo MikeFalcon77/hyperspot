@@ -304,7 +304,7 @@
             }
           },
           "415": {
-            "description": "Effective model does not support multimodal input. Validation occurs after downgrade decision and before provider call. Code: `unsupported_media`.",
+            "description": "Effective model does not support multimodal input. Validation occurs after downgrade decision and before provider call. Code: `unsupported_media`. Defensive: under the P1 catalog invariant (all enabled models include VISION_INPUT) this response is not expected; it activates if a future catalog introduces a non-vision model or on catalog misconfiguration.",
             "content": {
               "application/json": {
                 "schema": {
