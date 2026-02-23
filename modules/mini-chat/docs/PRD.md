@@ -452,6 +452,14 @@ When a chat is deleted, the system MUST mark attachments for asynchronous cleanu
 - Exactly one terminal settlement per reserved invocation, enforced via DB-atomic conditional finalization (CAS guard on turn state). No in-memory locks; all finalization paths — including the orphan watchdog — use the same database-level mutual exclusion.
 - Failed LLM invocations that reached the provider may incur token charges (input and/or output) and are billed accordingly based on actual consumption or a bounded estimate when actual usage is unavailable.
 
+**Background/system task billing rules (P1)**:
+
+- Background tasks (thread summary update, document summary generation) are `requester_type=system`.
+- They MUST NOT create `chat_turns` rows.
+- They MUST NOT reserve user quota buckets (`tenant_id`, `user_id`). Per-user quota enforcement does not apply to system tasks.
+- They MUST emit usage events attributed to a system bucket (or system actor) and MUST follow the same provider-id sanitization rules as user-initiated turns.
+- They MUST still obey global cost controls (tenant-level token budgets, kill switches) but are not part of per-user quota enforcement.
+
 **Deferred to P2+**: detailed billing integration contracts (event schemas, RPC interfaces, outbox requirements, credit proxy endpoints). See DESIGN.md section 5 for additional context.
 
 ## 6. Non-Functional Requirements

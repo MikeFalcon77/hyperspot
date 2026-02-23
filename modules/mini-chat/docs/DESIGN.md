@@ -375,6 +375,18 @@ Background tasks (thread summary update, document summary generation) MUST run w
 
 Background/system tasks MUST NOT create `chat_turns` records. `chat_turns` idempotency and replay semantics apply only to user-initiated streaming turns.
 
+#### System Task Isolation Invariant (P1)
+
+System tasks (thread summary update, document summary generation) MUST be isolated from user-turn billing and idempotency paths:
+
+1. System tasks MUST NOT participate in `chat_turns` idempotency and finalization CAS. They MUST NOT write to the `chat_turns` table and MUST NOT use `chat_turns.state` transitions.
+2. System tasks MUST NOT debit user quota tables (`quota_usage` rows keyed by `(tenant_id, user_id)`). They are not subject to per-user quota enforcement.
+3. System tasks MUST emit `usage_outbox` events with `requester_type=system` (or equivalent field) so CyberChatManager can attribute cost to the tenant operational bucket, not to an individual user.
+4. System tasks MUST follow the same provider-id sanitization rules as user turns (no provider identifiers in outbox payloads or audit events).
+5. System tasks MUST still obey global cost controls (tenant-level token budgets, kill switches) as defined in PRD section 5.6.
+
+**Implementation guard**: any code path that produces an outbox usage event for a user turn MUST require an existing `chat_turns` row and its CAS finalization winner token (`rows_affected = 1` from the `WHERE state = 'running'` guard, section 5.3). System tasks MUST have a separate code path that does not pass through this guard. A system task that attempts to use the user-turn finalization path MUST be rejected by the CAS precondition (no matching `chat_turns` row with `state = 'running'`).
+
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-component-authz-integration`
 
 - **authz_resolver (PDP)** — Platform AuthZ Resolver module. The mini-chat domain service calls it (via PolicyEnforcer) before every data-access operation to obtain authorization decisions and SQL-compilable constraints. See section 3.8.
