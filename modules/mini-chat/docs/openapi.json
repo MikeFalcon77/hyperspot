@@ -1217,7 +1217,7 @@
       "SseCitationsEvent": {
         "type": "object",
         "required": ["items"],
-        "description": "SSE `event: citations` payload. Delivers source references used in the answer. Emitted once near stream completion before the terminal event.",
+        "description": "SSE `event: citations` payload. Delivers source references used in the answer. MAY include items from file_search (source=file) and/or web_search (source=web). Image inputs do not produce citations. Emitted at most once near stream completion before the terminal event (P1).",
         "properties": {
           "items": {
             "type": "array",
