@@ -28,7 +28,7 @@
     "available_capabilities": {
       "type": "array",
       "items": { "$ref": "./Capability.json" },
-      "description": "Capabilities returned by webhook backend on creation"
+      "description": "Capabilities confirmed by the backend plugin on session creation (`on_session_created`). Chat Engine uses this list for feature gating (e.g., file upload, summarization). May be a subset of `SessionType.capabilities` depending on plugin logic and `SessionType.meta`."
     },
     "metadata": {
       "type": "object",

@@ -2,7 +2,7 @@
 
 **Date**: 2026-02-04
 
-**Status**: accepted
+**Status**: superseded by ADR-0026 (CyberFabric Plugin System for Backend Integration)
 
 **ID**: `fdd-chat-engine-adr-webhook-protocol`
 

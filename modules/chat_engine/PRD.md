@@ -2,9 +2,9 @@
 
 ## 1. Overview
 
-**Purpose**: Chat Engine is a proxy service that manages session lifecycle and message routing between clients and external webhook backends.
+**Purpose**: Chat Engine is a Gateway module (CyberFabric ModKit) that manages session lifecycle and message routing between clients and Backend Plugin modules.
 
-Chat Engine provides a unified interface for building conversational applications by abstracting session management, message history persistence, and flexible message processing. The system acts as an intermediary layer that handles the complexity of session state, message tree structures, and backend integration, allowing application developers to focus on building user experiences and webhook backend developers to focus on message processing logic.
+Chat Engine provides a unified interface for building conversational applications by abstracting session management, message history persistence, and flexible message processing. The system acts as an intermediary layer that handles the complexity of session state, message tree structures, and backend integration, allowing application developers to focus on building user experiences and backend plugin developers to focus on message processing logic.
 
 The core value proposition is enabling flexible, stateful conversation management with support for advanced features like message regeneration and conversation branching. By decoupling the conversation infrastructure from processing logic, Chat Engine enables rapid experimentation with different AI models, processing backends, and conversation patterns without requiring changes to client applications.
 
@@ -12,7 +12,7 @@ The system supports various conversation patterns including traditional linear c
 
 **Target Users**:
 - **Application Developers** - Build chat applications using Chat Engine as backend infrastructure for session and message management
-- **Webhook Backend Developers** - Implement custom message processing logic (AI, rule-based, human-in-the-loop) that integrates with Chat Engine
+- **Backend Plugin Developers** - Implement custom message processing logic (AI, rule-based, human-in-the-loop) that integrates with Chat Engine
 - **End Users** (indirect) - Use applications built on Chat Engine, experiencing responsive conversational interfaces
 
 **Key Problems Solved**:
@@ -30,7 +30,7 @@ The system supports various conversation patterns including traditional linear c
 
 **Capabilities**:
 - Session lifecycle management (create, delete, retrieve)
-- Message routing to webhook backends with real-time streaming
+- Message routing to backend plugins with real-time streaming
 - Message variant preservation (regeneration, branching)
 - File attachment references in messages
 - Session type switching mid-conversation
@@ -44,15 +44,15 @@ The system supports various conversation patterns including traditional linear c
 | Term | Definition |
 |------|------------|
 | **Session** | A persistent conversation context with a unique ID, owned by a client and associated with a session type |
-| **Session Type** | A configuration profile that maps a session to a webhook backend and defines enabled capabilities (file attachments, summarization, WebSocket, etc.) |
-| **Webhook Backend** | An external HTTP service that receives session context and messages from Chat Engine and returns responses |
+| **Session Type** | A configuration profile that maps a session to a backend plugin and defines enabled capabilities (file attachments, summarization, WebSocket, etc.) |
+| **Backend Plugin** | A CyberFabric ModKit plugin module implementing `ChatEngineBackendPlugin` trait; co-located in the same CyberFabric process and called directly via `ClientHub`. External HTTP backends are supported via the `chat-engine-webhook-adapter` plugin. See ADR-0026. |
 | **Message Tree** | A tree structure where each message references a parent message; sibling nodes with the same parent are variants |
 | **Message Variant** | An alternative response at the same position in the conversation tree — created by regeneration or branching |
-| **Capability** | A feature flag returned by the webhook backend at session creation time that enables optional Chat Engine functionality |
-| **Streaming Response** | Real-time forwarding of response chunks from the webhook backend to the client as they are generated |
+| **Capability** | A feature flag returned by the backend plugin at session creation time that enables optional Chat Engine functionality |
+| **Streaming Response** | Real-time forwarding of response chunks from the backend plugin to the client as they are generated |
 | **Lifecycle State** | One of four session states: `active`, `archived`, `soft_deleted`, `hard_deleted` |
 | **is_hidden_from_user** | Message visibility flag that excludes the message from client-facing APIs |
-| **is_hidden_from_llm** | Message visibility flag that excludes the message from the context sent to webhook backends |
+| **is_hidden_from_llm** | Message visibility flag that excludes the message from the context sent to backend plugins |
 
 ## 2. Actors
 
@@ -74,12 +74,12 @@ The system supports various conversation patterns including traditional linear c
 **Role**: Interacts with client applications built on Chat Engine, sending messages, receiving responses, and navigating conversation variants (indirect actor, does not directly interact with Chat Engine).
 <!-- fdd-id-content -->
 
-#### Webhook Backend Developer
+#### Backend Plugin Developer
 
 **ID**: `cpt-chat-engine-actor-backend-developer`
 
 <!-- fdd-id-content -->
-**Role**: Implements webhook backends that receive session context and messages from Chat Engine, process them according to custom logic (AI, rules, human-in-the-loop), and return responses.
+**Role**: Implements CyberFabric ModKit plugin modules that satisfy the `ChatEngineBackendPlugin` trait. Registers the plugin in `types-registry` and declares its capabilities. May call external AI APIs, RAG systems, or human-in-the-loop workflows internally. Optionally wraps an external HTTP endpoint using the `chat-engine-webhook-adapter` plugin.
 <!-- fdd-id-content -->
 
 ### 2.2 System Actors
@@ -92,12 +92,16 @@ The system supports various conversation patterns including traditional linear c
 **Role**: Frontend application (web, mobile, desktop) that sends messages to Chat Engine, receives streaming responses, and renders conversation UI including message trees and variants.
 <!-- fdd-id-content -->
 
-#### Webhook Backend
+#### Backend Plugin
 
-**ID**: `cpt-chat-engine-actor-webhook-backend`
+**ID**: `cpt-chat-engine-actor-backend-plugin`
 
 <!-- fdd-id-content -->
-**Role**: External HTTP service that processes messages and returns responses. Receives full session context, message history, and capabilities from Chat Engine. Implements custom message processing logic.
+**Role**: CyberFabric ModKit plugin module that implements the `ChatEngineBackendPlugin` trait and registers itself in the platform `types-registry`. Receives full session context, message history, and declared capabilities from Chat Engine. Implements custom message processing logic (LLM calls, RAG, rule-based responses, etc.).
+
+Plugin modules are co-located within the same CyberFabric server process and called directly via `ClientHub` — no HTTP round-trip, no auth negotiation, no retry logic required at the Chat Engine level. Plugin vendors who need to delegate to an external HTTP endpoint use the first-party **`chat-engine-webhook-adapter`** plugin, which internally handles auth, retry, circuit breaker, and throttling.
+
+**See**: ADR-0026 (CyberFabric Plugin System for Backend Integration)
 <!-- fdd-id-content -->
 
 #### File Storage Service
@@ -123,9 +127,9 @@ The system supports various conversation patterns including traditional linear c
 - [ ] `p1` - **ID**: `cpt-chat-engine-fr-create-session`
 
 <!-- fdd-id-content -->
-The system **MUST** create a new session with a specified session type and client ID. The system binds each session to the requesting user (`user_id`) and tenant (`tenant_id`), both extracted from the JWT bearer token — they are never accepted from the request body. The system notifies the webhook backend of the new session and receives available capabilities for that session type. The capabilities determine which features are enabled (file attachments, session switching, summarization, etc.).
+The system **MUST** create a new session with a specified session type and client ID. The system binds each session to the requesting user (`user_id`) and tenant (`tenant_id`), both extracted from the JWT bearer token — they are never accepted from the request body. The system notifies the backend plugin of the new session and receives available capabilities for that session type. The capabilities determine which features are enabled (file attachments, session switching, summarization, etc.).
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-002: Send Message with Streaming Response
@@ -133,9 +137,9 @@ The system **MUST** create a new session with a specified session type and clien
 - [ ] `p1` - **ID**: `cpt-chat-engine-fr-send-message`
 
 <!-- fdd-id-content -->
-The system **MUST** forward user messages to webhook backend with full session context (session metadata, capabilities, message history) and stream responses back to client in real-time. The system persists the complete message exchange (user message and assistant response) after streaming completes.
+The system **MUST** forward user messages to backend plugin with full session context (session metadata, capabilities, message history) and stream responses back to client in real-time. The system persists the complete message exchange (user message and assistant response) after streaming completes.
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-003: Attach Files to Messages
@@ -143,7 +147,7 @@ The system **MUST** forward user messages to webhook backend with full session c
 - [ ] `p1` - **ID**: `cpt-chat-engine-fr-attach-files`
 
 <!-- fdd-id-content -->
-The system **MUST** support file references in messages. Clients upload files to File Storage Service, obtain file UUIDs (stable identifiers), and include these UUIDs in message payloads. The system stores UUIDs in message records and forwards them to webhook backends as part of message context. File handling is enabled only if session capabilities allow it.
+The system **MUST** support file references in messages. Clients upload files to File Storage Service, obtain file UUIDs (stable identifiers), and include these UUIDs in message payloads. The system stores UUIDs in message records and forwards them to backend plugins as part of message context. File handling is enabled only if session capabilities allow it.
 
 **File Upload Workflow:**
 1. Client calls File Storage Service upload endpoint
@@ -166,9 +170,9 @@ The system **MUST** support file references in messages. Clients upload files to
 - [ ] `p2` - **ID**: `cpt-chat-engine-fr-switch-session-type`
 
 <!-- fdd-id-content -->
-The system **SHOULD** allow switching to a different session type mid-session. When switching occurs, the next message is routed to the new webhook backend with full message history. The new backend returns updated capabilities which apply for subsequent messages.
+The system **SHOULD** allow switching to a different session type mid-session. When switching occurs, the next message is routed to the new backend plugin with full message history. The new backend returns updated capabilities which apply for subsequent messages.
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-005: Recreate Assistant Response
@@ -178,7 +182,7 @@ The system **SHOULD** allow switching to a different session type mid-session. W
 <!-- fdd-id-content -->
 The system **MUST** allow regeneration of assistant responses. When recreation is requested, the old response is preserved as a variant in the message tree, and a new response is generated and stored as a sibling (same parent, different branch). Both variants remain accessible for navigation.
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-006: Branch from Message
@@ -188,7 +192,7 @@ The system **MUST** allow regeneration of assistant responses. When recreation i
 <!-- fdd-id-content -->
 The system **SHOULD** allow creating new messages from any point in conversation history, creating alternative conversation paths. When branching, the system loads context up to the specified parent message and forwards the new message to the backend with truncated history. Both conversation branches remain preserved.
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-007: Navigate Message Variants
@@ -208,7 +212,7 @@ Webhook backends receive message history with file_ids (UUIDs). Backends must im
 - [ ] `p1` - **ID**: `cpt-chat-engine-fr-stop-streaming`
 
 <!-- fdd-id-content -->
-The system **MUST** allow canceling streaming responses mid-generation. When cancellation occurs, the system stops forwarding data from webhook backend, closes the connection, and saves the partial response as an incomplete message with appropriate metadata.
+The system **MUST** allow canceling streaming responses mid-generation. When cancellation occurs, the system stops forwarding data from backend plugin, closes the connection, and saves the partial response as an incomplete message with appropriate metadata.
 
 **Actors**: `cpt-chat-engine-actor-client`
 <!-- fdd-id-content -->
@@ -238,9 +242,9 @@ The system **MAY** generate shareable links for sessions. Recipients can view se
 - [ ] `p2` - **ID**: `cpt-chat-engine-fr-session-summary`
 
 <!-- fdd-id-content -->
-The system **SHOULD** support session summarization if enabled by session type capabilities. Summary generation is triggered automatically or on demand and can be handled by the webhook backend or a dedicated summarization service. The summary is stored as session metadata.
+The system **SHOULD** support session summarization if enabled by session type capabilities. Summary generation is triggered automatically or on demand and can be handled by the backend plugin or a dedicated summarization service. The summary is stored as session metadata.
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-016: Conversation Memory Management Strategies
@@ -285,7 +289,7 @@ The system **SHOULD** provide guidance and capabilities to support conversation 
 - **Summarization**: Balanced approach but adds summarization overhead
 - **Importance Filtering**: Optimal quality but complex to implement
 
-**Actors**: `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-017: Individual Message Deletion
@@ -293,7 +297,7 @@ The system **SHOULD** provide guidance and capabilities to support conversation 
 - [ ] `p1` - **ID**: `cpt-chat-engine-fr-delete-message`
 
 <!-- fdd-id-content -->
-The system **MUST** support deletion of individual messages within a session. When a message is deleted, all associated reactions are cascade-deleted automatically to maintain referential integrity. The system validates ownership (authenticated user must own the message) before deletion and notifies the webhook backend of the deletion event.
+The system **MUST** support deletion of individual messages within a session. When a message is deleted, all associated reactions are cascade-deleted automatically to maintain referential integrity. The system validates ownership (authenticated user must own the message) before deletion and notifies the backend plugin of the deletion event.
 
 **Deletion Behavior**:
 - **Hard delete only**: Messages are permanently removed (no soft delete for individual messages)
@@ -312,7 +316,7 @@ The system **MUST** support deletion of individual messages within a session. Wh
 - Cannot delete assistant messages (only user messages can be deleted by users)
 - Deletion is permanent and cannot be undone
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-018: Per-Message Feedback
@@ -320,7 +324,7 @@ The system **MUST** support deletion of individual messages within a session. Wh
 - [ ] `p2` - **ID**: `cpt-chat-engine-fr-message-feedback`
 
 <!-- fdd-id-content -->
-The system **SHOULD** support per-message feedback in the form of like/dislike reactions and optional text comments. Feedback enables quality monitoring, model evaluation, and user satisfaction tracking. Each message can have at most one reaction per user, with reaction changes (like → dislike) replacing the previous reaction. The system stores feedback metadata and optionally forwards it to webhook backends for analytics.
+The system **SHOULD** support per-message feedback in the form of like/dislike reactions and optional text comments. Feedback enables quality monitoring, model evaluation, and user satisfaction tracking. Each message can have at most one reaction per user, with reaction changes (like → dislike) replacing the previous reaction. The system stores feedback metadata and optionally forwards it to backend plugins for analytics.
 
 **Reaction Types**:
 - **like**: Positive feedback (thumbs up)
@@ -345,7 +349,7 @@ The system **SHOULD** support per-message feedback in the form of like/dislike r
 
 **Capability Gating**: Enabled if session type supports feedback capability
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-019: Context Overflow Strategies
@@ -353,7 +357,7 @@ The system **SHOULD** support per-message feedback in the form of like/dislike r
 - [ ] `p2` - **ID**: `cpt-chat-engine-fr-context-overflow`
 
 <!-- fdd-id-content -->
-The system **SHOULD** provide explicit support for handling context window overflow when message history exceeds LLM token limits. Chat Engine provides primitives and metadata to enable webhook backends to implement various overflow strategies. The system does not enforce a specific strategy but provides the mechanisms for backends to implement their chosen approach.
+The system **SHOULD** provide explicit support for handling context window overflow when message history exceeds LLM token limits. Chat Engine provides primitives and metadata to enable backend plugins to implement various overflow strategies. The system does not enforce a specific strategy but provides the mechanisms for backends to implement their chosen approach.
 
 **Supported Strategy Primitives**:
 
@@ -386,7 +390,7 @@ The system **SHOULD** provide explicit support for handling context window overf
 
 **Capability Gating**: Strategy configuration exposed via session capabilities
 
-**Actors**: `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-020: Message Retention & Cleanup Policies
@@ -394,7 +398,7 @@ The system **SHOULD** provide explicit support for handling context window overf
 - [ ] `p2` - **ID**: `cpt-chat-engine-fr-message-retention`
 
 <!-- fdd-id-content -->
-The system **SHOULD** support message-level retention policies that automatically clean up old messages while preserving session structure. Unlike session deletion (FR-014), message retention policies allow selective message cleanup to optimize storage costs while keeping sessions accessible. Cleanup operations preserve message tree integrity and notify webhook backends.
+The system **SHOULD** support message-level retention policies that automatically clean up old messages while preserving session structure. Unlike session deletion (FR-014), message retention policies allow selective message cleanup to optimize storage costs while keeping sessions accessible. Cleanup operations preserve message tree integrity and notify backend plugins.
 
 **Message Retention Behavior**:
 - **Age-based cleanup**: Delete messages older than N days
@@ -431,7 +435,7 @@ The system **SHOULD** support message-level retention policies that automaticall
 - Message retention operates within active sessions (selective cleanup)
 - When session is deleted, all messages are deleted (session takes precedence)
 
-**Actors**: `cpt-chat-engine-actor-system`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-system`, `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-012: Search Session History
@@ -459,7 +463,7 @@ The system **MAY** search across all sessions belonging to a client and return r
 - [ ] `p1` - **ID**: `cpt-chat-engine-fr-delete-session`
 
 <!-- fdd-id-content -->
-The system **MUST** support session lifecycle management with four states: active, archived, soft_deleted, and hard_deleted. Sessions transition through these states based on user actions or retention policies. Each lifecycle transition notifies webhook backends to enable synchronized resource management.
+The system **MUST** support session lifecycle management with four states: active, archived, soft_deleted, and hard_deleted. Sessions transition through these states based on user actions or retention policies. Each lifecycle transition notifies backend plugins to enable synchronized resource management.
 
 **Lifecycle States:**
 - **active** - Normal operational state (default)
@@ -471,7 +475,7 @@ The system **MUST** support session lifecycle management with four states: activ
 
 **State Inheritance:** Messages inherit lifecycle_state from their session and transition together to maintain referential integrity.
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-014a: Soft Delete Session (Recoverable)
@@ -479,9 +483,9 @@ The system **MUST** support session lifecycle management with four states: activ
 - [ ] `p1` - **ID**: `cpt-chat-engine-fr-soft-delete-session`
 
 <!-- fdd-id-content -->
-The system **MUST** support soft deletion as the default deletion mechanism. Soft-deleted sessions are hidden from normal queries but remain in the system and can be restored within a retention period. The system notifies webhook backends of soft deletion, allowing them to cleanup or suspend associated resources. Sessions automatically transition to permanent deletion after the retention period expires unless restored.
+The system **MUST** support soft deletion as the default deletion mechanism. Soft-deleted sessions are hidden from normal queries but remain in the system and can be restored within a retention period. The system notifies backend plugins of soft deletion, allowing them to cleanup or suspend associated resources. Sessions automatically transition to permanent deletion after the retention period expires unless restored.
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-014b: Hard Delete Session (Permanent)
@@ -489,9 +493,9 @@ The system **MUST** support soft deletion as the default deletion mechanism. Sof
 - [ ] `p1` - **ID**: `cpt-chat-engine-fr-hard-delete-session`
 
 <!-- fdd-id-content -->
-The system **MUST** support permanent hard deletion that irreversibly removes sessions and all associated messages. Hard deletion is triggered explicitly by user request or automatically when soft-deleted sessions reach their retention period expiry. The system notifies webhook backends of permanent deletion, requiring them to cleanup all external resources (files, analytics, indices). This supports data minimization requirements (GDPR, CCPA).
+The system **MUST** support permanent hard deletion that irreversibly removes sessions and all associated messages. Hard deletion is triggered explicitly by user request or automatically when soft-deleted sessions reach their retention period expiry. The system notifies backend plugins of permanent deletion, requiring them to cleanup all external resources (files, analytics, indices). This supports data minimization requirements (GDPR, CCPA).
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`, `cpt-chat-engine-actor-system`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`, `cpt-chat-engine-actor-system`
 <!-- fdd-id-content -->
 
 #### FR-014c: Restore Soft-Deleted Session
@@ -499,9 +503,9 @@ The system **MUST** support permanent hard deletion that irreversibly removes se
 - [ ] `p2` - **ID**: `cpt-chat-engine-fr-restore-session`
 
 <!-- fdd-id-content -->
-The system **SHOULD** support restoring soft-deleted sessions back to active state. Restoration is only possible before the retention period expires. This enables recovery from accidental deletions. The system notifies webhook backends when sessions are restored, allowing them to reinstate any suspended resources. Hard-deleted sessions cannot be restored.
+The system **SHOULD** support restoring soft-deleted sessions back to active state. Restoration is only possible before the retention period expires. This enables recovery from accidental deletions. The system notifies backend plugins when sessions are restored, allowing them to reinstate any suspended resources. Hard-deleted sessions cannot be restored.
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-014d: Archive Inactive Sessions
@@ -509,9 +513,9 @@ The system **SHOULD** support restoring soft-deleted sessions back to active sta
 - [ ] `p3` - **ID**: `cpt-chat-engine-fr-archive-session`
 
 <!-- fdd-id-content -->
-The system **MAY** support archiving inactive sessions to optimize database performance. Archived sessions remain accessible and queryable but may have reduced query performance. Archival can be triggered manually or automatically based on inactivity period. The system notifies webhook backends of lifecycle state changes. Archived sessions can transition back to active state when new activity occurs or be deleted.
+The system **MAY** support archiving inactive sessions to optimize database performance. Archived sessions remain accessible and queryable but may have reduced query performance. Archival can be triggered manually or automatically based on inactivity period. The system notifies backend plugins of lifecycle state changes. Archived sessions can transition back to active state when new activity occurs or be deleted.
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`, `cpt-chat-engine-actor-system`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`, `cpt-chat-engine-actor-system`
 <!-- fdd-id-content -->
 
 #### FR-014e: Retention Policy Configuration and Enforcement
@@ -519,7 +523,7 @@ The system **MAY** support archiving inactive sessions to optimize database perf
 - [ ] `p2` - **ID**: `cpt-chat-engine-fr-retention-policy`
 
 <!-- fdd-id-content -->
-The system **SHOULD** support configurable retention policies that automatically manage session lifecycle based on age and inactivity. Retention policies enable automated data lifecycle management while balancing storage costs and compliance requirements. Policies are configured per session type and control automatic archival of inactive sessions, automatic hard deletion of soft-deleted sessions after grace period, and optional immediate deletion for compliance scenarios. The system processes retention policies periodically and notifies webhook backends of all lifecycle transitions.
+The system **SHOULD** support configurable retention policies that automatically manage session lifecycle based on age and inactivity. Retention policies enable automated data lifecycle management while balancing storage costs and compliance requirements. Policies are configured per session type and control automatic archival of inactive sessions, automatic hard deletion of soft-deleted sessions after grace period, and optional immediate deletion for compliance scenarios. The system processes retention policies periodically and notifies backend plugins of all lifecycle transitions.
 
 **Actors**: `cpt-chat-engine-actor-system`, Admin
 <!-- fdd-id-content -->
@@ -550,7 +554,43 @@ The system **SHOULD** support WebSocket protocol as an alternative to HTTP strea
 - WebSocket proxy configuration needed in deployment
 - Not compatible with serverless architectures
 
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
+<!-- fdd-id-content -->
+
+#### FR-021: Domain Model Schema Extensibility for Plugin Vendors
+
+- [ ] `p2` - **ID**: `cpt-chat-engine-fr-schema-extensibility`
+
+<!-- fdd-id-content -->
+The system **SHOULD** provide extensible, versioned base schemas for all core domain model entities, enabling plugin vendors to derive custom schemas and implement their own scenarios on top of Chat Engine without modifying the engine itself.
+
+**Extensible Domain Model Categories**:
+
+| Category | Base Schemas | Extension Point |
+|---|---|---|
+| **Message content types** | `TextContent`, `ImageContent`, `AudioContent`, `VideoContent`, `DocumentContent`, `CodeContent` | Plugins declare custom `ContentPart` subtypes |
+| **Event types** | `MessageNewEvent`, `SessionCreatedEvent`, `StreamingChunkEvent`, etc. | Plugins emit custom typed events via webhook response extensions |
+| **Error types** | `ErrorResponse`, `ErrorCode` | Plugins define domain-specific error codes in the `ErrorCode` enum space |
+| **Session / Message metadata** | `Session.metadata`, `Message.metadata` | Plugins store and validate typed custom metadata blobs |
+
+**Plugin Schema Contract**:
+- Chat Engine publishes base schemas via its GTS schema registry
+- Plugin vendors reference base schemas and declare derived schemas using the same GTS ID format (`gts://gts.x.core.events.event.v1~{plugin-namespace}.{name}.v{N}~`)
+- Chat Engine stores plugin-provided metadata in opaque `metadata` fields but **validates** the metadata blob against the declared derived schema
+- Access control checks are applied to custom metadata based on the plugin's declared schema and the session/message ownership model
+
+**Validation and Access Control**:
+- When a plugin declares a derived schema for `Session.metadata` or `Message.metadata`, Chat Engine registers it and validates incoming metadata against it
+- Plugins cannot override or extend base schema required fields; they extend via the open `metadata` fields only
+- Read access to custom metadata follows the same tenant/user isolation as the parent entity
+- Write access is gated by the plugin's JWT `client_id` claim — plugins may only write to metadata they own
+
+**Non-Goals**:
+- Chat Engine does not execute plugin code, only validates schemas and enforces access
+- Plugin schemas are purely structural (JSON Schema); behavioral logic stays in backend plugins
+- Modification of base Chat Engine schemas (fields, enums) is not allowed; only `metadata` fields are extensible
+
+**Actors**: `cpt-chat-engine-actor-backend-plugin`, `cpt-chat-engine-actor-tenant-admin`
 <!-- fdd-id-content -->
 
 ## 4. Use Cases
@@ -567,7 +607,7 @@ The system **SHOULD** support WebSocket protocol as an alternative to HTTP strea
 **Flow**:
 1. Client requests session creation with session type ID and client ID
 2. System creates session record in database with unique session ID
-3. System notifies webhook backend of session creation with session metadata
+3. System notifies backend plugin of session creation with session metadata
 4. Backend processes creation notification and returns available capabilities (file attachments, session switching, summarization, etc.)
 5. System stores capabilities in session record and returns session ID to client
 6. Client sends first message with capabilities indicating which features are enabled
@@ -582,7 +622,7 @@ The system **SHOULD** support WebSocket protocol as an alternative to HTTP strea
 **Acceptance criteria**:
 - Session ID returned to client within 200ms of creation request
 - Capabilities list correctly stored and accessible for subsequent messages
-- First message routed to correct webhook backend based on session type
+- First message routed to correct backend plugin based on session type
 - Streaming response delivered to client without data loss
 - Complete message exchange persisted in database before acknowledgment
 <!-- fdd-id-content -->
@@ -601,7 +641,7 @@ The system **SHOULD** support WebSocket protocol as an alternative to HTTP strea
 2. System validates that the specified message exists and is an assistant message
 3. System identifies the parent message of the assistant message to recreate
 4. System loads message history up to and including the parent message
-5. System sends recreation request to webhook backend with context (message history, session metadata, capabilities)
+5. System sends recreation request to backend plugin with context (message history, session metadata, capabilities)
 6. Backend generates new response based on context
 7. System streams new response chunks to client in real-time
 8. System stores new response as a sibling of the original response (same parent message ID)
@@ -632,7 +672,7 @@ The system **SHOULD** support WebSocket protocol as an alternative to HTTP strea
 2. Client sends new message with specified parent message ID
 3. System validates parent message exists in session
 4. System loads message history from session start up to and including parent message
-5. System forwards message to webhook backend with truncated context
+5. System forwards message to backend plugin with truncated context
 6. Backend processes message with historical context (ignoring messages after parent)
 7. System streams response chunks to client in real-time
 8. System stores new message with parent reference
@@ -707,7 +747,7 @@ The system **SHOULD** support WebSocket protocol as an alternative to HTTP strea
 9. Recipient views session messages
 10. Recipient sends new message in shared session
 11. System creates new message branching from last message in session
-12. System routes message to webhook backend with full history
+12. System routes message to backend plugin with full history
 13. Backend processes message and returns response
 14. System stores new branch separately from original session path
 
@@ -737,7 +777,7 @@ The system **SHOULD** support WebSocket protocol as an alternative to HTTP strea
 3. System validates file UUIDs against session capabilities (if file attachments enabled)
 4. System persists user message to database and assigns message ID
 5. System loads full message history for the session (respecting `is_hidden_from_llm` flags)
-6. System forwards message to webhook backend with: session metadata, capabilities, message history, new message content
+6. System forwards message to backend plugin with: session metadata, capabilities, message history, new message content
 7. Backend begins processing and streams response chunks
 8. System forwards each chunk to client in real-time
 9. Upon stream completion, system persists assistant message to database
@@ -765,17 +805,17 @@ The system **SHOULD** support WebSocket protocol as an alternative to HTTP strea
 2. System validates ownership (client ID matches session owner)
 3. System transitions session to `soft_deleted` state
 4. System hides session from normal queries
-5. System notifies webhook backend of soft-deletion event
+5. System notifies backend plugin of soft-deletion event
 6. System returns success to client with retention period expiry timestamp
 
 **Flow (Hard Delete)**:
 1. Client requests permanent hard-deletion (or retention period expires)
 2. System transitions session to `hard_deleted` state
 3. System permanently removes all session messages and metadata from database
-4. System notifies webhook backend with `session.hard_deleted` event (backend must clean up external resources)
+4. System notifies backend plugin with `session.hard_deleted` event (backend must clean up external resources)
 5. System returns success to client
 
-**Postconditions**: Session hidden (soft) or permanently removed (hard); webhook backend notified
+**Postconditions**: Session hidden (soft) or permanently removed (hard); backend plugin notified
 
 **Alternative Flows**:
 - **Client requests restore within retention period**: Session transitions back to `active` (see `cpt-chat-engine-fr-restore-session`)
@@ -788,7 +828,7 @@ The system **SHOULD** support WebSocket protocol as an alternative to HTTP strea
 **ID**: `cpt-chat-engine-usecase-backend-failure`
 
 <!-- fdd-id-content -->
-**Actor**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actor**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 
 **Preconditions**: Session active; message forwarded to backend; streaming in progress
 
@@ -815,7 +855,7 @@ The system **SHOULD** support WebSocket protocol as an alternative to HTTP strea
 - [ ] `p1` - **ID**: `cpt-chat-engine-nfr-response-time`
 
 <!-- fdd-id-content -->
-Message routing latency must be less than 100ms at p95, measured from receiving client message to forwarding to webhook backend (excluding backend processing time). Session creation must complete within 200ms at p95, including database write and backend notification.
+Message routing latency must be less than 100ms at p95, measured from receiving client message to forwarding to backend plugin (excluding backend processing time). Session creation must complete within 200ms at p95, including database write and backend notification.
 <!-- fdd-id-content -->
 
 #### NFR-002: Availability
@@ -823,7 +863,7 @@ Message routing latency must be less than 100ms at p95, measured from receiving 
 - [ ] `p1` - **ID**: `cpt-chat-engine-nfr-availability`
 
 <!-- fdd-id-content -->
-System must maintain 99.9% uptime for session management operations (create, retrieve, delete sessions). During webhook backend failures, the system must support degraded mode with read-only access to session history. Planned maintenance windows must be scheduled during low-traffic periods with advance notice.
+System must maintain 99.9% uptime for session management operations (create, retrieve, delete sessions). During backend plugin failures, the system must support degraded mode with read-only access to session history. Planned maintenance windows must be scheduled during low-traffic periods with advance notice.
 <!-- fdd-id-content -->
 
 #### NFR-003: Scalability
@@ -911,7 +951,7 @@ When WebSocket is enabled, connections must support automatic reconnection with 
 - [ ] `p2` - **ID**: `cpt-chat-engine-nfr-message-history`
 
 <!-- fdd-id-content -->
-System must support sessions with up to 10,000 messages without performance degradation. Message history forwarding to webhook backends must complete within 2 seconds at p95 for sessions with 1,000 messages. Backends must implement conversation memory management strategies when approaching context window limits (typically 4,000-100,000 tokens depending on LLM model). System must provide message count and estimated token count in session metadata to help backends make memory management decisions.
+System must support sessions with up to 10,000 messages without performance degradation. Message history forwarding to backend plugins must complete within 2 seconds at p95 for sessions with 1,000 messages. Backends must implement conversation memory management strategies when approaching context window limits (typically 4,000-100,000 tokens depending on LLM model). System must provide message count and estimated token count in session metadata to help backends make memory management decisions.
 <!-- fdd-id-content -->
 
 #### NFR-014: Lifecycle Operation Performance
@@ -950,7 +990,7 @@ Recovery objectives for Chat Engine persistent data:
 - [ ] `p2` - **ID**: `cpt-chat-engine-nfr-developer-experience`
 
 <!-- fdd-id-content -->
-Chat Engine's primary users are Application Developers and Webhook Backend Developers. Integration quality is a core product metric:
+Chat Engine's primary users are Application Developers and Backend Plugin Developers. Integration quality is a core product metric:
 
 - **Time-to-first-message**: A developer familiar with REST APIs must be able to send a first message within ≤ 30 minutes of reading the API documentation, without prior Chat Engine knowledge
 - **Error response quality**: All API errors must return structured responses with: machine-readable error code, human-readable message, and actionable remediation hint
@@ -961,7 +1001,7 @@ Chat Engine's primary users are Application Developers and Webhook Backend Devel
 
 ## 6. Additional Context
 
-#### Integration with Webhook Backends
+#### Integration with Backend Plugins
 
 **ID**: `cpt-chat-engine-prd-context-webhook-integration`
 
@@ -986,7 +1026,7 @@ Messages can be selectively hidden from users or LLMs using visibility flags:
 
 - **`is_hidden_from_user`** (boolean): When true, the message is excluded from client-facing APIs and UI rendering. The message remains in the database and message tree but is not returned to clients. Use cases include system prompts, backend configuration messages, and internal tracking notes.
 
-- **`is_hidden_from_llm`** (boolean): When true, the message is excluded from the context history sent to webhook backends during message processing. The message is still visible to users (unless also hidden via `is_hidden_from_user`) but does not influence LLM responses. Use cases include user feedback, debug messages, and messages that should not affect conversation context.
+- **`is_hidden_from_llm`** (boolean): When true, the message is excluded from the context history sent to backend plugins during message processing. The message is still visible to users (unless also hidden via `is_hidden_from_user`) but does not influence LLM responses. Use cases include user feedback, debug messages, and messages that should not affect conversation context.
 
 These flags enable flexible message handling patterns:
 - **System prompts**: `is_hidden_from_user=true, is_hidden_from_llm=false` - Configure LLM behavior without showing configuration to users
@@ -1000,7 +1040,7 @@ These flags enable flexible message handling patterns:
 **ID**: `cpt-chat-engine-prd-context-memory-management`
 
 <!-- fdd-id-content -->
-Chat Engine forwards complete message history to webhook backends by default, enabling backends to implement their own memory management strategies. For long conversations that exceed LLM context window limits, backends should implement strategies such as sliding windows, summarization, or importance filtering.
+Chat Engine forwards complete message history to backend plugins by default, enabling backends to implement their own memory management strategies. For long conversations that exceed LLM context window limits, backends should implement strategies such as sliding windows, summarization, or importance filtering.
 
 The system provides building blocks for memory management:
 - **Session Summary (FR-011)**: Request conversation summaries at any point
@@ -1046,7 +1086,7 @@ Common transitions:
 Messages inherit lifecycle state from their session. When a session transitions, all its messages transition together to maintain referential integrity.
 
 **Webhook Events:**
-The system notifies webhook backends of all lifecycle transitions (`session.soft_deleted`, `session.hard_deleted`, `session.restored`, `session.lifecycle_changed`) to enable synchronized resource management.
+The system notifies backend plugins of all lifecycle transitions (`session.soft_deleted`, `session.hard_deleted`, `session.restored`, `session.lifecycle_changed`) to enable synchronized resource management.
 <!-- fdd-id-content -->
 
 #### Retention Policy Design Philosophy
@@ -1096,7 +1136,7 @@ Key assumptions underlying this PRD:
 - Client applications handle all UI rendering of message trees and conversation visualization
 - File storage service provides signed URL access with configurable expiration
 - Database service supports ACID transactions and can handle write loads from concurrent sessions
-- Network between Chat Engine and webhook backends is reliable (same region/VPC preferred)
+- Network between Chat Engine and backend plugins is reliable (same region/VPC preferred)
 - Client applications handle user authentication and pass validated client IDs to Chat Engine
 - Webhook backends have reasonable response times (<30 seconds for most operations)
 <!-- fdd-id-content -->
@@ -1107,7 +1147,7 @@ Key assumptions underlying this PRD:
 
 <!-- fdd-id-content -->
 The following are explicitly out of scope for Chat Engine:
-- Message content processing, analysis, or moderation (handled by webhook backends)
+- Message content processing, analysis, or moderation (handled by backend plugins)
 - User authentication and identity management (handled by client applications)
 - File upload/download implementation (handled by external file storage service)
 - UI rendering and conversation visualization (handled by client applications)
@@ -1124,7 +1164,7 @@ The following are explicitly out of scope for Chat Engine:
 
 <!-- fdd-id-content -->
 Identified risks and mitigation strategies:
-- **Webhook Backend Latency**: Slow backends directly impact user experience. Mitigation: configurable timeouts per session type, monitoring and alerting for slow backends, consider caching for idempotent operations.
+- **Backend Plugin Latency**: Slow backends directly impact user experience. Mitigation: configurable timeouts per session type, monitoring and alerting for slow backends, consider caching for idempotent operations.
 - **Database Contention**: High message volume may cause database write contention and slow queries. Mitigation: read replicas for query operations, connection pooling, query optimization, consider sharding by client ID.
 - **Message Tree Complexity**: Deep branching (many variants or deep trees) may impact query performance and UI rendering. Mitigation: implement depth limits, pagination for variant navigation, database indexing on parent relationships.
 - **File Storage Costs**: Unrestricted file attachments may lead to high storage costs. Mitigation: enforce file size limits, implement retention policies, consider compression for certain file types.
@@ -1146,7 +1186,7 @@ Chat Engine processes user messages and user identifiers on behalf of client app
 
 **Data Minimization**: Chat Engine collects only the data operationally required to route messages and maintain session state. No analytics, profiling, or secondary use of message content occurs within Chat Engine.
 
-**Purpose Limitation**: Message content is forwarded to webhook backends for processing purposes only. Chat Engine does not analyse or index message content for any other purpose.
+**Purpose Limitation**: Message content is forwarded to backend plugins for processing purposes only. Chat Engine does not analyse or index message content for any other purpose.
 
 **Privacy by Default**: Optional data collection (feedback comments, session metadata fields) is disabled unless explicitly enabled by session type capabilities.
 
@@ -1168,7 +1208,7 @@ Chat Engine processes user messages and user identifiers on behalf of client app
 
 **Data Processing Agreement**: Client applications deploying Chat Engine in environments subject to GDPR or equivalent regulations must establish a Data Processing Agreement (DPA) governing Chat Engine's processing role.
 
-**Third-Party Processors**: Webhook backends receive message content from Chat Engine. Client applications are responsible for ensuring their webhook backends also operate under appropriate data processing agreements.
+**Third-Party Processors**: Webhook backends receive message content from Chat Engine. Client applications are responsible for ensuring their backend plugins also operate under appropriate data processing agreements.
 <!-- fdd-id-content -->
 
 ## 7. Intentional Exclusions
@@ -1179,11 +1219,11 @@ The following checklist categories are **not applicable** to this PRD. Each is e
 |----------|--------|--------|
 | **Safety (SAFE-PRD-001/002)** | N/A | Chat Engine is a pure information API service with no physical interaction, no hardware control, and no potential for physical harm. ISO 25010:2023 Safety characteristic does not apply. |
 | **Accessibility (UX-PRD-002)** | N/A | Chat Engine exposes a server-side REST/WebSocket API only — no user interface. Accessibility standards (WCAG) apply to client applications built on top of Chat Engine, not to Chat Engine itself. |
-| **Internationalization (UX-PRD-003)** | N/A | Chat Engine is message-content-agnostic. It stores and forwards opaque text without interpreting language, encoding, or locale. I18n is the responsibility of client applications and webhook backends. |
+| **Internationalization (UX-PRD-003)** | N/A | Chat Engine is message-content-agnostic. It stores and forwards opaque text without interpreting language, encoding, or locale. I18n is the responsibility of client applications and backend plugins. |
 | **Inclusivity (UX-PRD-005)** | N/A | Chat Engine has no user interface. Inclusivity concerns apply to client applications. |
 | **Market Positioning (BIZ-PRD-002)** | N/A | Chat Engine is an internal platform module, not a market-facing product. Competitive analysis and market positioning are not applicable. |
 | **Documentation Requirements (MAINT-PRD-001)** | Addressed in NFR-017 | Developer documentation, API spec, and webhook contract documentation are covered under `cpt-chat-engine-nfr-developer-experience`. |
-| **Support Requirements (MAINT-PRD-002)** | Deferred | Support tier SLAs are defined at the Hyperspot platform level, not per-module. Chat Engine inherits platform-wide support policies. |
-| **Deployment Requirements (OPS-PRD-001)** | Deferred | Deployment environment, release cadence, and rollback policies are defined in the Hyperspot platform-level PRD and infrastructure documentation. Chat Engine inherits these. |
-| **Monitoring Requirements (OPS-PRD-002)** | Deferred | Alerting, dashboards, and log retention are governed by the Hyperspot platform observability standards. Chat Engine must emit standard structured logs and metrics — specifics defined in DESIGN. |
+| **Support Requirements (MAINT-PRD-002)** | Deferred | Support tier SLAs are defined at the CyberFabric platform level, not per-module. Chat Engine inherits platform-wide support policies. |
+| **Deployment Requirements (OPS-PRD-001)** | Deferred | Deployment environment, release cadence, and rollback policies are defined in the CyberFabric platform-level PRD and infrastructure documentation. Chat Engine inherits these. |
+| **Monitoring Requirements (OPS-PRD-002)** | Deferred | Alerting, dashboards, and log retention are governed by the CyberFabric platform observability standards. Chat Engine must emit standard structured logs and metrics — specifics defined in DESIGN. |
 | **Industry Standards (COMPL-PRD-002)** | Partial | Applicable standards are referenced inline: GDPR (Art. 17, 25), CCPA, and ACID transaction guarantees. No formal certification (ISO 27001, SOC 2) is currently required. |

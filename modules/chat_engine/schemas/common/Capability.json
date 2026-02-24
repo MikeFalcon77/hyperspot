@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "gts://gts.x.chat_engine.common.capability.v1",
   "title": "Capability",
-  "description": "A capability provided by a session type backend (e.g., web_search, image_generation)",
+  "description": "A named feature that a backend plugin can provide (e.g., web_search, image_generation, file_upload). Used both in `SessionType.capabilities` (advertised max set) and `Session.available_capabilities` (runtime-confirmed set).",
   "type": "object",
   "properties": {
     "id": {

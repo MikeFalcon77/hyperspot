@@ -2,7 +2,7 @@
 
 **Date**: 2026-02-04
 
-**Status**: accepted
+**Status**: superseded by ADR-0026 — circuit breaker responsibility moved to plugin / webhook-adapter plugin
 
 **ID**: `fdd-chat-engine-adr-circuit-breaker`
 

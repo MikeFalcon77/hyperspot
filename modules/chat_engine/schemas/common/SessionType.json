@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "gts://gts.x.chat_engine.common.session_type.v1",
   "title": "SessionType",
-  "description": "Session type configuration defining the backend and capabilities",
+  "description": "Session type configuration defining the backend plugin and capabilities. Multiple session types can share the same plugin_instance_id with different meta configurations — the plugin receives session_type_id and meta in every call context (see ADR-0026).",
   "type": "object",
   "properties": {
     "session_type_id": {
@@ -18,22 +18,19 @@
       "type": "string",
       "description": "Detailed description of the session type"
     },
-    "webhook_url": {
-      "type": "string",
-      "format": "uri",
-      "pattern": "^https?://",
-      "description": "Webhook endpoint for this session type"
+    "plugin_instance_id": {
+      "$ref": "./GtsPluginInstanceId.json",
+      "description": "GTS instance ID of the registered ChatEngineBackendPlugin. Multiple session types may reference the same plugin_instance_id with different meta (see ADR-0026)"
+    },
+    "meta": {
+      "type": "object",
+      "description": "Plugin-specific configuration forwarded verbatim to the plugin in every call context (session_type_meta field). Allows one plugin to serve multiple differently-configured session types (e.g., different model, prompt strategy, feature flags).",
+      "additionalProperties": true
     },
     "capabilities": {
       "type": "array",
       "items": { "$ref": "./Capability.json" },
-      "description": "Capabilities provided by this session type"
-    },
-    "timeout_seconds": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 300,
-      "description": "Request timeout in seconds"
+      "description": "Declared (advertised) capabilities for UI display and session type discovery. This is the maximum set the plugin can provide. The actual capabilities available to a specific session are determined by the plugin during `on_session_created` and stored in `Session.available_capabilities`. The plugin may return a subset based on `SessionType.meta` configuration."
     },
     "retention_policy": {
       "oneOf": [
@@ -43,6 +40,6 @@
       "description": "Data retention and lifecycle policy for sessions of this type"
     }
   },
-  "required": ["session_type_id", "name", "webhook_url", "capabilities"],
+  "required": ["session_type_id", "name", "plugin_instance_id", "capabilities"],
   "additionalProperties": false
 }

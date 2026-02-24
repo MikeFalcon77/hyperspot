@@ -4,15 +4,16 @@
 
 ### 1.1 Architectural Vision
 
-Chat Engine is designed as a **stateful proxy service** that decouples conversational infrastructure from message processing logic. The system follows a **hub-and-spoke architecture** where Chat Engine acts as the central hub managing session state, message history, and routing, while external webhook backends serve as spokes implementing custom message processing logic.
+Chat Engine is designed as a **CyberFabric ModKit Gateway module** that decouples conversational infrastructure from message processing logic. The system follows a **hub-and-spoke architecture** where Chat Engine acts as the central hub managing session state, message history, and routing, while Backend Plugin modules serve as spokes implementing custom message processing logic.
 
-The architecture emphasizes **separation of concerns**: Chat Engine handles persistence, routing, and message tree management, while webhook backends focus solely on message processing. This enables flexible experimentation with different AI models, processing strategies, and conversation patterns without requiring changes to client applications or infrastructure.
+The architecture emphasizes **separation of concerns**: Chat Engine handles persistence, routing, and message tree management, while backend plugins focus solely on message processing. This enables flexible experimentation with different AI models, processing strategies, and conversation patterns without requiring changes to client applications or infrastructure.
 
 **Key architectural decisions:**
 - **Message Tree Structure**: Messages form an immutable tree structure enabling conversation branching and variant preservation
-- **Streaming-First**: All responses stream from webhook backends through Chat Engine to clients with minimal latency overhead
-- **Webhook-Driven Capabilities**: Session capabilities are dynamically determined by webhook backends, not hardcoded in Chat Engine
+- **Streaming-First**: All plugin responses stream through Chat Engine to clients with minimal latency overhead
+- **Plugin-Driven Capabilities**: Session capabilities are dynamically determined by backend plugins via `on_session_created()`, not hardcoded in Chat Engine
 - **Stateless Routing**: Chat Engine instances can scale horizontally as all session state is persisted in the database
+- **Plugin System**: Backend plugins registered in `types-registry` and resolved at runtime via `ClientHub`; external HTTP backends supported through the `chat-engine-webhook-adapter` plugin (ADR-0026)
 
 The system supports both **linear conversations** (traditional chat) and **non-linear conversations** (branching, variants, regeneration), enabling advanced use cases like conversation exploration, A/B testing of different backends, and human-in-the-loop workflows.
 
@@ -22,20 +23,20 @@ The system supports both **linear conversations** (traditional chat) and **non-l
 
 | FDD ID | Solution Description |
 |--------|----------------------|
-| `cpt-chat-engine-fr-create-session` | RESTful API endpoint creates session record, invokes webhook backend with `session.created` event, stores returned capabilities |
-| `cpt-chat-engine-fr-send-message` | HTTP streaming endpoint forwards message to webhook backend, pipes streamed response back to client, persists complete exchange after streaming |
+| `cpt-chat-engine-fr-create-session` | RESTful API endpoint creates session record, invokes backend plugin with `session.created` event, stores returned capabilities |
+| `cpt-chat-engine-fr-send-message` | HTTP streaming endpoint forwards message to backend plugin, pipes streamed response back to client, persists complete exchange after streaming |
 | `cpt-chat-engine-fr-attach-files` | Messages support file URL array field; client uploads to external storage first, includes URLs in message payload |
-| `cpt-chat-engine-fr-switch-session-type` | Session stores current session_type_id; switching updates this field and routes next message to new webhook backend |
-| `cpt-chat-engine-fr-recreate-response` | Creates new message with same parent_message_id as original, sends `message.recreate` event to webhook backend |
+| `cpt-chat-engine-fr-switch-session-type` | Session stores current session_type_id; switching updates this field and routes next message to new backend plugin |
+| `cpt-chat-engine-fr-recreate-response` | Creates new message with same parent_message_id as original, sends `message.recreate` event to backend plugin |
 | `cpt-chat-engine-fr-branch-message` | Client specifies parent_message_id; Chat Engine loads context up to parent, creates new branch in message tree |
 | `cpt-chat-engine-fr-navigate-variants` | Query API returns all messages with same parent_message_id; includes variant position metadata (e.g., "2 of 3") |
 | `cpt-chat-engine-fr-stop-streaming` | Client closes HTTP connection; Chat Engine cancels webhook request, saves partial response with incomplete flag |
 | `cpt-chat-engine-fr-export-session` | Background job traverses message tree (active path or all variants), formats to JSON/Markdown/TXT, uploads to storage |
 | `cpt-chat-engine-fr-share-session` | Generates unique share token stored in database, maps to session_id; recipients create branches from last message |
-| `cpt-chat-engine-fr-session-summary` | Routes `session.summary` event to dedicated summarization service URL or webhook backend based on session type config |
+| `cpt-chat-engine-fr-session-summary` | Routes `session.summary` event to dedicated summarization service URL or backend plugin based on session type config |
 | `cpt-chat-engine-fr-search-session` | Full-text search on messages table filtered by session_id; returns matches with context window |
 | `cpt-chat-engine-fr-search-sessions` | Full-text search across messages joined with sessions; ranks by relevance, returns session metadata |
-| `cpt-chat-engine-fr-delete-session` | Sends `session.deleted` event to webhook backend, then soft-deletes session and messages in database |
+| `cpt-chat-engine-fr-delete-session` | Sends `session.deleted` event to backend plugin, then soft-deletes session and messages in database |
 | `cpt-chat-engine-fr-conversation-memory` | Message history forwarded to webhook with configurable depth; visibility flags (`is_hidden_from_llm`) enable token management strategies |
 | `cpt-chat-engine-fr-delete-message` | Hard delete individual messages with cascade reaction cleanup; ownership validation before deletion |
 | `cpt-chat-engine-fr-message-feedback` | UPSERT reaction per user per message; fire-and-forget webhook notification via `message.reaction` event |
@@ -53,7 +54,7 @@ The system supports both **linear conversations** (traditional chat) and **non-l
 | `cpt-chat-engine-nfr-streaming` | HTTP chunked transfer encoding; buffering disabled; direct pipe from webhook to client |
 | `cpt-chat-engine-nfr-authentication` | JWT-based authentication; client_id, user_id, tenant_id claim extraction; session ownership validated by user_id; tenant isolation enforced by tenant_id on every request |
 | `cpt-chat-engine-nfr-data-integrity` | Database foreign key constraints on parent_message_id; unique constraint on (session_id, parent_message_id, variant_index) |
-| `cpt-chat-engine-nfr-backend-isolation` | Circuit breaker pattern per webhook backend; timeout configuration per session type; error isolation |
+| `cpt-chat-engine-nfr-backend-isolation` | Circuit breaker pattern per backend plugin; timeout configuration per session type; error isolation |
 | `cpt-chat-engine-nfr-file-size` | File size validation delegated to storage service; Chat Engine validates URL format and accessibility |
 | `cpt-chat-engine-nfr-search` | Full-text search indexes on message content; pagination with cursor-based queries |
 
@@ -80,14 +81,14 @@ The system supports both **linear conversations** (traditional chat) and **non-l
 Once a message is created with a parent_message_id, that relationship is immutable. Messages are never moved or re-parented. This ensures referential integrity and enables safe concurrent message creation. Variants are created as siblings (same parent), not by modifying existing messages.
 <!-- fdd-id-content -->
 
-#### Principle: Webhook Backend Authority
+#### Principle: Backend Plugin Authority
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-principle-webhook-authority`
+- [ ] `p1` - **ID**: `cpt-chat-engine-principle-backend-authority`
 
 <!-- fdd-id-content -->
-**ADRs**: ADR-0002
+**ADRs**: ADR-0002, ADR-0026
 
-Webhook backends are authoritative for session capabilities and message processing logic. Chat Engine does not interpret or validate capability semantics—it only stores and forwards them. This allows backends to evolve independently without Chat Engine changes.
+Backend plugins are authoritative for session capabilities and message processing logic. Chat Engine does not interpret or validate capability semantics — it only stores and forwards them. This allows backend plugins to evolve independently without Chat Engine changes. Plugin authors may internally delegate to external HTTP services (e.g., via `chat-engine-webhook-adapter`) without affecting Chat Engine.
 <!-- fdd-id-content -->
 
 #### Principle: Stream Everything
@@ -97,7 +98,7 @@ Webhook backends are authoritative for session capabilities and message processi
 <!-- fdd-id-content -->
 **ADRs**: ADR-0003
 
-All webhook responses are streamed by default to minimize time-to-first-byte. Even non-streaming backends are wrapped in streaming adapters. Chat Engine buffers minimally and pipes data directly from webhook to client over persistent connections with bidirectional message framing.
+All plugin responses are streamed by default to minimize time-to-first-byte. Plugins write chunks to a `ResponseStream` handle; Chat Engine pipes them directly to the client via HTTP chunked transfer with minimal buffering.
 <!-- fdd-id-content -->
 
 #### Principle: Zero Business Logic in Routing
@@ -107,7 +108,7 @@ All webhook responses are streamed by default to minimize time-to-first-byte. Ev
 <!-- fdd-id-content -->
 **ADRs**: ADR-0004
 
-Chat Engine does not process, analyze, or transform message content. All business logic (content moderation, language detection, sentiment analysis) belongs in webhook backends. Chat Engine only routes, persists, and manages message trees.
+Chat Engine does not process, analyze, or transform message content. All business logic (content moderation, language detection, sentiment analysis) belongs in backend plugins. Chat Engine only routes, persists, and manages message trees.
 <!-- fdd-id-content -->
 
 ### 2.2 Constraints
@@ -213,7 +214,7 @@ All Chat Engine instances share a single database cluster. No local caching of s
 
 - **Session** - Session entity (session_id, client_id, user_id, tenant_id, session_type_id, available_capabilities, metadata, created_at, updated_at, share_token)
 - **Message** - Message entity (message_id, session_id, parent_message_id, role, content, file_ids, variant_index, is_active, is_complete, metadata, created_at)
-- **SessionType** - Session type config (session_type_id, name, webhook_url, timeout, summarization_settings, meta, created_at, updated_at)
+- **SessionType** - Session type config (session_type_id, name, plugin_instance_id, summarization_settings, meta, created_at, updated_at)
 - **Capability** - Capability definition (name, config, metadata)
 - **ContentPart** - Abstract content type (type, ...)
 - **TextContent** - Plain text content (type: "text", text)
@@ -287,7 +288,7 @@ flowchart TB
     subgraph External Services
         DB[(PostgreSQL)]
         Storage[File Storage<br/>Service]
-        Webhook[Webhook Backend]
+        Plugin[Backend Plugin]
         Summ[Summarization<br/>Service]
     end
 
@@ -312,7 +313,7 @@ Chat Engine handles all chat-related operations. It is deployed as a unified mon
 #### Session Management
 
 <!-- fdd-id-content -->
-Chat Engine manages session lifecycle operations including create, delete, and retrieve. It invokes the webhook backend with `session.created` event and stores returned capabilities. This functionality handles session type switching and share token generation.
+Chat Engine manages session lifecycle operations including create, delete, and retrieve. It invokes the backend plugin with `session.created` event and stores returned capabilities. This functionality handles session type switching and share token generation.
 <!-- fdd-id-content -->
 
 #### Message Processing
@@ -323,12 +324,14 @@ Chat Engine manages session lifecycle operations including create, delete, and r
 Chat Engine orchestrates message creation, persistence, and tree management. It validates parent references, assigns variant_index, and enforces tree constraints. Message processing integrates with webhook invocation functionality for backend communication.
 <!-- fdd-id-content -->
 
-#### Webhook Integration
+#### Plugin Integration
 
 <!-- fdd-id-content -->
-**ADRs**: ADR-0004 (zero business logic), ADR-0006 (HTTP protocol), ADR-0011 (circuit breaker), ADR-0013 (timeout)
+**ADRs**: ADR-0004 (zero business logic), ADR-0026 (plugin system)
 
-Chat Engine's HTTP client functionality for webhook backend invocation. It constructs event payloads, handles timeouts, and implements circuit breaker pattern.
+Chat Engine's plugin invocation layer. Resolves `dyn ChatEngineBackendPlugin` from `ClientHub` by `plugin_instance_id`, constructs call context, and invokes plugin methods (`on_session_created`, `on_message`, `on_message_recreate`, `on_session_summary`). Auth, retry, circuit breaker, and timeouts are the plugin's responsibility; the `chat-engine-webhook-adapter` plugin provides these for external HTTP backends.
+
+**N:1 session type → plugin relationship**: Multiple differently-configured session types can share the same `plugin_instance_id`. The call context always includes `session_type_id` and `session_type_meta` (the `meta` JSON blob from the `session_types` table), allowing a single plugin instance to serve multiple session types with different behaviour (e.g., different model, different capability set, different prompting strategy).
 <!-- fdd-id-content -->
 
 #### Response Streaming
@@ -336,7 +339,7 @@ Chat Engine's HTTP client functionality for webhook backend invocation. It const
 <!-- fdd-id-content -->
 **ADRs**: ADR-0003 (streaming architecture), ADR-0009 (cancellation), ADR-0012 (backpressure)
 
-Chat Engine manages HTTP chunked streaming functionality. It pipes data from webhook backend to client via HTTP streaming responses. This handles stateless request processing, partial response saving on connection close, and backpressure control. Each stream is identified by unique message_id.
+Chat Engine manages HTTP chunked streaming functionality. It pipes data from backend plugin to client via HTTP streaming responses. This handles stateless request processing, partial response saving on connection close, and backpressure control. Each stream is identified by unique message_id.
 <!-- fdd-id-content -->
 
 #### Conversation Export
@@ -372,7 +375,7 @@ Chat Engine allows users to react to messages with simple like/dislike feedback.
 
 **Key Interactions**:
 - Client → Chat Engine: Session and message operations via HTTP REST API
-- Chat Engine → Webhook Backend: HTTP POST with event payload and session context
+- Chat Engine → Backend Plugin: `ClientHub` trait call with context (in-process or via `chat-engine-webhook-adapter`)
 - Chat Engine → Client: HTTP chunked streaming with NDJSON messages
 - Chat Engine → File Storage: File upload with signed URL generation for exports
 - Chat Engine → Database: All persistence operations for sessions, messages, and metadata
@@ -388,10 +391,10 @@ Chat Engine is deployed as a unified monolithic service. All functionality is im
 
 **Responsibility scope**: Persistence, routing, and message tree management. Chat Engine does not interpret message content.
 
-**Responsibility boundaries**: Content moderation, AI processing, and summarization logic belong to webhook backends. File content storage belongs to File Storage Service. See `cpt-chat-engine-principle-zero-business-logic`.
+**Responsibility boundaries**: Content moderation, AI processing, and summarization logic belong to backend plugins. File content storage belongs to File Storage Service. See `cpt-chat-engine-principle-zero-business-logic`.
 
 **Related components (by ID)**:
-- `cpt-chat-engine-actor-webhook-backend` — processes messages; called by Webhook Integration module
+- `cpt-chat-engine-actor-backend-plugin` — processes messages; called by Webhook Integration module
 - `cpt-chat-engine-actor-file-storage` — stores file content; called by Conversation Export module
 - `cpt-chat-engine-actor-database` — persists all session and message state
 
@@ -461,46 +464,39 @@ See [`api/README.md`](api/README.md) for comprehensive protocol documentation.
 
 For complete endpoint definitions, request/response schemas, and examples, see the OpenAPI specification file.
 
-#### 3.3.2 Webhook API (Chat Engine ↔ Webhook Backend)
+#### 3.3.2 Plugin API (Chat Engine ↔ Backend Plugin)
 
-**Specification**: [`api/webhook-protocol.json`](api/webhook-protocol.json) (GTS JSON Schema)
+**Interface**: `dyn ChatEngineBackendPlugin` (Rust trait, `chat-engine-sdk` crate)
 
-**Method**: HTTP POST
+**Discovery**: Plugin instances registered in `types-registry` with GTS ID `gts.x.core.modkit.plugin.v1~x.chat_engine.backend.plugin.v1~{instance}`; resolved at runtime via `ClientHub::get_scoped`.
 
-**Content-Type**: `application/json`
+**Plugin methods**:
+- `on_session_created(ctx)` → capabilities — called on session creation
+- `on_message(ctx, stream)` → streams response chunks
+- `on_message_recreate(ctx, stream)` → streams regenerated response
+- `on_session_summary(ctx, stream)` → streams session summary
+- `health_check()` → HealthStatus (optional)
 
-**Accept**: `application/json`, `application/x-ndjson`
+**Streaming**: Plugin writes chunks to `ResponseStream`; Chat Engine pipes to client via HTTP chunked transfer (NDJSON)
 
-**8 Webhook operations**:
-- `session.created` - Session creation notification
-- `message.new` - New user message processing
-- `message.recreate` - Message regeneration request
-- `message.aborted` - Streaming cancellation notification
-- `session.deleted` - Session deletion notification
-- `session.summary` - Session summarization request
-- `session_type.health_check` - Backend health check
-- `message.reaction` - Message reaction notification
-
-**Streaming Format**: Newline-delimited JSON (NDJSON) over HTTP chunked transfer
-
-For complete webhook schemas, NDJSON streaming format, and resilience patterns, see the Webhook protocol specification file.
+**External HTTP backends**: Use `chat-engine-webhook-adapter` plugin (implements `dyn ChatEngineBackendPlugin`, internally manages auth, retry, circuit breaker, and timeout per `webhook-protocol.json`). See ADR-0026.
 
 ### Internal Dependencies
 
-Chat Engine is a standalone service with no internal module dependencies within the platform. All inter-system communication is to external services (see External Dependencies below).
+Chat Engine is a **ModKit Gateway module** and depends on the following internal platform modules at runtime.
 
 | Dependency Module | Interface Used | Purpose |
 |-------------------|----------------|---------|
-| — | — | No internal platform module dependencies |
+| `types-registry` | ModKit registry API | Discover registered `ChatEngineBackendPlugin` instances by `plugin_instance_id` at startup and validate plugin registration on session type configuration |
+| `ClientHub` | `hub.get_scoped::<dyn ChatEngineBackendPlugin>(&scope)` | Resolve and call backend plugin implementations at request time; scope key is `ClientScope::gts_id(&plugin_instance_id)` |
+| Backend Plugin modules | `dyn ChatEngineBackendPlugin` (chat-engine-sdk) | Process messages, return capabilities on session creation, generate summaries — registered by plugin at `init()` |
 
 ### External Dependencies
 
 | Dependency | Interface | Purpose |
 |------------|-----------|---------|
 | PostgreSQL | SQL over TLS | Primary persistence for sessions, messages, session types, reactions |
-| Webhook Backend | HTTP POST (`webhook-protocol.json`) | Message processing, session events, summarization |
 | File Storage Service | HTTP REST | File upload for exports; file access via UUID |
-| Summarization Service | HTTP POST (`webhook-protocol.json`) | Optional dedicated session summarization |
 
 ### 3.4 Interactions & Sequences
 
@@ -515,14 +511,14 @@ Chat Engine is a standalone service with no internal module dependencies within 
 sequenceDiagram
     participant Admin
     participant Chat Engine
-    participant Webhook Backend
+    participant Backend Plugin
 
-    Admin->>Chat Engine: Submit Session Type Config
-    Chat Engine->>Chat Engine: Validate Configuration
+    Admin->>Chat Engine: Submit Session Type Config (plugin_instance_id)
+    Chat Engine->>Chat Engine: Validate plugin_instance_id via ClientHub
 
-    alt Webhook testing enabled
-        Chat Engine->>Webhook Backend: Test Backend Availability
-        Webhook Backend-->>Chat Engine: Health Status
+    opt Plugin health check enabled
+        Chat Engine->>Backend Plugin: health_check()
+        Backend Plugin-->>Chat Engine: HealthStatus
     end
 
     Chat Engine->>Chat Engine: Store Configuration
@@ -534,13 +530,13 @@ sequenceDiagram
 
 - [ ] `p1` - **ID**: `cpt-chat-engine-seq-create-session`
 **Use Case**: `cpt-chat-engine-usecase-create-session`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant Chat Engine
-    participant Webhook Backend
+    participant Backend Plugin
 
     Client->>Chat Engine: List Session Types
     Chat Engine-->>Client: Available Session Types
@@ -548,22 +544,22 @@ sequenceDiagram
     Client->>Chat Engine: Create Session
 
     Chat Engine->>Chat Engine: Store Session
-    Chat Engine->>Webhook Backend: Notify Session Created
-    Webhook Backend-->>Chat Engine: Available Capabilities
+    Chat Engine->>Backend Plugin: Notify Session Created
+    Backend Plugin-->>Chat Engine: Available Capabilities
 
     Chat Engine->>Chat Engine: Store Capabilities
     Chat Engine-->>Client: Session Created
 
     Client->>Chat Engine: Send Message
 
-    Chat Engine->>Webhook Backend: Process Message
+    Chat Engine->>Backend Plugin: Process Message
 
     loop Streaming Response
-        Webhook Backend-->>Chat Engine: Stream chunk
+        Backend Plugin-->>Chat Engine: Stream chunk
         Chat Engine-->>Client: Stream chunk
     end
 
-    Webhook Backend-->>Chat Engine: Stream complete
+    Backend Plugin-->>Chat Engine: Stream complete
     Chat Engine-->>Client: Stream complete
 ```
 
@@ -578,7 +574,7 @@ sequenceDiagram
     participant Client
     participant File Storage
     participant Chat Engine
-    participant Webhook Backend
+    participant Backend Plugin
 
     Note over Client,Chat Engine: Session already exists
 
@@ -587,17 +583,17 @@ sequenceDiagram
 
     Client->>Chat Engine: Send Message (file_ids: [uuid])
     Note over Chat Engine: Store UUIDs in message
-    Chat Engine->>Webhook Backend: Forward Message (file_ids: [uuid])
+    Chat Engine->>Backend Plugin: Forward Message (file_ids: [uuid])
 
-    Webhook Backend->>File Storage: GET /files/{uuid}
-    File Storage-->>Webhook Backend: File Stream
+    Backend Plugin->>File Storage: GET /files/{uuid}
+    File Storage-->>Backend Plugin: File Stream
 
     loop Streaming Response
-        Webhook Backend-->>Chat Engine: Stream chunk
+        Backend Plugin-->>Chat Engine: Stream chunk
         Chat Engine-->>Client: Stream chunk
     end
 
-    Webhook Backend-->>Chat Engine: Stream complete
+    Backend Plugin-->>Chat Engine: Stream complete
     Chat Engine-->>Client: Message Complete
 ```
 
@@ -605,29 +601,29 @@ sequenceDiagram
 
 - [ ] `p2` - **ID**: `cpt-chat-engine-seq-switch-session-type`
 **Use Case**: `cpt-chat-engine-fr-switch-session-type`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant Chat Engine
-    participant Webhook Backend A
-    participant Webhook Backend B
+    participant Backend Plugin A
+    participant Backend Plugin B
 
-    Note over Client,Webhook Backend A: Previous messages sent to Backend A
+    Note over Client,Backend Plugin A: Previous messages sent to Backend A
 
     Client->>Chat Engine: Switch Session Type
     Chat Engine-->>Client: Session Updated
 
     Client->>Chat Engine: Send Message
-    Chat Engine->>Webhook Backend B: Process Message
+    Chat Engine->>Backend Plugin B: Process Message
 
     loop Streaming Response
-        Webhook Backend B-->>Chat Engine: Stream chunk
+        Backend Plugin B-->>Chat Engine: Stream chunk
         Chat Engine-->>Client: Stream chunk
     end
 
-    Webhook Backend B-->>Chat Engine: Stream complete
+    Backend Plugin B-->>Chat Engine: Stream complete
     Chat Engine-->>Client: Stream complete
 ```
 
@@ -635,27 +631,27 @@ sequenceDiagram
 
 - [ ] `p1` - **ID**: `cpt-chat-engine-seq-recreate-response`
 **Use Case**: `cpt-chat-engine-usecase-recreate-response`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant Chat Engine
-    participant Webhook Backend
+    participant Backend Plugin
 
     Note over Client,Chat Engine: Session with messages exists
 
     Client->>Chat Engine: Recreate Message
     Chat Engine->>Chat Engine: Mark old response as inactive
     Note over Chat Engine: Old response preserved with same parent
-    Chat Engine->>Webhook Backend: Request Recreation
+    Chat Engine->>Backend Plugin: Request Recreation
 
     loop Streaming New Response
-        Webhook Backend-->>Chat Engine: Stream chunk
+        Backend Plugin-->>Chat Engine: Stream chunk
         Chat Engine-->>Client: Stream chunk
     end
 
-    Webhook Backend-->>Chat Engine: Stream complete
+    Backend Plugin-->>Chat Engine: Stream complete
     Chat Engine-->>Client: Variant Created
 ```
 
@@ -663,13 +659,13 @@ sequenceDiagram
 
 - [ ] `p2` - **ID**: `cpt-chat-engine-seq-branch-message`
 **Use Case**: `cpt-chat-engine-usecase-branch-message`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant Chat Engine
-    participant Webhook Backend
+    participant Backend Plugin
 
     Note over Client,Chat Engine: Session with messages exists
 
@@ -678,14 +674,14 @@ sequenceDiagram
 
     Chat Engine->>Chat Engine: Create Message Branch
     Chat Engine->>Chat Engine: Load Context
-    Chat Engine->>Webhook Backend: Process Message
+    Chat Engine->>Backend Plugin: Process Message
 
     loop Streaming Response
-        Webhook Backend-->>Chat Engine: Stream chunk
+        Backend Plugin-->>Chat Engine: Stream chunk
         Chat Engine-->>Client: Stream chunk
     end
 
-    Webhook Backend-->>Chat Engine: Stream complete
+    Backend Plugin-->>Chat Engine: Stream complete
     Chat Engine-->>Client: Branch Created
 
     Note over Client,Chat Engine: Both message paths preserved
@@ -740,14 +736,14 @@ sequenceDiagram
 
 - [ ] `p3` - **ID**: `cpt-chat-engine-seq-share-session`
 **Use Case**: `cpt-chat-engine-usecase-share-session`
-**Actors**: `cpt-chat-engine-actor-end-user`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-end-user`, `cpt-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
     participant User A
     participant Chat Engine
     participant User B
-    participant Webhook Backend
+    participant Backend Plugin
 
     User A->>Chat Engine: Share Session
     Chat Engine-->>User A: Share Link Created
@@ -761,14 +757,14 @@ sequenceDiagram
     User B->>Chat Engine: Send Message
     Chat Engine->>Chat Engine: Create Message Branch
     Chat Engine->>Chat Engine: Load Context
-    Chat Engine->>Webhook Backend: Process Message
+    Chat Engine->>Backend Plugin: Process Message
 
     loop Streaming Response
-        Webhook Backend-->>Chat Engine: Stream chunk
+        Backend Plugin-->>Chat Engine: Stream chunk
         Chat Engine-->>User B: Stream chunk
     end
 
-    Webhook Backend-->>Chat Engine: Stream complete
+    Backend Plugin-->>Chat Engine: Stream complete
     Chat Engine-->>User B: Stream complete
 
     Note over User B,Chat Engine: New message path created in shared session
@@ -786,15 +782,15 @@ sequenceDiagram
 sequenceDiagram
     participant Client
     participant Chat Engine
-    participant Webhook Backend
+    participant Backend Plugin
 
     Note over Client,Chat Engine: Session already exists
 
     Client->>Chat Engine: Send Message
-    Chat Engine->>Webhook Backend: Process Message
+    Chat Engine->>Backend Plugin: Process Message
 
     loop Streaming Response
-        Webhook Backend-->>Chat Engine: Stream chunk
+        Backend Plugin-->>Chat Engine: Stream chunk
         Chat Engine-->>Client: Stream chunk
     end
 
@@ -804,7 +800,7 @@ sequenceDiagram
     Note over Chat Engine: Connection close detected
     Chat Engine->>Chat Engine: Cancel Request
     Chat Engine->>Chat Engine: Save Partial Response
-    Chat Engine->>Webhook Backend: Close Connection
+    Chat Engine->>Backend Plugin: Close Connection
 
     Note over Chat Engine: Message marked incomplete
 ```
@@ -851,14 +847,14 @@ sequenceDiagram
 
 - [ ] `p2` - **ID**: `cpt-chat-engine-seq-generate-summary`
 **Use Case**: `cpt-chat-engine-fr-session-summary`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant Chat Engine
     participant Summarization Service
-    participant Webhook Backend
+    participant Backend Plugin
 
     Note over Client,Chat Engine: Session with messages exists
 
@@ -880,15 +876,15 @@ sequenceDiagram
 
             Summarization Service-->>Chat Engine: Stream complete
             Chat Engine-->>Client: Stream complete
-        else Use webhook backend for summarization
-            Chat Engine->>Webhook Backend: Request Summary
+        else Use backend plugin for summarization
+            Chat Engine->>Backend Plugin: Request Summary
 
             loop Streaming Summary
-                Webhook Backend-->>Chat Engine: Stream chunk
+                Backend Plugin-->>Chat Engine: Stream chunk
                 Chat Engine-->>Client: Stream chunk
             end
 
-            Webhook Backend-->>Chat Engine: Stream complete
+            Backend Plugin-->>Chat Engine: Stream complete
             Chat Engine-->>Client: Stream complete
         end
     else Summarization not supported
@@ -900,13 +896,13 @@ sequenceDiagram
 
 - [ ] `p2` - **ID**: `cpt-chat-engine-seq-add-reaction`
 **Use Case**: `cpt-chat-engine-fr-message-feedback`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-webhook-backend`
+**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
     participant C as Client
     participant CE as Chat Engine
-    participant WH as Webhook Backend
+    participant WH as Backend Plugin
 
     C->>CE: Submit Reaction
     CE->>CE: Extract User Identity
@@ -1025,8 +1021,7 @@ sequenceDiagram
 |--------|------|-------------|
 | session_type_id | UUID PK | Unique session type identifier |
 | name | VARCHAR | Human-readable name |
-| webhook_url | VARCHAR | Webhook backend HTTP endpoint (HTTPS required in production) |
-| timeout_ms | INT | Request timeout in milliseconds |
+| plugin_instance_id | VARCHAR | GTS plugin instance ID (ChatEngineBackendPlugin registered in ClientHub, see ADR-0026) |
 | summarization_settings | JSONB NULL | Optional summarization configuration |
 | meta | JSONB | Additional configuration metadata |
 | created_at | TIMESTAMPTZ | Creation timestamp |
@@ -1145,7 +1140,7 @@ Message tree traversal follows parent_message_id references. Active path is comp
 <!-- fdd-id-content -->
 **ADRs**: ADR-0011
 
-Circuit breaker pattern prevents cascade failures from slow/failing webhook backends. The circuit opens after reaching a configured failure threshold. Half-open state allows a single probe request to test recovery. Success closes circuit; failure reopens. Implemented per session_type_id.
+Circuit breaker pattern prevents cascade failures from slow/failing backend plugins. The circuit opens after reaching a configured failure threshold. Half-open state allows a single probe request to test recovery. Success closes circuit; failure reopens. Implemented per session_type_id.
 <!-- fdd-id-content -->
 
 #### Context: Streaming Backpressure
@@ -1175,7 +1170,7 @@ Full-text search is implemented using database full-text search capabilities wit
 <!-- fdd-id-content -->
 **ADRs**: ADR-0005
 
-Chat Engine never stores file content. Clients upload directly to File Storage Service and receive stable UUID identifiers. Chat Engine stores file UUIDs (not URLs) in messages and forwards them to webhook backends. Webhook backends fetch files from File Storage Service using UUIDs. This approach provides stable identifiers, centralized access control, and enables transparent storage migration. File access is controlled through File Storage Service authentication, and clients request temporary signed URLs when displaying files.
+Chat Engine never stores file content. Clients upload directly to File Storage Service and receive stable UUID identifiers. Chat Engine stores file UUIDs (not URLs) in messages and forwards them to backend plugins. Webhook backends fetch files from File Storage Service using UUIDs. This approach provides stable identifiers, centralized access control, and enables transparent storage migration. File access is controlled through File Storage Service authentication, and clients request temporary signed URLs when displaying files.
 <!-- fdd-id-content -->
 
 #### Context: Session Type Configuration Security
@@ -1183,7 +1178,7 @@ Chat Engine never stores file content. Clients upload directly to File Storage S
 **ID**: `cpt-chat-engine-design-context-security`
 
 <!-- fdd-id-content -->
-Session type webhook URLs are stored in plaintext in database. Webhook backends must implement their own authentication (API keys, mutual TLS). Chat Engine does not validate webhook responses beyond HTTP status codes. Malicious webhook backends can return arbitrary content. Session type creation should be restricted to admin users only.
+Session type webhook URLs are stored in plaintext in database. Webhook backends must implement their own authentication (API keys, mutual TLS). Chat Engine does not validate webhook responses beyond HTTP status codes. Malicious backend plugins can return arbitrary content. Session type creation should be restricted to admin users only.
 <!-- fdd-id-content -->
 
 #### Context: Error Response Security Pattern
@@ -1215,7 +1210,7 @@ Aspects acknowledged and intentionally excluded from this DESIGN.
 
 | Category | Exclusion | Reason |
 |----------|-----------|--------|
-| **Content Safety** | Content moderation, toxicity filtering | Delegated to webhook backends (Principle: Zero Business Logic in Routing — `cpt-chat-engine-principle-zero-business-logic`) |
+| **Content Safety** | Content moderation, toxicity filtering | Delegated to backend plugins (Principle: Zero Business Logic in Routing — `cpt-chat-engine-principle-zero-business-logic`) |
 | **Accessibility** | UI/UX accessibility requirements | Backend service; client application responsibility |
 | **Internationalization** | Multi-language UI, locale handling | Not applicable; message content is opaque to Chat Engine |
 | **Rate Limiting** | Throttling algorithms, quota management | Handled at API gateway layer upstream of Chat Engine |

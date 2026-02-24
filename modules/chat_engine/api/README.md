@@ -195,7 +195,7 @@ const response = await fetch('https://chat-engine/api/v1/sessions', {
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    session_type_id: 'gts.hyperspot.chat_engine.session_types.ai_assistant.v1~'
+    session_type_id: 'gts.cyberfabric.chat_engine.session_types.ai_assistant.v1~'
   })
 });
 const { session_id, available_capabilities } = await response.json();
@@ -222,7 +222,7 @@ headers = {'Authorization': f'Bearer {jwt}'}
 # Create session
 response = requests.post(
     'https://chat-engine/api/v1/sessions',
-    json={'session_type_id': 'gts.hyperspot.chat_engine.session_types.ai_assistant.v1~'},
+    json={'session_type_id': 'gts.cyberfabric.chat_engine.session_types.ai_assistant.v1~'},
     headers=headers
 )
 session_id = response.json()['session_id']
@@ -313,7 +313,7 @@ def send_message(session_id: str, content: str):
             elif event['type'] == 'error':
                 print(f"\nError: {event['message']}")
 
-send_message('gts.hyperspot.chat_engine.entities.session.v1~123e4567-e89b-12d3-a456-426614174000', 'Hello AI')
+send_message('gts.cyberfabric.chat_engine.entities.session.v1~123e4567-e89b-12d3-a456-426614174000', 'Hello AI')
 ```
 
 ### Validating Protocol Compliance
@@ -528,7 +528,7 @@ For clients migrating from WebSocket to HTTP streaming:
    Authorization: Bearer <token>
    Content-Type: application/json
 
-   {"session_type_id": "gts.hyperspot.chat_engine.session_types.ai_assistant.v1~"}
+   {"session_type_id": "gts.cyberfabric.chat_engine.session_types.ai_assistant.v1~"}
    ```
 
 2. **HTTP Streaming**: Send message
@@ -537,15 +537,15 @@ For clients migrating from WebSocket to HTTP streaming:
    Authorization: Bearer <token>
    Content-Type: application/json
 
-   {"session_id": "gts.hyperspot.chat_engine.entities.session.v1~123e4567-e89b-12d3-a456-426614174000", "content": "Hello", "enabled_capabilities": []}
+   {"session_id": "gts.cyberfabric.chat_engine.entities.session.v1~123e4567-e89b-12d3-a456-426614174000", "content": "Hello", "enabled_capabilities": []}
    ```
 
 3. **HTTP Streaming**: Receive response (NDJSON)
    ```json
-   {"type":"start","message_id":"gts.hyperspot.chat_engine.entities.message.v1~987fcdeb-51a2-43c1-b789-012345678abc"}
-   {"type":"chunk","message_id":"gts.hyperspot.chat_engine.entities.message.v1~987fcdeb-51a2-43c1-b789-012345678abc","chunk":{"type":"text","content":"Hi"}}
-   {"type":"chunk","message_id":"gts.hyperspot.chat_engine.entities.message.v1~987fcdeb-51a2-43c1-b789-012345678abc","chunk":{"type":"text","content":" there"}}
-   {"type":"complete","message_id":"gts.hyperspot.chat_engine.entities.message.v1~987fcdeb-51a2-43c1-b789-012345678abc","metadata":{"usage":{"input_tokens":10,"output_tokens":5}}}
+   {"type":"start","message_id":"gts.cyberfabric.chat_engine.entities.message.v1~987fcdeb-51a2-43c1-b789-012345678abc"}
+   {"type":"chunk","message_id":"gts.cyberfabric.chat_engine.entities.message.v1~987fcdeb-51a2-43c1-b789-012345678abc","chunk":{"type":"text","content":"Hi"}}
+   {"type":"chunk","message_id":"gts.cyberfabric.chat_engine.entities.message.v1~987fcdeb-51a2-43c1-b789-012345678abc","chunk":{"type":"text","content":" there"}}
+   {"type":"complete","message_id":"gts.cyberfabric.chat_engine.entities.message.v1~987fcdeb-51a2-43c1-b789-012345678abc","metadata":{"usage":{"input_tokens":10,"output_tokens":5}}}
    ```
 
 4. **HTTP**: Retrieve message history
