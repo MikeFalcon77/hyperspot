@@ -891,7 +891,10 @@ def generate_reports(output_dir, mode, threshold=COVERAGE_THRESHOLD, use_color=F
     # Generate HTML report
     print("Generating HTML report...")
     html_dir = output_dir / "html"
-    base = ["cargo", "llvm-cov", "report", "--workspace"]
+    # Use `--no-run --workspace` instead of the `report` subcommand so that
+    # all workspace crates appear in the generated reports.  The `report`
+    # subcommand does not support `--workspace`.
+    base = ["cargo", "llvm-cov", "--no-run", "--workspace"]
     run_cmd(
         base
         + [
@@ -1145,8 +1148,8 @@ def validate_environment(command):
         print("\nERROR: Environment validation failed for "
               "{} coverage.".format(command))
         print("Please install missing prerequisites and try again.")
-        print("You can run 'python scripts/check_test_env.py --mode core' "
-              "or 'python scripts/check_test_env.py --mode e2e' "
+        print("You can run 'python3 scripts/check_local_env.py --mode core' "
+              "or 'python3 scripts/check_local_env.py --mode e2e-local' "
               "to see detailed requirements.")
         sys.exit(1)
 
