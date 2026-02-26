@@ -62,6 +62,59 @@ release-plz updates this file in the Release PR.
 * @github-actions[bot]
 * @aviator5
 
+## [0.1.3](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-tr-plugin-v0.1.2...cf-static-tr-plugin-v0.1.3) - 2026-02-26
+
+### Other
+
+- release (by @github-actions[bot]) - #749
+- migrate modules from ArcSwapOption to OnceLock (by @aviator5) - #660
+
+### Contributors
+
+* @github-actions[bot]
+* @aviator5
+
+## [0.1.1](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authz-plugin-v0.1.0...cf-static-authz-plugin-v0.1.1) - 2026-02-26
+
+### Other
+
+- release (by @github-actions[bot]) - #755
+- release (by @github-actions[bot]) - #749
+- Merge pull request #660 from aviator5/module-oncelock-refactoring (by @MikeFalcon77) - #660
+- migrate modules from ArcSwapOption to OnceLock (by @aviator5) - #660
+
+### Contributors
+
+* @github-actions[bot]
+* @MikeFalcon77
+* @aviator5
+
+## [0.1.1](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authn-plugin-v0.1.0...cf-static-authn-plugin-v0.1.1) - 2026-02-26
+
+### Other
+
+- release (by @github-actions[bot]) - #749
+- Merge pull request #660 from aviator5/module-oncelock-refactoring (by @MikeFalcon77) - #660
+- migrate modules from ArcSwapOption to OnceLock (by @aviator5) - #660
+
+### Contributors
+
+* @github-actions[bot]
+* @MikeFalcon77
+* @aviator5
+
+## [0.1.3](https://github.com/cyberfabric/cyberfabric-core/compare/cf-single-tenant-tr-plugin-v0.1.2...cf-single-tenant-tr-plugin-v0.1.3) - 2026-02-26
+
+### Other
+
+- release (by @github-actions[bot]) - #749
+- migrate modules from ArcSwapOption to OnceLock (by @aviator5) - #660
+
+### Contributors
+
+* @github-actions[bot]
+* @aviator5
+
 ## [0.1.3](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-tr-plugin-v0.1.2...cf-static-tr-plugin-v0.1.3) - 2026-02-25
 
 ### Other
