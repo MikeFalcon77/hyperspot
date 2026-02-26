@@ -474,6 +474,29 @@ class PrereqPytest(Prereq):
             return PRECHECK_ERROR
 
 
+class PrereqProtoc(Prereq):
+    def __init__(self):
+        super().__init__(
+            name="protoc (Protocol Buffers compiler) is installed",
+            remediation=(
+                "Install protoc (protobuf compiler). "
+                "macOS: 'brew install protobuf'; "
+                "Debian/Ubuntu: 'apt-get install protobuf-compiler'"
+            ),
+        )
+
+    def check(self) -> str:
+        try:
+            subprocess.check_output(
+                ["protoc", "--version"], stderr=subprocess.DEVNULL
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            logging.error("'protoc' command not found or not working")
+            logging.error(f"Possible remediation: {self.remediation}")
+            return PRECHECK_ERROR
+        return PRECHECK_OK
+
+
 class PrereqCargoLlvmCov(Prereq):
     def __init__(self):
         super().__init__(
@@ -508,6 +531,7 @@ class PrereqCargoLlvmCov(Prereq):
 # Core prerequisites needed for basic testing
 CORE_PREREQS = [
     PrereqCargo,
+    PrereqProtoc,
     PrereqPython,
     PrereqPytest,
     PrereqCargoLlvmCov,
