@@ -454,7 +454,7 @@ When a chat is deleted, the system MUST mark attachments for asynchronous cleanu
 **P1 scope**:
 
 - Mini Chat enforces credit-based quotas (daily, monthly) and performs downgrade: premium → standard → reject (`quota_exceeded`).
-- Integration is asynchronous: Mini Chat enqueues a usage event in a transactional outbox after each turn reaches a terminal state. A background dispatcher publishes it via the selected `minichat-quota-policy` plugin (`publish_usage(payload)`). CyberChatManager consumes these events and updates credit balances.
+- Integration is asynchronous: Mini Chat enqueues a usage event in a transactional outbox after each turn reaches a terminal state. A background dispatcher publishes it via the selected `minichat-policy-plugin` plugin (`publish_usage(payload)`). CyberChatManager consumes these events and updates credit balances.
 - Usage events MUST be idempotent (keyed by `turn_id` / `request_id`).
 - No synchronous billing RPC is required during message execution.
 - All LLM invocations that take a quota reserve produce exactly one terminal billing event (completed, failed, or aborted), ensuring no credit drift under disconnect or crash scenarios. Pre-reserve failures (validation, authorization, quota preflight rejection) are not part of reserve settlement and do not require a billing event.
@@ -789,6 +789,8 @@ Support and UX recovery flows MUST be able to query authoritative turn state bac
 **Compatibility**: Event types (`delta`, `tool`, `citations`, `done`, `error`, `ping`) and their payload schemas are stable within a major API version.
 
 **Ordering (P1)**: `ping* delta* tool* citations? (done | error)`. Zero or more `ping` events may appear at any point. `delta` and `tool` events may interleave in any order. At most one `citations` event, emitted after all `delta` events and before the terminal event. Exactly one terminal event (`done` or `error`) ends the stream. Broader interleaving (multiple `citations` events interleaved with content) is forward-compatible for P2+.
+
+**Stream close**: the server MUST close the SSE connection immediately after emitting the terminal event. No further events are permitted after the terminal `done` or `error`.
 
 **Error model (Option A)**: If the request fails validation, authorization, or quota preflight before streaming begins, the server MUST return a normal JSON error response with the appropriate HTTP status and MUST NOT open an SSE stream. If the stream has started, the server MUST report failure via a terminal `event: error`.
 

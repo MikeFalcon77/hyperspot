@@ -15,7 +15,9 @@ Modules use it by publishing messages under a dedicated `(namespace, topic)` pai
 
 ### 1.2 Purpose
 
-This feature ensures the **Outbox Completeness Invariant**: it MUST be impossible for committed side effects to exist without a corresponding persisted outbox event.
+This feature ensures the **Outbox Completeness Invariant**: for any domain operation that is defined to emit an outbox event, it MUST be impossible for that operation's side effects to commit without the corresponding `modkit_outbox_events` row being persisted in the same database transaction.
+
+This invariant applies only to domain operations that are defined to emit outbox events (e.g., quota-bearing turn finalization in Mini Chat). It does not apply to read-only operations, pre-reserve validation failures, or state transitions that intentionally produce no event. The set of operations that require outbox emission is defined by each consuming module (see DESIGN.md section 5.7 for the Mini Chat normative list).
 
 It also ensures events can be delivered asynchronously with at-least-once delivery semantics.
 
@@ -69,6 +71,15 @@ Outbox events are stored in a shared infrastructure table owned by `modkit-db`:
 **Dedupe / idempotency (Postgres)**:
 
 - Partial unique index on `(namespace, topic, dedupe_key)` where `dedupe_key IS NOT NULL`.
+
+**`tenant_id` column vs `dedupe_key` — distinct purposes (normative)**:
+
+The `tenant_id` column and the `dedupe_key` field serve different roles and MUST NOT be conflated:
+
+- **`tenant_id` column** — used for routing, filtering, and downstream partitioning. The dispatcher MAY use it to scope claim queries to a specific tenant. Downstream consumers MAY use it for partition-aware processing. It is nullable to accommodate system-level events that are not tenant-scoped.
+- **`dedupe_key`** — a producer-defined idempotency key whose structure is domain-specific. The partial unique index on `(namespace, topic, dedupe_key)` enforces at-most-once enqueue at the database level. In the Mini Chat domain, the canonical format is `"{tenant_id}/{turn_id}/{request_id}"` (see DESIGN.md section 5.6). Downstream consumers MUST use the same canonical tuple `(tenant_id, turn_id, request_id)` — extracted from the `dedupe_key` or from the payload — for idempotent processing.
+
+The presence of `tenant_id` as a table column does not replace domain-level idempotency semantics embedded in `dedupe_key`. The two serve different purposes and MUST remain consistent: when both are populated, the `tenant_id` value in the column MUST match the tenant component of the `dedupe_key`.
 
 ### 1.7 Proposed `modkit_db::outbox` v1 API (sketch)
 
@@ -136,7 +147,7 @@ where
 **Actor**: `cpt-cf-mini-chat-actor-chat-user`
 
 **Success Scenarios**:
- - An operation commits, and exactly one `modkit_outbox_events` row is inserted atomically.
+ - An operation commits, and exactly one logical outbox event is enqueued atomically (resulting in at most one `modkit_outbox_events` row per `dedupe_key`).
 
 **Error Scenarios**:
 - The DB transaction fails: the described side effects and outbox insertion MUST both roll back.
@@ -144,7 +155,7 @@ where
 **Behavior (normative)**:
 - The outbox row insertion is part of the operation's commit: it MUST be in the **same DB transaction** as the committed side effects.
 - Within that transaction:
-  - The system MUST enqueue exactly one outbox event describing the committed side effects.
+  - The system MUST enqueue exactly one logical outbox event describing the committed side effects. If a `dedupe_key` conflict occurs, the event is considered already enqueued; no duplicate row is inserted.
 - If an operation implementation uses a uniqueness guard for idempotent enqueue (e.g. a stable `dedupe_key` with a unique index):
   - A conflict on insert MUST be treated as "already enqueued".
 - If the transaction fails/rolls back for any reason:
@@ -244,7 +255,7 @@ where
   - increment `attempts`
   - set `locked_by = worker_id`
   - set `locked_until = now() + lease_duration`
-- Claim ordering MUST be stable and low-risk for starvation (e.g., order by `created_at`).
+- Claim ordering MUST be deterministic (e.g., `ORDER BY created_at ASC, id ASC`) to reduce starvation risk.
 - Claim MUST support multiple workers without double-claiming the same row.
 
 ### Retry Scheduling on Publish Failure
@@ -296,7 +307,7 @@ where
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-dod-usage-outbox-transactional`
 
-The system **MUST** persist a `modkit_outbox_events` row in the same DB transaction as any committed side effects described by that event.
+For any domain operation defined to emit an outbox event, the system **MUST** persist a `modkit_outbox_events` row in the same DB transaction as that operation's committed side effects.
 
 **Implements**:
 - `cpt-cf-mini-chat-flow-usage-outbox-enqueue`
@@ -337,8 +348,8 @@ The system **MUST** ensure that event delivery is safe under retries and replays
 
 ## 6. Acceptance Criteria
 
-- [ ] For any committed side effects that require an event, there exists exactly one corresponding persisted `modkit_outbox_events` row (same DB transaction boundary).
-- [ ] If a producer loses an idempotency race, it does not insert a duplicate `modkit_outbox_events` row.
+- [ ] For any domain operation defined to emit an outbox event, at most one `modkit_outbox_events` row exists per logical domain event (identified by `dedupe_key`), enforced by the partial unique index; on successful first commit, exactly one row is persisted in the same DB transaction as that operation's side effects.
+- [ ] If a producer loses an idempotency race, it observes "already enqueued" and no duplicate `modkit_outbox_events` row is inserted.
 - [ ] Dispatcher can run concurrently (multiple replicas) without double-processing rows (verified via `SKIP LOCKED` + lease).
 - [ ] If the dispatcher crashes after claiming rows, those rows become eligible for reclaim after lease expiry.
 - [ ] Publish failures reschedule rows with increasing `next_attempt_at` and record `last_error`.

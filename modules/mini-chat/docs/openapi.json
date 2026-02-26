@@ -276,7 +276,7 @@
         },
         "responses": {
           "200": {
-            "description": "SSE stream opened. Events delivered as `text/event-stream`. HTTP 200 does NOT guarantee success — terminal failures after streaming starts are delivered as SSE `event: error` (payload: SseErrorEvent) while the HTTP status remains 200. Non-200 JSON error responses (4xx/5xx below) occur only when the failure is detected before the SSE stream is opened. See operation description for event types and payload schemas.",
+            "description": "SSE stream opened. Events delivered as `text/event-stream`. HTTP 200 does NOT guarantee success — terminal failures after streaming starts are delivered as SSE `event: error` (payload: SseErrorEvent) while the HTTP status remains 200. Non-200 JSON error responses (4xx/5xx below) occur only when the failure is detected before the SSE stream is opened. The server closes the connection immediately after the terminal event (done or error); no further events are sent. See operation description for event types and payload schemas.",
             "content": {
               "text/event-stream": {
                 "schema": {
