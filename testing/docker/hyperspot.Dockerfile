@@ -52,5 +52,7 @@ COPY --from=builder /build/config /app/config
 EXPOSE 8086
 
 # Run with shared e2e-local config (same config path as local E2E).
+RUN useradd -U -u 1000 appuser && \
+    chown -R 1000:1000 /app
+USER 1000
 CMD ["/app/hyperspot-server", "--config", "/app/config/e2e-local.yaml"]
-
