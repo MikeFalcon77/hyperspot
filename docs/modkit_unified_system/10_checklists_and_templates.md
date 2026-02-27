@@ -120,11 +120,11 @@ pub async fn find_by_id(
 ### Checklist
 
 - [ ] Use `OperationBuilder` for every route
-- [ ] Add `.require_auth()` for protected endpoints
+- [ ] Add `.authenticated()` + `.require_license_features::<License>([])` for protected endpoints
 - [ ] Add `.standard_errors(openapi)` or specific errors
 - [ ] Use `.json_response_with_schema()` for typed responses
 - [ ] Use `Extension<Arc<Service>>` and attach once after all routes
-- [ ] Use `Authz(ctx): Authz` to get `SecurityContext`
+- [ ] Use `Extension(ctx): Extension<SecurityContext>` to get `SecurityContext`
 - [ ] Use `ApiResult<T>` and `?` for error propagation
 - [ ] For OData: add `.with_odata_*()` helpers and use `OData(query)` extractor
 
@@ -133,7 +133,8 @@ pub async fn find_by_id(
 ```rust
 OperationBuilder::get("/users-info/v1/users")
     .operation_id("users_info.list_users")
-    .require_auth(&Resource::Users, &Action::Read)
+    .authenticated()
+    .require_license_features::<License>([])
     .handler(handlers::list_users)
     .json_response_with_schema::<modkit_odata::Page<dto::UserDto>>(
         openapi,
@@ -151,7 +152,7 @@ OperationBuilder::get("/users-info/v1/users")
 
 ```rust
 pub async fn list_users(
-    Authz(ctx): Authz,
+    Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<Service>>,
     OData(query): OData,
 ) -> ApiResult<JsonPage<serde_json::Value>> {

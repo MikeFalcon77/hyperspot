@@ -298,7 +298,7 @@ async fn test_public_routes_accessible() {
 
 #[tokio::test]
 async fn test_middleware_always_inserts_security_ctx() {
-    // This test verifies that SecurityCtx is always available in handlers
+    // This test verifies that SecurityContext is always available in handlers
     let config = json!({
         "api-gateway": {
             "config": {
@@ -337,11 +337,11 @@ async fn test_middleware_always_inserts_security_ctx() {
         .await
         .expect("Request failed");
 
-    // Should NOT get 500 error about missing SecurityCtx
+    // Should NOT get 500 error about missing SecurityContext
     assert_eq!(
         response.status(),
         StatusCode::OK,
-        "Handler should receive SecurityCtx from middleware"
+        "Handler should receive SecurityContext from middleware"
     );
 }
 

@@ -205,7 +205,7 @@ impl ApiGateway {
                 .build()?;
 
             tracing::warn!(
-                "API Gateway auth is DISABLED: all requests will run with default tenant SecurityCtx. \
+                "API Gateway auth is DISABLED: all requests will run with default tenant SecurityContext. \
                  This mode bypasses authentication and is intended ONLY for single-user on-premises deployments without an IdP. \
                  Permission checks and secure ORM still apply. DO NOT use this mode in multi-tenant or production environments."
             );

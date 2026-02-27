@@ -71,7 +71,8 @@ use modkit::api::operation_builder::{OperationBuilderODataExt};
 
 OperationBuilder::get("/users-info/v1/users")
     .operation_id("users_info.list_users")
-    .require_auth(&Resource::Users, &Action::Read)
+    .authenticated()
+    .require_license_features::<License>([])
     .handler(handlers::list_users)
     .json_response_with_schema::<modkit_odata::Page<dto::UserDto>>(
         openapi,
@@ -93,10 +94,10 @@ OperationBuilder::get("/users-info/v1/users")
 use modkit::api::prelude::*;
 use modkit::api::odata::OData;
 use modkit::api::select::page_to_projected_json;
-use modkit_auth::axum_ext::Authz;
+use axum::Extension;
 
 pub async fn list_users(
-    Authz(ctx): Authz,
+    Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<Service>>,
     OData(query): OData,
 ) -> ApiResult<JsonPage<serde_json::Value>> {

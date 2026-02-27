@@ -144,7 +144,7 @@ Purpose: one concise map of repository artifacts that improve developer + AI pro
 | Security practices | [x] `p1` | [SECURITY.md](../SECURITY.md), [guidelines/SECURITY.md](../guidelines/SECURITY.md), [docs/security/SECURITY.md](./security/SECURITY.md) | Expand secure coding examples |
 | Dependency security rules | [x] `p1` | [docs/security/SECURITY.md](./security/SECURITY.md), [Makefile](../Makefile), `cargo deny` | Add allow/deny decision log |
 | Vulnerability response | [x] `p1` | [SECURITY.md](../SECURITY.md) | Add incident severity matrix |
-| Secure ORM tenant scoping | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [docs/modkit_unified_system/06_secure_orm_db_access.md](./modkit_unified_system/06_secure_orm_db_access.md) | Add security-context propagation verification checks |
+| Secure ORM tenant scoping | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [docs/modkit_unified_system/06_authn_authz_secure_orm.md](./modkit_unified_system/06_authn_authz_secure_orm.md) | Add security-context propagation verification checks |
 | Static security linting (Clippy + Dylint) | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [dylint_lints/README.md](../dylint_lints/README.md), [clippy.toml](../clippy.toml) | Expand security-focused lint set |
 | Secrets handling | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [docs/pr-review/README.md](./pr-review/README.md) token guidance | Add repository-wide secrets policy doc |
 | Data protection rules | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), secure ORM docs | Add data classification policy |

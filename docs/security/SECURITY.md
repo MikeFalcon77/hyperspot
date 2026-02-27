@@ -40,7 +40,7 @@ Additional Rust-specific project practices:
 
 ## 2. Compile-Time Tenant Scoping (Secure ORM)
 
-> Source: [`libs/modkit-db-macros`](../../libs/modkit-db-macros/) · [`guidelines/SECURITY.md`](../../guidelines/SECURITY.md) · [`docs/modkit_unified_system/06_secure_orm_db_access.md`](../modkit_unified_system/06_secure_orm_db_access.md)
+> Source: [`libs/modkit-db-macros`](../../libs/modkit-db-macros/) · [`guidelines/SECURITY.md`](../../guidelines/SECURITY.md) · [`docs/modkit_unified_system/06_authn_authz_secure_orm.md`](../modkit_unified_system/06_authn_authz_secure_orm.md)
 
 Cyber Fabric provides a **compile-time enforced** secure ORM layer over SeaORM. The `#[derive(Scopable)]` macro ensures every database entity explicitly declares its scoping dimensions:
 

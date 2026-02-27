@@ -26,7 +26,7 @@ Common and stateless logic that can be reusable across modules should be impleme
 |-------------|---------------------------|--------------|
 | **Create module skeleton** | Step 1 (Project layout), Step 2 (Naming matrix) | `docs/modkit_unified_system/02_module_layout_and_sdk_pattern.md` |
 | **Add SDK traits/models/errors** | Step 4 (SDK crate) | `docs/modkit_unified_system/02_module_layout_and_sdk_pattern.md` |
-| **Add DB entities/repositories** | Step 5 (Domain layer), Step 6 (Infra storage) | `docs/modkit_unified_system/06_secure_orm_db_access.md` |
+| **Add DB entities/repositories** | Step 5 (Domain layer), Step 6 (Infra storage) | `docs/modkit_unified_system/06_authn_authz_secure_orm.md` |
 | **Add REST endpoints** | Step 7 (REST API layer) | `docs/modkit_unified_system/04_rest_operation_builder.md` |
 | **Add OData $filter/$select** | Step 7 (REST API layer, OData subsection) | `docs/modkit_unified_system/07_odata_pagination_select_filter.md` |
 | **Add errors/Problem mapping** | Step 3 (Errors management) | `docs/modkit_unified_system/05_errors_rfc9457.md` |
@@ -1621,7 +1621,7 @@ If no database required: skip `DatabaseCapability`, remove `db` from capabilitie
 
 This layer implements the domain's repository traits with **Secure ORM** for tenant isolation.
 
-> **See also:** `docs/modkit_unified_system/06_secure_orm_db_access.md` for secure ORM usage.
+> **See also:** `docs/modkit_unified_system/06_authn_authz_secure_orm.md` for secure ORM usage.
 
 #### Security Model
 
@@ -3209,7 +3209,7 @@ errors (add explicit types), missing `time::OffsetDateTime`, handler/service nam
 
 - [MODKIT UNIFIED SYSTEM](../docs/modkit_unified_system/README.md) — Complete ModKit architecture and developer guide
 - [MODKIT_PLUGINS.md](../docs/MODKIT_PLUGINS.md) — Plugin architecture with Module + Plugins pattern
-- `docs/modkit_unified_system/06_secure_orm_db_access.md` — Secure ORM layer with tenant isolation
+- `docs/modkit_unified_system/06_authn_authz_secure_orm.md` — Secure ORM layer with tenant isolation
 - [TRACING_SETUP.md](../docs/TRACING_SETUP.md) — Distributed tracing with OpenTelemetry
 - [DNA/REST/API.md](./DNA/REST/API.md) — REST API design principles
 - [examples/modkit/users-info/](../examples/modkit/users-info/) — Reference implementation of a local module with SDK
