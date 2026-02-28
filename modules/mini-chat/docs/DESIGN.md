@@ -50,7 +50,7 @@ Long conversations are managed via thread summaries - a Level 1 compression stra
 | `cpt-cf-mini-chat-nfr-cost-control` | Predictable and bounded LLM costs | mini-chat module (domain service + quota_service) | Credit-based rate limits per tier across multiple periods (daily, monthly) tracked in real-time; credits are computed from provider-reported tokens using model credit multipliers; premium models have stricter limits, standard-tier models have separate, higher limits; two-tier downgrade cascade (premium → standard); file search and web search call limits; token budget per request | Usage metrics dashboard; budget alert tests |
 | `cpt-cf-mini-chat-nfr-streaming-latency` | Low time-to-first-token for chat responses | mini-chat module (domain service), OAGW | Direct SSE relay without buffering; cancellation propagation on disconnect | TTFT benchmarks under load; **Disconnect test**: open SSE -> receive 1-2 tokens -> disconnect -> assert provider request closed within 200 ms and active-generation counter decrements; **TTFT delta test**: measure `t_first_token_ui - t_first_byte_from_provider` -> assert platform overhead < 50 ms p99 |
 | `cpt-cf-mini-chat-nfr-data-retention` | Deleted chats purged from provider; temporary chat cleanup (P2) | mini-chat module (domain + infra layers) | Scheduled cleanup job; cascade delete to provider files and chat vector stores (OpenAI Files API / Azure OpenAI Files API) | Retention policy compliance tests |
-| `cpt-cf-mini-chat-nfr-observability-supportability` | Operational visibility for on-call, SRE, and cost governance | mini-chat module (domain service + quota_service) | `mini_chat_*` Prometheus metrics on all critical paths; stable `request_id` tracing per turn; structured audit events; turn state API (`GET /turns/{request_id}`) | Metric series presence tests; request_id propagation tests; alert rule validation |
+| `cpt-cf-mini-chat-nfr-observability-supportability` | Operational visibility for on-call, SRE, and cost governance | mini-chat module (domain service + quota_service) | `mini_chat_*` Prometheus metrics on all critical paths; stable `request_id` tracing per turn; structured audit events; turn state API (`GET /v1/chats/{chat_id}/turns/{request_id}`) | Metric series presence tests; request_id propagation tests; alert rule validation |
 | `cpt-cf-mini-chat-nfr-rag-scalability` | Bounded RAG costs and stable retrieval quality | mini-chat module (domain service + infra/storage) | Per-chat document count, file size, and chunk limits; configurable retrieval-k and max retrieved tokens per turn; per-chat dedicated vector stores | Per-chat limit enforcement tests; retrieval latency p95 benchmarks; `mini_chat_retrieval_latency_ms` within threshold |
 
 #### Key Decisions (ADRs)
@@ -409,7 +409,7 @@ System tasks (thread summary update, document summary generation) MUST be isolat
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-component-orphan-watchdog`
 
-- **orphan_watchdog** — P1 mandatory. Periodic background job that detects and cleans up turns abandoned by crashed pods. Transitions orphaned `running` turns to `failed` after a configurable timeout (default: 5 min), commits bounded quota debit, and emits a `modkit_outbox_events` row. MUST be leader-elected or sharded to avoid duplicate transitions. See section "Turn Lifecycle, Crash Recovery and Orphan Handling" for full specification.
+- **orphan_watchdog** — P1 mandatory. Periodic background job that detects and cleans up turns abandoned by crashed pods. Transitions orphaned `running` turns to `failed` after a configurable timeout (default: 5 min), commits bounded quota debit, and emits a `modkit_outbox_events` row. MUST use leader election to ensure exactly one active watchdog instance per environment. See section "Turn Lifecycle, Crash Recovery and Orphan Handling" for full specification.
 
 ### 3.3 API Contracts
 
@@ -2975,7 +2975,42 @@ A periodic background job detects and cleans up turns abandoned by crashed pods.
 3. Insert a `modkit_outbox_events` row with `outcome = "aborted"`, `settlement_method = "estimated"` (see section 5.7 turn finalization contract). The orphan watchdog uses billing outcome `"aborted"` (not `"failed"`) because the stream ended without a provider-issued terminal event — consistent with the ABORTED billing state (section 5.8).
 4. Emit metric: `mini_chat_orphan_turn_total` (counter, labeled by `chat_id` excluded — use only low-cardinality labels such as `{reason}` where `reason` = `timeout`).
 
-**Scheduling**: the watchdog runs as a periodic task within the module (e.g. every 60 seconds). It MUST be leader-elected or sharded to avoid duplicate transitions across replicas.
+**Scheduling**: the watchdog runs as a periodic task within the module (e.g. every 60 seconds). It MUST use leader election to ensure exactly one active watchdog instance per environment.
+
+##### Watchdog Single-Actor Guarantee (P1 Mandatory)
+
+**Mechanism: ModKit Leader Election**
+
+The orphan watchdog MUST use ModKit's leader election primitive (or equivalent distributed coordination if ModKit leader election is unavailable). Only the elected leader pod executes watchdog scans. All non-leader replicas MUST skip watchdog execution entirely.
+
+**Configuration Example (ConfigMap)**:
+
+```yaml
+orphan_watchdog:
+  enabled: true
+  scan_interval_secs: 60
+  timeout_threshold_secs: 300
+```
+
+**Watchdog Invariants (P1 Mandatory MUST statements)**:
+
+1. **CAS Finalization Guard**: The watchdog MUST use the identical CAS finalization pattern as all other terminal paths:
+   ```sql
+   UPDATE chat_turns SET state = 'failed', error_code = 'orphan_timeout', completed_at = now()
+   WHERE id = :turn_id AND state = 'running'
+   ```
+   If `rows_affected = 0`, the turn was already finalized by another path; the watchdog MUST skip it (no quota settlement, no outbox emission).
+
+2. **Idempotency**: The watchdog MUST be safe under retries and duplicate scans. The CAS guard ensures at-most-once finalization per turn. The outbox `dedupe_key` ensures at-most-once event emission.
+
+3. **No Duplicate Outbox Rows**: The watchdog MUST rely on the outbox `dedupe_key` uniqueness constraint (`{tenant_id}/{turn_id}/{request_id}`) to prevent duplicate billing events. It MUST NOT implement separate deduplication logic.
+
+4. **No Terminal State Overwrites**: The watchdog MUST NOT transition a turn that is already in a terminal state (`completed`, `failed`, `cancelled`). The CAS guard (`WHERE state = 'running'`) enforces this; any watchdog logic that bypasses this guard is a correctness violation.
+
+5. **Billing Outcome Consistency**: The watchdog MUST derive the outbox `outcome` field using the normative mapping in section 5.8 (Normative Billing Outcome Derivation). For orphan timeout, the mapping is: `state = 'failed'` + `error_code = 'orphan_timeout'` → billing outcome `ABORTED` → outbox `outcome = "aborted"`, `settlement_method = "estimated"`.
+
+**Failure Mode**:
+- **Leader election failure**: Automatic re-election ensures continuity. Temporary scan delays (bounded by re-election time + orphan timeout) are acceptable; the system remains correct.
 
 #### Idempotency Rules
 
@@ -4181,7 +4216,7 @@ Note: "disconnected" is not a separate internal state. Client disconnects are de
 
 **P1 client disconnect rules**:
 
-1. **Disconnect before terminal provider event**: the server does NOT emit an SSE `event: error` (the stream is already broken). The turn transitions to `cancelled` internally via the CAS finalizer. Billing settlement follows ABORTED rules. The Turn Status API (`GET /turns/{request_id}`) is the authoritative source of final state.
+1. **Disconnect before terminal provider event**: the server does NOT emit an SSE `event: error` (the stream is already broken). The turn transitions to `cancelled` internally via the CAS finalizer. Billing settlement follows ABORTED rules. The Turn Status API (`GET /v1/chats/{chat_id}/turns/{request_id}`) is the authoritative source of final state.
 2. **Disconnect after provider terminal `done` or `error`**: the terminal outcome from the provider stands. The disconnect does not alter the billing state or produce a second terminal event.
 3. **SSE does not guarantee delivery of the terminal event to the client**. The terminal state is authoritative in the database, not in the SSE stream. After any disconnect, clients MUST use the Turn Status API to resolve uncertainty about the turn outcome.
 
@@ -4240,6 +4275,61 @@ WHERE id = :turn_id AND state = 'running'
 - **`rows_affected = 0`**: another finalizer already transitioned the turn. This finalizer MUST treat the turn as already finalized, MUST NOT debit quota, MUST NOT emit an outbox event, and MUST stop processing. It is an idempotent no-op.
 
 No finalization path is exempt from this guard. The orphan watchdog uses the identical CAS pattern (`WHERE state = 'running'`) and cannot "finalize late" if the stream already completed or was already finalized by another path.
+
+#### Terminal SSE Event Emission Guard (P1)
+
+**Rule: Terminal SSE events MUST be gated on successful CAS finalization.**
+
+The streaming execution path (provider → HTTP handler → SSE client) and the finalization path (CAS → quota settlement → outbox) are architecturally separate but must be coordinated to ensure correctness. A terminal SSE event (`done` or `error`) MUST only be emitted to the client after the CAS finalization succeeds.
+
+**Implementation Pattern:**
+
+When the provider returns terminal data (`done` or `error` event):
+
+1. **Do NOT immediately emit the terminal SSE event** to the client stream
+2. **Attempt CAS finalization first**:
+   ```sql
+   UPDATE chat_turns
+   SET state = :terminal_state, completed_at = now(), ...
+   WHERE id = :turn_id AND state = 'running'
+   ```
+3. **Check `rows_affected` and gate SSE emission**:
+   - **If `rows_affected = 1`** (CAS winner):
+     - Proceed with quota settlement and outbox insertion within the same transaction
+     - Commit the transaction
+     - **Only after successful commit**: emit the terminal SSE event (`done` or `error`) to the client
+     - Flush and close the SSE stream
+   - **If `rows_affected = 0`** (CAS loser):
+     - Another finalization path won the race (e.g., concurrent client disconnect)
+     - **Do NOT emit any terminal SSE event**, even though provider terminal data is available
+     - Close the SSE stream immediately without additional events
+     - The client will use Turn Status API to resolve the authoritative outcome
+
+**Race Scenarios:**
+
+- **Provider terminal event + concurrent client disconnect**:
+  - Both paths attempt CAS finalization
+  - Whichever wins determines the billing outcome and SSE event (if client is still connected)
+  - The loser path becomes a no-op (no SSE emission, no quota/outbox changes)
+
+- **Disconnect before provider terminal**:
+  - Stream is already broken; no SSE emission possible
+  - Disconnect path wins CAS and finalizes as `cancelled` / billing `ABORTED`
+  - Provider terminal arrives later but CAS fails → provider data is discarded
+
+- **Provider terminal before disconnect**:
+  - Normal flow: CAS succeeds, terminal SSE emitted, transaction committed
+  - Any subsequent disconnect is a no-op (turn already finalized)
+
+**Correctness Property:**
+
+This guard ensures that if a terminal SSE event is delivered to the client, it always matches the finalized billing outcome committed to the database. It prevents ambiguous cases where:
+- Client receives SSE `error` but database shows `cancelled` (billing `ABORTED`)
+- Client receives SSE `done` but database shows `failed`
+
+Without this guard, the SSE stream and the database state can become inconsistent during race conditions, violating the "database is authoritative" principle (section 5.7, P1 client disconnect rule 3).
+
+**Note:** This rule applies only to **terminal** SSE events (`done`, `error`). Non-terminal events (`delta`, `metadata`, `rate_limit_info`) are emitted as they arrive from the provider without gating, as these do not affect billing finalization semantics.
 
 #### Forbidden Patterns
 
@@ -4397,6 +4487,29 @@ The orphan watchdog demonstrates this separation:
 - Emits billing outcome: `"aborted"` with `settlement_method = "estimated"` (because stream ended without provider terminal event)
 
 **Implementation guard**: Any code that keys billing logic, settlement rules, or outbox emission off internal `chat_turns.state` instead of explicitly-set billing outcome is incorrect and will cause billing drift. Billing outcome MUST be determined by the finalization path based on terminal trigger classification (provider done/error vs client disconnect vs orphan timeout), NOT by reading `chat_turns.state`.
+
+#### Normative Billing Outcome Derivation (P1 Mandatory)
+
+**CRITICAL RULE**: The outbox `outcome` field for `event_type = 'usage_finalized'` events MUST be derived from the billing outcome classification below, **NOT** from the `chat_turns.state` string directly. Any implementation that keys outbox `outcome` off `chat_turns.state` without applying this mapping is incorrect and will cause billing drift.
+
+**Authoritative Mapping Table** (exhaustive; covers ALL finalization paths):
+
+| Internal Terminal Condition | Billing Outcome | Outbox `outcome` | Outbox `settlement_method` | Notes |
+|------------------------------|-----------------|------------------|---------------------------|-------|
+| `state = 'completed'` | `COMPLETED` | `"completed"` | `"actual"` | Normal success; provider reported full usage |
+| `state = 'failed'` AND `error_code IN ('provider_error', 'provider_timeout', 'rate_limited')` | `FAILED` | `"failed"` | `"actual"` (if provider reported partial usage) OR `"estimated"` (if no usage available) | Provider terminal error after streaming started |
+| `state = 'failed'` AND `error_code IN ('context_length_exceeded', 'validation_error')` AND reserve was taken | `FAILED` | `"failed"` | `"released"` | Pre-provider failure after reserve; zero charge |
+| `state = 'cancelled'` (client disconnect) | `ABORTED` | `"aborted"` | `"actual"` (if provider reported partial usage) OR `"estimated"` (use deterministic formula) | Stream ended without provider terminal event |
+| `state = 'failed'` AND `error_code = 'orphan_timeout'` (watchdog) | `ABORTED` | `"aborted"` | `"estimated"` (MUST use deterministic formula from section 5.8) | Watchdog cleanup; no provider terminal event received |
+
+**Settlement Method Selection for ABORTED**:
+- If the provider reported partial `usage` before disconnect/timeout, use `settlement_method = "actual"` and charge the reported tokens.
+- Otherwise (no provider usage available), use `settlement_method = "estimated"` and apply the deterministic charged token formula (section 5.8).
+
+**Enforcement**:
+- This mapping MUST be implemented in a **single shared function** used by ALL finalization code paths: normal completion handler, error handler, disconnect/cancellation handler, and orphan watchdog.
+- EVERY terminal code path MUST call this function to derive the outbox payload; no path may construct outbox rows using ad-hoc logic.
+- Unit tests MUST verify that each internal condition row in the table above produces the exact `outcome` and `settlement_method` specified.
 
 **Watchdog determinism rule**: the orphan turn watchdog (section 3, `cpt-cf-mini-chat-component-orphan-watchdog`) MUST use the exact same deterministic charged token formula defined below for `ABORTED` streams — no separate estimation path. The watchdog MUST perform (1) quota settlement using the formula, (2) `chat_turns` state transition, and (3) `modkit_outbox_events` insertion in a single atomic DB transaction. It MUST be impossible for a turn to remain in `IN_PROGRESS` indefinitely; the watchdog timeout (default: 5 minutes) is the hard upper bound on turn duration without a terminal provider event.
 
