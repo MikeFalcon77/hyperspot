@@ -4850,7 +4850,7 @@ This guard ensures that if a terminal SSE event is delivered to the client, it a
 
 Without this guard, the SSE stream and the database state can become inconsistent during race conditions, violating the "database is authoritative" principle (section 5.7, P1 client disconnect rule 3).
 
-**Note:** This rule applies only to **terminal** SSE events (`done`, `error`). Non-terminal events (`delta`, `metadata`, `rate_limit_info`) are emitted as they arrive from the provider without gating, as these do not affect billing finalization semantics.
+**Note:** This rule applies only to **terminal** SSE events (`done`, `error`). Non-terminal events (`delta`, `tool`, `citations`) are emitted as they arrive from the provider without gating, as these do not affect billing finalization semantics.
 
 #### Forbidden Patterns
 
@@ -5068,6 +5068,20 @@ impl TurnErrorCode {
 | `state = 'failed'` AND `error_code IN ('context_length_exceeded', 'validation_error')` AND reserve was taken | `FAILED` | `"failed"` | `"released"` | Pre-provider failure after reserve; zero charge |
 | `state = 'cancelled'` (client disconnect) | `ABORTED` | `"aborted"` | `"actual"` (if provider reported partial usage) OR `"estimated"` (use deterministic formula) | Stream ended without provider terminal event |
 | `state = 'failed'` AND `error_code = 'orphan_timeout'` (watchdog) | `ABORTED` | `"aborted"` | `"estimated"` (MUST use deterministic formula from section 5.8) | Watchdog cleanup; no provider terminal event received |
+
+**Rationale for error code classification (addressing settlement_method="released" correctness)**:
+
+The mapping table uses `error_code` values as predicates to classify pre-provider vs post-provider failures. This design is safe because:
+
+1. **Error codes `context_length_exceeded` and `validation_error` are ONLY generated during preflight validation** — they occur when assembling the request payload, before the outbound HTTP request to the provider is issued. These codes can NEVER be generated after the provider request starts. Therefore, using these error codes to infer "pre-provider failure → settlement_method='released'" is semantically correct.
+
+2. **Error codes `provider_error`, `provider_timeout`, and `rate_limited` are ONLY generated after the provider request has started** — they represent terminal errors from the provider or network layer. Therefore, these codes correctly map to post-provider failures that use "actual" or "estimated" settlement.
+
+3. **Pod crash/timeout edge case**: If a pod crashes AFTER taking a reserve but BEFORE issuing the provider request (a <50ms window in normal operation), the orphan watchdog cannot distinguish this from a post-provider crash. The watchdog conservatively applies `settlement_method="estimated"` (NOT "released") to prevent free resource exploitation. This is a documented tradeoff (see section 5.4, Provider Request Start Boundary Implementation Note) - the system errs on the side of charging to avoid abuse.
+
+4. **No misclassification risk**: Because error code generation is coupled to the code path (preflight errors generate pre-provider codes, provider response handling generates post-provider codes), the error code taxonomy is a reliable proxy for the "provider request started" boundary without requiring an additional persisted flag.
+
+**Alternative considered**: Persist `chat_turns.provider_request_started_at` timestamp for perfect crash recovery. Deferred to P2+ due to write latency on critical path (see section 5.4).
 
 **Settlement Method Selection for ABORTED**:
 - If the provider reported partial `usage` before disconnect/timeout, use `settlement_method = "actual"` and charge the reported tokens.
