@@ -3,11 +3,12 @@
 //! This file serves as **usage guidelines** — each test shows how to use the SDK
 //! for real-world scenarios. All protocols go through `ServiceGatewayClientV1::proxy_request`:
 //!
-//! | Protocol  | Request Body          | Response Body          | SDK wrapper                         |
-//! |-----------|-----------------------|------------------------|-------------------------------------|
-//! | HTTP      | `Body::Bytes`/`Empty` | `Body::Bytes`          | direct access                       |
-//! | SSE       | `Body::Bytes`/`Empty` | `Body::Stream`         | `ServerEventsStream::from_response` |
-//! | WebSocket | n/a (upgrade)         | n/a (bidirectional)    | `WebSocketStream` (via axum)        |
+//! | Protocol   | Request Body          | Response Body          | SDK wrapper                         |
+//! |------------|-----------------------|------------------------|-------------------------------------|
+//! | HTTP       | `Body::Bytes`/`Empty` | `Body::Bytes`          | direct access                       |
+//! | SSE        | `Body::Bytes`/`Empty` | `Body::Stream`         | `ServerEventsStream::from_response` |
+//! | WebSocket  | n/a (upgrade)         | n/a (bidirectional)    | `WebSocketStream` (via axum)        |
+//! | Multipart  | `Body::Bytes`/`Stream`| `Body::Bytes`          | `MultipartBody::into_request`       |
 
 use std::sync::Mutex;
 
@@ -847,6 +848,141 @@ async fn websocket_stream_split() -> TestResult {
 
     // -- verify: close terminates ----------------------------------------------
     assert!(stream_receiver.recv().await.is_none());
+
+    Ok(())
+}
+
+// ===========================================================================
+// Multipart: file uploads via MultipartBody
+// ===========================================================================
+
+/// Upload a file with metadata using buffered multipart.
+///
+/// Preconditions: upstream accepts `multipart/form-data` with a text field and file.
+/// Expected: `into_request` produces a ready-to-send request with correct headers and body.
+#[tokio::test]
+async fn multipart_proxy_buffered() -> TestResult {
+    // -- setup: upstream accepts the upload and returns a file ID ----------------
+    let gateway = MockGateway::responding_with(
+        http::Response::builder()
+            .status(200)
+            .body(Body::from(r#"{"id":"file-123"}"#))?,
+    );
+
+    // -- action: build a multipart request with text field + file ----------------
+    let req = oagw_sdk::MultipartBody::with_boundary("TEST-BOUNDARY")?
+        .text("purpose", "fine-tune")
+        .part(
+            oagw_sdk::Part::bytes("file", &b"training-data"[..])
+                .filename("training.jsonl")
+                .content_type("application/jsonl"),
+        )
+        .into_request("POST", "/api/oagw/v1/proxy/openai/v1/files")?;
+
+    // -- verify: Content-Type header includes the boundary -----------------------
+    let ct = req.headers().get("content-type").unwrap().to_str()?;
+    assert!(ct.starts_with("multipart/form-data; boundary="));
+
+    // -- verify: body is fully buffered with correct wire format -----------------
+    let body_bytes = req.into_body().into_bytes().await?;
+    let body_str = String::from_utf8(body_bytes.to_vec())?;
+    assert!(body_str.contains("name=\"purpose\""));
+    assert!(body_str.contains("fine-tune"));
+    assert!(body_str.contains("filename=\"training.jsonl\""));
+    assert!(body_str.contains("Content-Type: application/jsonl"));
+    assert!(body_str.contains("training-data"));
+    assert!(body_str.contains("--TEST-BOUNDARY--\r\n"));
+
+    // -- action: send through proxy_request -------------------------------------
+    let req2 = oagw_sdk::MultipartBody::with_boundary("TEST-BOUNDARY")?
+        .text("purpose", "fine-tune")
+        .part(
+            oagw_sdk::Part::bytes("file", &b"training-data"[..])
+                .filename("training.jsonl")
+                .content_type("application/jsonl"),
+        )
+        .into_request("POST", "/api/oagw/v1/proxy/openai/v1/files")?;
+
+    let resp = gateway
+        .proxy_request(SecurityContext::anonymous(), req2)
+        .await?;
+
+    // -- verify: upstream accepted the upload -----------------------------------
+    assert_eq!(resp.status(), 200);
+
+    Ok(())
+}
+
+/// Upload a large file as a stream — body is never fully buffered in memory.
+///
+/// Preconditions: upstream accepts audio transcription with a streaming file part.
+/// Expected: `MultipartBody` with a `Part::stream` produces `Body::Stream`;
+///   wire format is valid after collecting.
+#[tokio::test]
+async fn multipart_proxy_streaming() -> TestResult {
+    // -- setup: upstream returns a transcription ---------------------------------
+    let gateway = MockGateway::responding_with(
+        http::Response::builder()
+            .status(200)
+            .body(Body::from(r#"{"text":"Hello world"}"#))?,
+    );
+
+    // -- action: build a multipart request with a streaming file part ------------
+    let file_stream: BodyStream = Box::pin(futures_util::stream::iter(vec![
+        Ok(Bytes::from("audio-chunk-1")),
+        Ok(Bytes::from("audio-chunk-2")),
+    ]));
+
+    let multipart = oagw_sdk::MultipartBody::with_boundary("STREAM-BOUND")?
+        .text("model", "whisper-1")
+        .part(
+            oagw_sdk::Part::stream("file", file_stream)
+                .filename("audio.mp3")
+                .content_type("audio/mpeg"),
+        );
+
+    // -- verify: streaming parts produce Body::Stream ---------------------------
+    let ct = multipart.content_type();
+    let body = multipart.into_body();
+    assert!(matches!(body, Body::Stream(_)));
+
+    let body_bytes = body.into_bytes().await?;
+    let body_str = String::from_utf8(body_bytes.to_vec())?;
+    assert!(body_str.contains("name=\"model\""));
+    assert!(body_str.contains("whisper-1"));
+    assert!(body_str.contains("filename=\"audio.mp3\""));
+    assert!(body_str.contains("audio-chunk-1audio-chunk-2"));
+    assert!(body_str.contains("--STREAM-BOUND--\r\n"));
+
+    // -- action: send a streaming multipart through proxy_request ----------------
+    let file_stream2: BodyStream = Box::pin(futures_util::stream::iter(vec![
+        Ok(Bytes::from("audio-chunk-1")),
+        Ok(Bytes::from("audio-chunk-2")),
+    ]));
+
+    let req = http::Request::builder()
+        .method("POST")
+        .uri("/api/oagw/v1/proxy/openai/v1/audio/transcriptions")
+        .header("content-type", ct)
+        .body(Body::from(
+            oagw_sdk::MultipartBody::with_boundary("STREAM-BOUND")?
+                .text("model", "whisper-1")
+                .part(
+                    oagw_sdk::Part::stream("file", file_stream2)
+                        .filename("audio.mp3")
+                        .content_type("audio/mpeg"),
+                ),
+        ))?;
+
+    let resp = gateway
+        .proxy_request(SecurityContext::anonymous(), req)
+        .await?;
+
+    // -- verify: upstream processed the transcription ----------------------------
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.into_body().into_bytes().await?;
+    let json: serde_json::Value = serde_json::from_slice(&bytes)?;
+    assert_eq!(json["text"], "Hello world");
 
     Ok(())
 }
