@@ -243,6 +243,8 @@ def _print_log_file(path, label):
         return
     print(f"\n--- {label}: {path} ---")
     try:
+        if "../" in path or "..\\" in path:
+            raise Exception("Invalid file path")
         with open(path) as f:
             content = f.read()
             if content:
