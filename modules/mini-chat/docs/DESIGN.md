@@ -2881,13 +2881,13 @@ These are deployment constraints that must be validated during infrastructure se
 
 #### Turn State Model
 
-Every user-initiated streaming turn creates a `chat_turns` row with four possible states:
+Every user-initiated streaming turn that reaches preflight reserve creation inserts a `chat_turns` row with four possible states. Pre-reserve failures (validation errors, authorization denials before preflight completes) do not create a `chat_turns` row.
 
 | State | Meaning | Terminal? |
 |-------|---------|-----------|
 | `running` | Generation in progress; SSE stream active | No |
 | `completed` | Provider returned terminal `response.completed`; assistant message persisted | Yes |
-| `failed` | Provider error, preflight rejection, or orphan watchdog timeout | Yes |
+| `failed` | Provider error, post-reserve preflight rejection, or orphan watchdog timeout | Yes |
 | `cancelled` | Client disconnected and cancellation propagated | Yes |
 
 Allowed transitions: `running` → `completed` | `failed` | `cancelled`. No transitions out of terminal states.
@@ -4617,6 +4617,13 @@ Section 5.7 defines the `failed` outcome taxonomy (pre-provider vs. post-provide
 - Emitting a `modkit_outbox_events` row is OPTIONAL. The "exactly one event per reserve" invariant does not apply because no reserve was created. If the system does emit one for observability, the row MUST use `outcome = "failed"`, `settlement_method = "released"`, `usage = { input_tokens: 0, output_tokens: 0 }`, and MUST use a stable `dedupe_key` derived from `(tenant_id, turn_id, request_id)` so that consumers can safely ignore duplicates.
 
 > **turn_id generation for pre-reserve failures**: if no `chat_turns` row exists (failure during validation or authorization before INSERT), the implementation MUST either (1) not emit an outbox event (OPTIONAL branch) or (2) generate a server-side UUID v4 as `turn_id` for dedupe_key construction only (this UUID is not persisted in `chat_turns`). The `request_id` is always available (client-provided or server-generated per standard turn semantics). The `tenant_id` is available from the authenticated request context.
+
+> **Consumer Warning for Optional Pre-Reserve Events**: If the system emits optional outbox events for pre-reserve failures, consumers MUST be aware that:
+> 1. The `turn_id` in the event may be synthetic (not persisted in `chat_turns` table)
+> 2. JOIN operations to `chat_turns` by this `turn_id` will fail or return no rows
+> 3. Optional pre-reserve events represent zero billing impact and exist for observability/debugging only
+> 4. Consumers MUST check `settlement_method = "released"` and `usage = { input_tokens: 0, output_tokens: 0 }` to identify these events
+> 5. Consumers MUST NOT assume all `usage_finalized` events correspond to persisted `chat_turns` rows when optional pre-reserve events are enabled
 
 - No billing state transition applies (no `chat_turns` row was created, or the row never entered `IN_PROGRESS`).
 - Pre-reserve failures are NOT part of "reserve settlement". They exist outside the billing lifecycle that begins with reserve creation.
