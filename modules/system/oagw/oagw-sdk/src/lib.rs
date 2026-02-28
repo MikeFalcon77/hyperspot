@@ -2,6 +2,7 @@ pub mod api;
 pub mod body;
 pub mod codec;
 pub mod error;
+pub mod multipart;
 pub mod sse;
 pub mod ws;
 
@@ -22,6 +23,7 @@ pub use body::Body;
 pub use codec::Json;
 pub use error::StreamingError;
 pub use modkit_security::SecurityContext;
+pub use multipart::{MultipartBody, MultipartError, Part};
 pub use sse::{FromServerEvent, ServerEvent, ServerEventsResponse, ServerEventsStream};
 #[cfg(feature = "axum")]
 pub use ws::axum_adapter;
