@@ -276,7 +276,11 @@ def enumerate_project_rs_files(project_root):
 def count_non_empty_lines(abs_path):
     """Approximate LOC by counting non-empty lines for a file."""
     try:
-        with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
+        base_real = os.path.realpath(PROJECT_ROOT)
+        target_real = os.path.realpath(abs_path)
+        if os.path.commonpath([base_real, target_real]) != base_real:
+            raise Exception("Invalid file path")
+        with open(target_real, "r", encoding="utf-8", errors="ignore") as f:
             return sum(1 for ln in f if ln.strip())
     except FileNotFoundError:
         return 0
@@ -598,7 +602,11 @@ def parse_bind_addr_port(config_file):
         int: Port number from api_gateway.bind_addr
     """
     config_path = PROJECT_ROOT / config_file
-    with open(config_path, 'r') as f:
+    base_real = os.path.realpath(PROJECT_ROOT)
+    target_real = os.path.realpath(config_path)
+    if os.path.commonpath([base_real, target_real]) != base_real:
+        raise Exception('Invalid file path')
+    with open(target_real, 'r') as f:
         config = yaml.safe_load(f)
 
     bind_addr = config.get('modules', {}).get('api-gateway', {}).get(
@@ -739,11 +747,15 @@ def start_instrumented_server(config_file, output_dir, port=None):
     )
 
     # Start server
+    base_real = os.path.realpath(COVERAGE_DIR)
+    target_real = os.path.realpath(log_file)
+    if os.path.commonpath([base_real, target_real]) != base_real:
+        raise Exception("Invalid file path")
     server_process = popen_new_group(
         cmd,
         env=env2,
         cwd=PROJECT_ROOT,
-        stdout=open(log_file, "w"),
+        stdout=open(target_real, "w"),
         stderr=subprocess.STDOUT,
     )
 
@@ -962,6 +974,10 @@ def generate_reports(output_dir, mode, threshold=COVERAGE_THRESHOLD, use_color=F
     )
 
     json_file = output_dir / "coverage.json"
+    base_real = os.path.realpath(COVERAGE_DIR)
+    target_real = os.path.realpath(json_file)
+    if os.path.commonpath([base_real, target_real]) != base_real:
+        raise Exception("Invalid file path")
     json_file.write_text(json_result.stdout)
     print(f"[OK] JSON report: {json_file}")
 
@@ -978,6 +994,10 @@ def generate_reports(output_dir, mode, threshold=COVERAGE_THRESHOLD, use_color=F
 
     # Save custom report (without color codes)
     custom_file = output_dir / "coverage_report.txt"
+    base_real = os.path.realpath(COVERAGE_DIR)
+    target_real = os.path.realpath(custom_file)
+    if os.path.commonpath([base_real, target_real]) != base_real:
+        raise Exception("Invalid file path")
     custom_file.write_text(
         format_custom_coverage_report(
             json_data,
