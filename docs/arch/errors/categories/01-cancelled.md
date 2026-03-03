@@ -15,7 +15,6 @@ GTS schema ID: `gts.cf.core.errors.request_info.v1~`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `request_id` | `String` | Identifier of the cancelled request |
 | `details` | `Option<Object>` | Reserved for derived GTS type extensions (p3+); absent in p1 |
 
 
