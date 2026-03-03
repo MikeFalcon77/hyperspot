@@ -535,7 +535,6 @@ impl ApiGateway {
 #[async_trait]
 impl modkit::Module for ApiGateway {
     async fn init(&self, ctx: &modkit::context::ModuleCtx) -> anyhow::Result<()> {
-        debug!("Module initialized with context");
         let cfg = ctx.config::<crate::config::ApiGatewayConfig>()?;
         self.config.store(Arc::new(cfg.clone()));
 

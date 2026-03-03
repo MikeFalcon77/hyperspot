@@ -50,7 +50,7 @@ impl Module for TenantResolver {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
         let cfg: TenantResolverConfig = ctx.config()?;
         tracing::Span::current().record("vendor", cfg.vendor.as_str());
-        info!(vendor = %cfg.vendor, "Initializing {} module", Self::MODULE_NAME);
+        info!(vendor = %cfg.vendor);
 
         // Register plugin schema in types-registry
         let registry = ctx.client_hub().get::<dyn TypesRegistryClient>()?;
@@ -83,8 +83,6 @@ impl Module for TenantResolver {
         // Register local client in ClientHub
         let api: Arc<dyn TenantResolverClient> = Arc::new(TenantResolverLocalClient::new(svc));
         ctx.client_hub().register::<dyn TenantResolverClient>(api);
-
-        info!("{} module initialized successfully", Self::MODULE_NAME);
 
         Ok(())
     }

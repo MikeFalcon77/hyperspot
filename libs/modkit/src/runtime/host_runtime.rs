@@ -304,6 +304,7 @@ impl HostRuntime {
                         module: entry.name,
                         source: e,
                     })?;
+            tracing::info!(module = entry.name, "Initializing a module...");
             entry
                 .core
                 .init(&ctx)
@@ -312,6 +313,7 @@ impl HostRuntime {
                     module: entry.name,
                     source: e,
                 })?;
+            tracing::info!(module = entry.name, "Initialized a module.");
         }
 
         Ok(())

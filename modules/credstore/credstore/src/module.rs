@@ -42,7 +42,7 @@ impl Module for CredStoreModule {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
         let cfg: CredStoreConfig = ctx.config()?;
         tracing::Span::current().record("vendor", cfg.vendor.as_str());
-        info!(vendor = %cfg.vendor, "Initializing {} module", Self::MODULE_NAME);
+        info!(vendor = %cfg.vendor);
 
         // Register plugin schema in types-registry
         let registry = ctx.client_hub().get::<dyn TypesRegistryClient>()?;
@@ -65,8 +65,6 @@ impl Module for CredStoreModule {
         // Register local client in ClientHub
         let api: Arc<dyn CredStoreClientV1> = Arc::new(CredStoreLocalClient::new(svc));
         ctx.client_hub().register::<dyn CredStoreClientV1>(api);
-
-        info!("{} module initialized successfully", Self::MODULE_NAME);
 
         Ok(())
     }

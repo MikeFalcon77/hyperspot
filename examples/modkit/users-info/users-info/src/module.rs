@@ -60,8 +60,6 @@ impl Default for UsersInfo {
 #[async_trait]
 impl Module for UsersInfo {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
-        info!("Initializing {} module", Self::MODULE_NAME);
-
         // Load module configuration using new API
         let cfg: UsersInfoConfig = ctx.config()?;
         debug!(
@@ -133,7 +131,6 @@ impl Module for UsersInfo {
         ctx.client_hub()
             .register::<dyn UsersInfoClientV1>(Arc::new(local));
 
-        info!("{} module initialized successfully", Self::MODULE_NAME);
         Ok(())
     }
 }

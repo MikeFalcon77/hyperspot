@@ -56,8 +56,6 @@ impl Default for OutboundApiGatewayModule {
 #[async_trait]
 impl Module for OutboundApiGatewayModule {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
-        info!("Initializing Outbound API Gateway module");
-
         let cfg: OagwConfig = ctx.config()?;
         info!("OAGW config: proxy_timeout_secs={}", cfg.proxy_timeout_secs);
 
@@ -124,7 +122,6 @@ impl Module for OutboundApiGatewayModule {
         };
 
         self.state.store(Some(Arc::new(app_state)));
-        info!("Outbound API Gateway module initialized");
         Ok(())
     }
 }

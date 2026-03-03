@@ -41,8 +41,6 @@ impl Default for StaticAuthNPlugin {
 #[async_trait]
 impl Module for StaticAuthNPlugin {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
-        info!("Initializing {} module", Self::MODULE_NAME);
-
         // Load configuration
         let cfg: StaticAuthNPluginConfig = ctx.config()?;
         if matches!(cfg.mode, crate::config::AuthNMode::AcceptAll) {
@@ -93,7 +91,7 @@ impl Module for StaticAuthNPlugin {
                 api,
             );
 
-        info!(instance_id = %instance_id, "{} module initialized successfully", Self::MODULE_NAME);
+        info!(instance_id = %instance_id);
         Ok(())
     }
 }

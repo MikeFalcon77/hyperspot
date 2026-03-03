@@ -34,8 +34,6 @@ impl Default for StaticCredStorePlugin {
 #[async_trait]
 impl Module for StaticCredStorePlugin {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
-        info!("Initializing {} module", Self::MODULE_NAME);
-
         // Load configuration
         let cfg: StaticCredStorePluginConfig = ctx.config()?;
 
@@ -76,7 +74,7 @@ impl Module for StaticCredStorePlugin {
         ctx.client_hub()
             .register_scoped::<dyn CredStorePluginClientV1>(ClientScope::gts_id(&instance_id), api);
 
-        info!(instance_id = %instance_id, "{} module initialized successfully", Self::MODULE_NAME);
+        info!(instance_id = %instance_id);
         Ok(())
     }
 }
