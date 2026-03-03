@@ -947,6 +947,5 @@ All variants share the same structure: `{ ctx: ContextType, message: String, res
 
 - **PRD**: [PRD.md](./PRD.md)
 - **ADRs**: [ADR/](./ADR/)
-- **PoC Implementation**: [`.canonical-errors/`](../../../.canonical-errors/)
 - **Existing implementation**: [`libs/modkit-errors/src/problem.rs`](../../../libs/modkit-errors/src/problem.rs)
 - **Supersedes**: PR #290 (`docs/unified-error-system/`)
