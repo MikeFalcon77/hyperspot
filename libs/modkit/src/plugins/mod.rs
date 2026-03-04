@@ -1,8 +1,10 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use std::sync::RwLock;
 use tokio::sync::Mutex;
+
+use crate::RwLockExt as _;
 
 use crate::gts::BaseModkitPluginV1;
 
@@ -48,7 +50,7 @@ impl GtsPluginSelector {
     {
         // Fast path: check if already cached (sync lock, no await)
         {
-            let guard = self.cached.read();
+            let guard = self.cached.hold_read();
             if let Some(ref id) = *guard {
                 return Ok(Arc::clone(id));
             }
@@ -59,7 +61,7 @@ impl GtsPluginSelector {
 
         // Re-check after acquiring resolve lock (another caller may have resolved)
         {
-            let guard = self.cached.read();
+            let guard = self.cached.hold_read();
             if let Some(ref id) = *guard {
                 return Ok(Arc::clone(id));
             }
@@ -70,7 +72,7 @@ impl GtsPluginSelector {
         let id: Arc<str> = id_string.into();
 
         {
-            let mut guard = self.cached.write();
+            let mut guard = self.cached.hold_write();
             *guard = Some(Arc::clone(&id));
         }
 
@@ -82,7 +84,7 @@ impl GtsPluginSelector {
     /// Returns `true` if there was a cached value, `false` otherwise.
     pub async fn reset(&self) -> bool {
         let _resolve_guard = self.resolve_lock.lock().await;
-        let mut guard = self.cached.write();
+        let mut guard = self.cached.hold_write();
         guard.take().is_some()
     }
 }

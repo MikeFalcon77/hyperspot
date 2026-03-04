@@ -1,7 +1,7 @@
 use async_trait::async_trait;
-use parking_lot::Mutex;
+use modkit_utils::MutexExt as _;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicU8, Ordering},
 };
 use std::time::Duration;
@@ -265,7 +265,7 @@ impl Lifecycle {
 
         // store cancellation token (bounded lock scope)
         {
-            let mut c = self.cancel.lock();
+            let mut c = self.cancel.hold();
             *c = Some(token.clone());
         }
 
@@ -315,7 +315,7 @@ impl Lifecycle {
 
         // store handle (bounded lock scope)
         {
-            let mut h = self.handle.lock();
+            let mut h = self.handle.hold();
             *h = Some(handle);
         }
 
@@ -339,7 +339,7 @@ impl Lifecycle {
         self.store_status(Status::Stopping);
 
         // Request cancellation only once (idempotent if multiple callers race here).
-        if let Some(tok) = { self.cancel.lock().take() } {
+        if let Some(tok) = { self.cancel.hold().take() } {
             self.was_cancelled.store(true, Ordering::Release);
             tok.cancel();
         }
@@ -366,7 +366,7 @@ impl Lifecycle {
         };
 
         // Join and ensure we notify waiters even if the task was aborted/panicked.
-        let handle_opt = { self.handle.lock().take() };
+        let handle_opt = { self.handle.hold().take() };
         if let Some(handle) = handle_opt {
             if matches!(reason, StopReason::Timeout) && !handle.is_finished() {
                 tracing::warn!("lifecycle stop timed out; aborting task");
@@ -463,11 +463,15 @@ impl Default for Lifecycle {
 impl Drop for Lifecycle {
     /// Best-effort cleanup to avoid orphaned background tasks if caller forgets to call `stop()`.
     fn drop(&mut self) {
-        if let Some(tok) = self.cancel.get_mut().take() {
-            tok.cancel();
+        if let Ok(cancel) = self.cancel.get_mut() {
+            if let Some(tok) = cancel.take() {
+                tok.cancel();
+            }
         }
-        if let Some(handle) = self.handle.get_mut().take() {
-            handle.abort();
+        if let Ok(handle) = self.handle.get_mut() {
+            if let Some(h) = handle.take() {
+                h.abort();
+            }
         }
     }
 }
@@ -623,11 +627,15 @@ impl<T: Runnable> Drop for WithLifecycle<T> {
     /// Best-effort, but only if we're the last owner of `lc` to avoid aborting someone else's task.
     fn drop(&mut self) {
         if Arc::strong_count(&self.lc) == 1 {
-            if let Some(tok) = self.lc.cancel.lock().as_ref() {
-                tok.cancel();
+            if let Ok(cancel) = self.lc.cancel.lock() {
+                if let Some(tok) = cancel.as_ref() {
+                    tok.cancel();
+                }
             }
-            if let Some(handle) = self.lc.handle.lock().as_ref() {
-                handle.abort();
+            if let Ok(handle) = self.lc.handle.lock() {
+                if let Some(h) = handle.as_ref() {
+                    h.abort();
+                }
             }
         }
     }

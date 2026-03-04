@@ -4,8 +4,10 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use tracing_subscriber::{Layer, fmt, util::SubscriberInitExt};
+
+use crate::MutexExt as _;
 
 // ========== OTEL-agnostic layer type (compiles with/without the feature) ==========
 #[cfg(feature = "otel")]
@@ -53,16 +55,16 @@ impl Write for RotWriterHandle {
     // NOTE: Each call acquires/releases the lock independently. Callers needing
     // atomicity for multi-part writes should use write_all() or write_fmt().
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().write(buf)
+        self.0.hold().write(buf)
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        self.0.lock().flush()
+        self.0.hold().flush()
     }
     fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        self.0.lock().write_all(buf)
+        self.0.hold().write_all(buf)
     }
     fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
-        self.0.lock().write_fmt(args)
+        self.0.hold().write_fmt(args)
     }
 }
 
@@ -599,8 +601,8 @@ mod tests {
         let (specific, specific_path) = tmp_writer(dir.path(), "specific.log");
 
         // Write markers so we can tell them apart
-        broad.0.lock().write_all(b"BROAD\n").unwrap();
-        specific.0.lock().write_all(b"SPECIFIC\n").unwrap();
+        broad.0.hold().write_all(b"BROAD\n").unwrap();
+        specific.0.hold().write_all(b"SPECIFIC\n").unwrap();
 
         let router = MultiFileRouter {
             default: None,
@@ -729,7 +731,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let (default_writer, default_path) = tmp_writer(dir.path(), "default.log");
 
-        default_writer.0.lock().write_all(b"DEFAULT\n").unwrap();
+        default_writer.0.hold().write_all(b"DEFAULT\n").unwrap();
 
         let router = MultiFileRouter {
             default: Some(default_writer),

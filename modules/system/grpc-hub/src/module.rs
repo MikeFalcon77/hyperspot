@@ -12,10 +12,11 @@ use modkit::{
     runtime::{GrpcInstallerData, GrpcInstallerStore, ModuleInstallers},
 };
 
-use parking_lot::RwLock;
+use modkit::RwLockExt as _;
 use serde::Deserialize;
 #[cfg(unix)]
 use std::path::PathBuf;
+use std::sync::RwLock;
 use std::{
     collections::HashSet,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
@@ -94,12 +95,12 @@ impl Default for GrpcHub {
 impl GrpcHub {
     /// Update the listen address to TCP (primarily used by tests/config).
     pub fn set_listen_addr_tcp(&self, addr: SocketAddr) {
-        *self.listen_cfg.write() = ListenConfig::Tcp(addr);
+        *self.listen_cfg.hold_write() = ListenConfig::Tcp(addr);
     }
 
     /// Current TCP listen address (returns None if using UDS or named pipe).
     pub fn listen_addr_tcp(&self) -> Option<SocketAddr> {
-        match *self.listen_cfg.read() {
+        match *self.listen_cfg.hold_read() {
             ListenConfig::Tcp(addr) => Some(addr),
             #[cfg(unix)]
             ListenConfig::Uds(_) => None,
@@ -111,7 +112,7 @@ impl GrpcHub {
     /// Set listen address to Windows named pipe (primarily used by tests).
     #[cfg(windows)]
     pub fn set_listen_named_pipe(&self, name: impl Into<String>) {
-        *self.listen_cfg.write() = ListenConfig::NamedPipe(name.into());
+        *self.listen_cfg.hold_write() = ListenConfig::NamedPipe(name.into());
     }
 
     /// Get the actual bound endpoint after the server has started.
@@ -120,12 +121,12 @@ impl GrpcHub {
     /// `unix:///path/to/socket` for UDS, or `pipe://\\.\pipe\name` for named pipes).
     /// Returns `None` if the server hasn't started yet.
     fn get_bound_endpoint(&self) -> Option<String> {
-        self.bound_endpoint.read().clone()
+        self.bound_endpoint.hold_read().clone()
     }
 
     /// Set the bound endpoint after the server has started listening.
     fn set_bound_endpoint(&self, endpoint: String) {
-        *self.bound_endpoint.write() = Some(endpoint);
+        *self.bound_endpoint.hold_write() = Some(endpoint);
     }
 
     /// Parse and apply listen address configuration.
@@ -147,7 +148,7 @@ impl GrpcHub {
         let addr = listen_addr
             .parse::<SocketAddr>()
             .with_context(|| format!("invalid listen_addr '{listen_addr}'"))?;
-        *self.listen_cfg.write() = ListenConfig::Tcp(addr);
+        *self.listen_cfg.hold_write() = ListenConfig::Tcp(addr);
         tracing::info!(%addr, "gRPC hub listen address configured for TCP");
 
         Ok(())
@@ -165,7 +166,7 @@ impl GrpcHub {
             .or_else(|| listen_addr.strip_prefix("npipe://"))
         {
             let pipe_name = pipe_name.to_owned();
-            *self.listen_cfg.write() = ListenConfig::NamedPipe(pipe_name.clone());
+            *self.listen_cfg.hold_write() = ListenConfig::NamedPipe(pipe_name.clone());
             tracing::info!(
                 name = %pipe_name,
                 "gRPC hub listen address configured for Windows named pipe"
@@ -202,7 +203,7 @@ impl GrpcHub {
         // Handle Unix Domain Sockets: uds://
         if let Some(uds_path) = listen_addr.strip_prefix("uds://") {
             let path = std::path::PathBuf::from(uds_path);
-            *self.listen_cfg.write() = ListenConfig::Uds(path.clone());
+            *self.listen_cfg.hold_write() = ListenConfig::Uds(path.clone());
             tracing::info!(
                 path = %path.display(),
                 "gRPC hub listen address configured for UDS"
@@ -321,7 +322,7 @@ impl GrpcHub {
             return Ok(());
         };
 
-        let listen_cfg = self.listen_cfg.read().clone();
+        let listen_cfg = self.listen_cfg.hold_read().clone();
         let serve_result = match listen_cfg {
             ListenConfig::Tcp(addr) => {
                 self.serve_tcp(addr, routes, &data.modules, cancel, ready)

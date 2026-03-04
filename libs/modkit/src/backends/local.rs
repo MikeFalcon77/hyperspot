@@ -2,8 +2,10 @@
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::RwLock;
+
+use crate::RwLockExt as _;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -194,7 +196,7 @@ impl LocalProcessBackend {
     /// Gracefully stop all tracked instances with timeout.
     async fn shutdown_all_instances(instances: Arc<RwLock<InstanceMap>>) {
         let mut all_instances: Vec<LocalInstance> = {
-            let mut guard = instances.write();
+            let mut guard = instances.hold_write();
             guard.drain().map(|(_, inst)| inst).collect()
         };
 
@@ -316,7 +318,7 @@ impl ModuleRuntimeBackend for LocalProcessBackend {
 
         // Store in instances map
         {
-            let mut instances = self.instances.write();
+            let mut instances = self.instances.hold_write();
             instances.insert(
                 instance_id,
                 LocalInstance {
@@ -333,7 +335,7 @@ impl ModuleRuntimeBackend for LocalProcessBackend {
 
     async fn stop_instance(&self, handle: &InstanceHandle) -> Result<()> {
         let local = {
-            let mut instances = self.instances.write();
+            let mut instances = self.instances.hold_write();
             instances.remove(&handle.instance_id)
         };
 
@@ -360,7 +362,7 @@ impl ModuleRuntimeBackend for LocalProcessBackend {
     }
 
     async fn list_instances(&self, module: &str) -> Result<Vec<InstanceHandle>> {
-        let instances = self.instances.read();
+        let instances = self.instances.hold_read();
 
         let result = instances
             .values()

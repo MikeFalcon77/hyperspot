@@ -12,10 +12,11 @@ use anyhow::Result;
 use axum::http::Method;
 use axum::middleware::from_fn_with_state;
 use axum::{Router, extract::DefaultBodyLimit, middleware::from_fn, routing::get};
+use modkit::MutexExt as _;
 use modkit::api::{OpenApiRegistry, OpenApiRegistryImpl};
 use modkit::lifecycle::ReadySignal;
-use parking_lot::Mutex;
 use std::net::SocketAddr;
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tower_http::{
@@ -360,7 +361,7 @@ impl ApiGateway {
             .route("/healthz", get(|| async { "ok" }));
 
         // Apply all middleware layers including auth, above the router
-        let authn_client = self.authn_client.lock().clone();
+        let authn_client = self.authn_client.hold().clone();
         router = self.apply_middleware_stack(router, authn_client)?;
 
         // Cache the built router for future use
@@ -392,7 +393,7 @@ impl ApiGateway {
 
     /// Get the finalized router or build a default one.
     fn get_or_build_router(self: &Arc<Self>) -> anyhow::Result<Router> {
-        let stored = { self.final_router.lock().take() };
+        let stored = { self.final_router.hold().take() };
 
         if let Some(router) = stored {
             tracing::debug!("Using router from REST phase");
@@ -551,7 +552,7 @@ impl modkit::Module for ApiGateway {
         } else {
             // Resolve AuthN Resolver client from ClientHub
             let authn_client = ctx.client_hub().get::<dyn AuthNResolverClient>()?;
-            *self.authn_client.lock() = Some(authn_client);
+            *self.authn_client.hold() = Some(authn_client);
             tracing::info!("AuthN Resolver client resolved from ClientHub");
         }
 
@@ -591,11 +592,11 @@ impl modkit::contracts::ApiGatewayCapability for ApiGateway {
 
         // Apply middleware stack (including auth) to the final router
         tracing::debug!("Applying middleware stack to finalized router");
-        let authn_client = self.authn_client.lock().clone();
+        let authn_client = self.authn_client.hold().clone();
         router = self.apply_middleware_stack(router, authn_client)?;
 
         // Keep the finalized router to be used by `serve()`
-        *self.final_router.lock() = Some(router.clone());
+        *self.final_router.hold() = Some(router.clone());
 
         tracing::info!("REST host finalized router with OpenAPI endpoints and auth middleware");
         Ok(router)

@@ -1,5 +1,6 @@
-use parking_lot::Mutex;
+use std::sync::Mutex;
 
+use crate::MutexExt as _;
 use crate::contracts::RegisterGrpcServiceFn;
 
 /// Installers for a specific module (module name + service installers).
@@ -36,7 +37,7 @@ impl GrpcInstallerStore {
     /// # Errors
     /// Returns an error if installers have already been initialized.
     pub fn set(&self, data: GrpcInstallerData) -> anyhow::Result<()> {
-        let mut guard = self.inner.lock();
+        let mut guard = self.inner.hold();
         if guard.is_some() {
             anyhow::bail!("gRPC installers already initialized");
         }
@@ -46,14 +47,14 @@ impl GrpcInstallerStore {
 
     /// Consume and return all installers grouped by module.
     pub fn take(&self) -> Option<GrpcInstallerData> {
-        let mut guard = self.inner.lock();
+        let mut guard = self.inner.hold();
         guard.take()
     }
 
     /// Check if installers are present (optional helper).
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().is_none()
+        self.inner.hold().is_none()
     }
 }
 

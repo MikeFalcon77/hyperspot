@@ -160,7 +160,7 @@ pub struct ModuleInstance {
     pub grpc_services: HashMap<String, Endpoint>,
     pub rest_endpoint: Option<Endpoint>,  // NEW: REST base URL for this instance
     pub version: Option<String>,
-    inner: Arc<parking_lot::RwLock<InstanceRuntimeState>>,
+    inner: Arc<std::sync::RwLock<InstanceRuntimeState>>,
 }
 
 impl ModuleInstance {
@@ -431,7 +431,7 @@ pub trait ClientDescriptor: Send + Sync + 'static {
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use parking_lot::RwLock;
+use std::sync::RwLock;
 use tokio::sync::Semaphore;
 
 use crate::client_hub::ClientHub;
@@ -824,7 +824,7 @@ pub enum CircuitState {
 
 pub struct CircuitBreaker {
     config: CircuitBreakerConfig,
-    state: parking_lot::RwLock<CircuitState>,
+    state: std::sync::RwLock<CircuitState>,
     failure_count: AtomicU32,
     success_count: AtomicU32,
     last_failure_time: AtomicU64,  // Unix timestamp millis
@@ -834,7 +834,7 @@ impl CircuitBreaker {
     pub fn new(config: CircuitBreakerConfig) -> Self {
         Self {
             config,
-            state: parking_lot::RwLock::new(CircuitState::Closed),
+            state: std::sync::RwLock::new(CircuitState::Closed),
             failure_count: AtomicU32::new(0),
             success_count: AtomicU32::new(0),
             last_failure_time: AtomicU64::new(0),

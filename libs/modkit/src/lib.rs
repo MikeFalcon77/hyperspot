@@ -150,6 +150,7 @@ pub use backends::{
     OopModuleConfig, OopSpawnConfig,
 };
 pub use lifecycle::{Lifecycle, Runnable, Status, StopReason, WithLifecycle};
+pub use modkit_utils::sync::{MutexExt, RwLockExt};
 pub use plugins::GtsPluginSelector;
 pub use runtime::{
     DbOptions, Endpoint, ModuleInstance, ModuleManager, OopModuleSpawnConfig, OopSpawnOptions,

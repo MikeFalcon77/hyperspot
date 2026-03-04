@@ -93,9 +93,9 @@ gts = { workspace = true }
 gts-macros = { workspace = true }
 zip = { version = "2.3", default-features = false, features = ["deflate"] }
 
-# Performance / lock-free structures
-parking_lot = { workspace = true }
+# Lock-free structures
 dashmap = { workspace = true }
+modkit-utils = { workspace = true }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }

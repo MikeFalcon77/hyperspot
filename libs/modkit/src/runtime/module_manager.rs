@@ -1,5 +1,6 @@
 //! Module Manager - tracks and manages all live module instances in the runtime
 
+use crate::RwLockExt as _;
 use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -93,7 +94,7 @@ pub struct ModuleInstance {
     pub control: Option<Endpoint>,
     pub grpc_services: HashMap<String, Endpoint>,
     pub version: Option<String>,
-    inner: Arc<parking_lot::RwLock<InstanceRuntimeState>>,
+    inner: Arc<std::sync::RwLock<InstanceRuntimeState>>,
 }
 
 impl Clone for ModuleInstance {
@@ -117,7 +118,7 @@ impl ModuleInstance {
             control: None,
             grpc_services: HashMap::new(),
             version: None,
-            inner: Arc::new(parking_lot::RwLock::new(InstanceRuntimeState {
+            inner: Arc::new(std::sync::RwLock::new(InstanceRuntimeState {
                 last_heartbeat: Instant::now(),
                 state: InstanceState::Registered,
             })),
@@ -142,13 +143,13 @@ impl ModuleInstance {
     /// Get the current state of this instance
     #[must_use]
     pub fn state(&self) -> InstanceState {
-        self.inner.read().state
+        self.inner.hold_read().state
     }
 
     /// Get the last heartbeat timestamp
     #[must_use]
     pub fn last_heartbeat(&self) -> Instant {
-        self.inner.read().last_heartbeat
+        self.inner.hold_read().last_heartbeat
     }
 }
 
@@ -211,7 +212,7 @@ impl ModuleManager {
         if let Some(mut vec) = self.inner.get_mut(module)
             && let Some(inst) = vec.iter_mut().find(|i| i.instance_id == instance_id)
         {
-            let mut state = inst.inner.write();
+            let mut state = inst.inner.hold_write();
             state.state = InstanceState::Ready;
         }
     }
@@ -221,7 +222,7 @@ impl ModuleManager {
         if let Some(mut vec) = self.inner.get_mut(module)
             && let Some(inst) = vec.iter_mut().find(|i| i.instance_id == instance_id)
         {
-            let mut state = inst.inner.write();
+            let mut state = inst.inner.hold_write();
             state.last_heartbeat = at;
             // Transition Registered -> Healthy on first heartbeat
             if state.state == InstanceState::Registered {
@@ -235,7 +236,7 @@ impl ModuleManager {
         if let Some(mut vec) = self.inner.get_mut(module)
             && let Some(inst) = vec.iter_mut().find(|i| i.instance_id == instance_id)
         {
-            inst.inner.write().state = InstanceState::Quarantined;
+            inst.inner.hold_write().state = InstanceState::Quarantined;
         }
     }
 
@@ -244,7 +245,7 @@ impl ModuleManager {
         if let Some(mut vec) = self.inner.get_mut(module)
             && let Some(inst) = vec.iter_mut().find(|i| i.instance_id == instance_id)
         {
-            inst.inner.write().state = InstanceState::Draining;
+            inst.inner.hold_write().state = InstanceState::Draining;
         }
     }
 
@@ -294,13 +295,13 @@ impl ModuleManager {
             let module = entry.key().clone();
             let vec = entry.value_mut();
             vec.retain(|inst| {
-                let state = inst.inner.read();
+                let state = inst.inner.hold_read();
                 let age = now.saturating_duration_since(state.last_heartbeat);
 
                 // Quarantine instances that have exceeded TTL
                 if age >= self.hb_ttl && !matches!(state.state, Quarantined | Draining) {
                     drop(state); // Release read lock before write
-                    inst.inner.write().state = Quarantined;
+                    inst.inner.hold_write().state = Quarantined;
                     return true; // Keep quarantined instances for now
                 }
 
@@ -640,7 +641,7 @@ mod tests {
         let now = Instant::now();
         let instance = ModuleInstance::new("test_module", Uuid::new_v4());
         // Set the last heartbeat to be stale
-        instance.inner.write().last_heartbeat = now
+        instance.inner.hold_write().last_heartbeat = now
             .checked_sub(ttl)
             .and_then(|t| t.checked_sub(Duration::from_millis(10)))
             .expect("test duration subtraction should not underflow");

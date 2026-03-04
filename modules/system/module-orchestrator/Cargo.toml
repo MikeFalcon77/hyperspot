@@ -20,7 +20,6 @@ workspace = true
 cf-system-sdks = { workspace = true, features = ["directory_grpc"] }
 modkit = { workspace = true }
 modkit-macros = { workspace = true }
-parking_lot = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport"] }
 async-trait = { workspace = true }

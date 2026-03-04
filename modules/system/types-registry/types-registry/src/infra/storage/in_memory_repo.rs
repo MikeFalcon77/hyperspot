@@ -3,7 +3,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gts::{GtsConfig, GtsID, GtsIdSegment, GtsOps, GtsWildcard};
-use parking_lot::Mutex;
+use modkit::MutexExt as _;
+use std::sync::Mutex;
 use types_registry_sdk::{GtsEntity, ListQuery, SegmentMatchScope};
 
 use super::debug_diagnostics::{
@@ -148,7 +149,7 @@ impl GtsRepository for InMemoryGtsRepository {
         GtsID::new(&gts_id).map_err(|e| DomainError::invalid_gts_id(e.to_string()))?;
 
         if self.is_ready.load(Ordering::SeqCst) {
-            let mut persistent = self.persistent.lock();
+            let mut persistent = self.persistent.hold();
 
             if let Some(existing) = persistent.store.get(&gts_id) {
                 if existing.content == *entity {
@@ -175,7 +176,7 @@ impl GtsRepository for InMemoryGtsRepository {
 
             Self::to_gts_entity(&gts_id, entity)
         } else {
-            let mut temporary = self.temporary.lock();
+            let mut temporary = self.temporary.hold();
 
             if let Some(existing) = temporary.store.get(&gts_id) {
                 if existing.content == *entity {
@@ -196,7 +197,7 @@ impl GtsRepository for InMemoryGtsRepository {
     }
 
     fn get(&self, gts_id: &str) -> Result<GtsEntity, DomainError> {
-        let mut persistent = self.persistent.lock();
+        let mut persistent = self.persistent.hold();
 
         if let Some(entity) = persistent.store.get(gts_id) {
             return Self::to_gts_entity(gts_id, &entity.content);
@@ -206,7 +207,7 @@ impl GtsRepository for InMemoryGtsRepository {
     }
 
     fn list(&self, query: &ListQuery) -> Result<Vec<GtsEntity>, DomainError> {
-        let persistent = self.persistent.lock();
+        let persistent = self.persistent.hold();
         let mut results = Vec::new();
 
         for (gts_id, gts_entity) in persistent.store.items() {
@@ -221,7 +222,7 @@ impl GtsRepository for InMemoryGtsRepository {
     }
 
     fn exists(&self, gts_id: &str) -> bool {
-        let mut persistent = self.persistent.lock();
+        let mut persistent = self.persistent.hold();
         persistent.store.get(gts_id).is_some()
     }
 
@@ -234,7 +235,7 @@ impl GtsRepository for InMemoryGtsRepository {
 
         // Collect all GTS IDs, separating schemas (ending with ~) from instances
         let (schema_ids, instance_ids): (Vec<String>, Vec<String>) = {
-            let temporary = self.temporary.lock();
+            let temporary = self.temporary.hold();
             temporary
                 .store
                 .items()
@@ -244,7 +245,7 @@ impl GtsRepository for InMemoryGtsRepository {
 
         // Validate all entities in temporary storage
         {
-            let mut temporary = self.temporary.lock();
+            let mut temporary = self.temporary.hold();
             for gts_id in schema_ids.iter().chain(instance_ids.iter()) {
                 let result = temporary.validate_entity(gts_id);
                 if !result.ok {
@@ -274,8 +275,8 @@ impl GtsRepository for InMemoryGtsRepository {
         // Move to persistent: schemas first, then instances
         // This ensures schemas are available when validating instances
         {
-            let mut temporary = self.temporary.lock();
-            let mut persistent = self.persistent.lock();
+            let mut temporary = self.temporary.hold();
+            let mut persistent = self.persistent.hold();
 
             // Add schemas first (with validation)
             for gts_id in &schema_ids {

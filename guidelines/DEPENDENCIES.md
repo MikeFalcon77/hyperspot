@@ -32,21 +32,21 @@ let parsed: HashMap<String, String> = serde_saphyr::from_str(&yaml_string)?;
 
 ### Synchronous locks
 
-**Always use `parking_lot::Mutex` and `parking_lot::RwLock` for synchronous locks, not `std::sync::Mutex` / `std::sync::RwLock`.**
+**Use `std::sync::Mutex` and `std::sync::RwLock` for synchronous locks.**
 
-- **Reason**: `parking_lot` locks are faster (no syscall on uncontended path), have smaller lock metadata than `std`, never poison on panic, and return the guard directly from `lock()` — no `Result` unwrapping needed.
-- **Workspace dep**: `parking_lot` is already declared in the workspace `Cargo.toml`.
+- Since Rust 1.62, `std::sync::Mutex` uses a futex-based implementation on Linux that performs comparably to third-party alternatives on uncontended paths.
+- Use the `MutexExt` / `RwLockExt` traits from `modkit` (defined in `modkit-utils`) to access locks via `.hold()`, `.hold_read()`, `.hold_write()`. These handle poisoning internally and avoid clippy `unwrap_used` / `expect_used` / `missing_panics_doc` noise.
 
 ```rust
-use parking_lot::Mutex;
+use std::sync::Mutex;
+use modkit::MutexExt as _;
 
 let data = Mutex::new(Vec::new());
-// Blocking lock — returns MutexGuard directly, no unwrap needed
-data.lock().push(42);
+data.hold().push(42);
 ```
 
 ### When to use `tokio::sync` instead
 
-Use `tokio::sync::Mutex` or `tokio::sync::RwLock` only when you need to **hold the lock across an `.await` point**. If the critical section is purely synchronous (no `.await` inside), prefer `parking_lot` even in async code — it avoids the overhead of the async mutex and won't block the executor as long as the critical section is short.
+Use `tokio::sync::Mutex` or `tokio::sync::RwLock` only when you need to **hold the lock across an `.await` point**. If the critical section is purely synchronous (no `.await` inside), prefer `std::sync` even in async code — it avoids the overhead of the async mutex and won't block the executor as long as the critical section is short.
 
 If a synchronous lock guard must be held while performing blocking I/O or expensive computation, wrap the call in `tokio::task::spawn_blocking()` to avoid stalling the async executor.

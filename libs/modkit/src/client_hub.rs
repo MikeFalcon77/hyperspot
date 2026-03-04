@@ -15,8 +15,13 @@
 //! - Re-registering overwrites the previous value atomically; existing Arcs held by consumers remain valid.
 //! - For testing, just register a mock under the same trait type.
 
-use parking_lot::RwLock;
-use std::{any::Any, collections::HashMap, fmt, sync::Arc};
+use crate::RwLockExt as _;
+use std::{
+    any::Any,
+    collections::HashMap,
+    fmt,
+    sync::{Arc, RwLock},
+};
 
 /// Stable type key for trait objects — uses fully-qualified `type_name::<T>()`.
 #[derive(Clone, Eq, PartialEq, Hash)]
@@ -144,7 +149,7 @@ impl ClientHub {
         T: ?Sized + Send + Sync + 'static,
     {
         let type_key = TypeKey::of::<T>();
-        let mut w = self.map.write();
+        let mut w = self.map.hold_write();
         w.insert(type_key, Box::new(client));
     }
 
@@ -160,7 +165,7 @@ impl ClientHub {
             type_key: TypeKey::of::<T>(),
             scope,
         };
-        let mut w = self.scoped_map.write();
+        let mut w = self.scoped_map.hold_write();
         w.insert(key, Box::new(client));
     }
 
@@ -174,7 +179,7 @@ impl ClientHub {
         T: ?Sized + Send + Sync + 'static,
     {
         let type_key = TypeKey::of::<T>();
-        let r = self.map.read();
+        let r = self.map.hold_read();
 
         let boxed = r.get(&type_key).ok_or(ClientHubError::NotFound {
             type_key: type_key.clone(),
@@ -200,7 +205,7 @@ impl ClientHub {
             type_key: TypeKey::of::<T>(),
             scope: scope.clone(),
         };
-        let r = self.scoped_map.read();
+        let r = self.scoped_map.hold_read();
 
         let boxed = r.get(&key).ok_or_else(|| ClientHubError::ScopedNotFound {
             type_key: key.type_key.clone(),
@@ -227,7 +232,7 @@ impl ClientHub {
             type_key: TypeKey::of::<T>(),
             scope: scope.clone(),
         };
-        let r = self.scoped_map.read();
+        let r = self.scoped_map.hold_read();
         let boxed = r.get(&key)?;
 
         boxed.downcast_ref::<Arc<T>>().cloned()
@@ -239,7 +244,7 @@ impl ClientHub {
         T: ?Sized + Send + Sync + 'static,
     {
         let type_key = TypeKey::of::<T>();
-        let mut w = self.map.write();
+        let mut w = self.map.hold_write();
         let boxed = w.remove(&type_key)?;
         boxed.downcast::<Arc<T>>().ok().map(|b| *b)
     }
@@ -253,25 +258,25 @@ impl ClientHub {
             type_key: TypeKey::of::<T>(),
             scope: scope.clone(),
         };
-        let mut w = self.scoped_map.write();
+        let mut w = self.scoped_map.hold_write();
         let boxed = w.remove(&key)?;
         boxed.downcast::<Arc<T>>().ok().map(|b| *b)
     }
 
     /// Clear everything (useful in tests).
     pub fn clear(&self) {
-        self.map.write().clear();
-        self.scoped_map.write().clear();
+        self.map.hold_write().clear();
+        self.scoped_map.hold_write().clear();
     }
 
     /// Introspection: (total entries).
     pub fn len(&self) -> usize {
-        self.map.read().len() + self.scoped_map.read().len()
+        self.map.hold_read().len() + self.scoped_map.hold_read().len()
     }
 
     /// Check if the hub is empty.
     pub fn is_empty(&self) -> bool {
-        self.map.read().is_empty() && self.scoped_map.read().is_empty()
+        self.map.hold_read().is_empty() && self.scoped_map.hold_read().is_empty()
     }
 }
 

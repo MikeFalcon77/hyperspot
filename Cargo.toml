@@ -337,9 +337,6 @@ http-body = "1"
 reqwest = { version = "0.13", features = ["stream"] }
 rand = "0.9"
 
-# Synchronous locks for better performance
-parking_lot = "0.12"
-
 # CLI support
 clap = { version = "4.5", features = ["derive"] }
 

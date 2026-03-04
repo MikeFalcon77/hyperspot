@@ -3,4 +3,7 @@
 pub mod humantime_serde;
 
 pub mod secret_string;
+pub mod sync;
+
 pub use secret_string::SecretString;
+pub use sync::{MutexExt, RwLockExt};
