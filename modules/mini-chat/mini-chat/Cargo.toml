@@ -13,6 +13,10 @@ name = "mini_chat"
 [lints]
 workspace = true
 
+[features]
+default = []
+k8s-leader = ["dep:kube", "dep:k8s-openapi"]
+
 [dependencies]
 # Plugin SDK - policy plugin traits, models, and errors
 mini-chat-sdk = { package = "cf-mini-chat-sdk", path = "../mini-chat-sdk" }
@@ -69,4 +73,8 @@ modkit-db-macros = { workspace = true }
 modkit-security = { workspace = true }
 modkit-macros = { workspace = true }
 modkit-odata = { workspace = true, features = ["with-utoipa"] }
+
+# k8s leader election (optional, behind k8s-leader feature)
+kube = { workspace = true, features = ["client"], optional = true }
+k8s-openapi = { workspace = true, features = ["latest"], optional = true }
 

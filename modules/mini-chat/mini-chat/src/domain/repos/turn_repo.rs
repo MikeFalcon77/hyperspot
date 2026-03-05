@@ -106,4 +106,14 @@ pub trait TurnRepository: Send + Sync {
         scope: &AccessScope,
         chat_id: Uuid,
     ) -> Result<Option<TurnModel>, DomainError>;
+
+    /// SELECT all `running` turns whose `started_at` is older than `timeout`.
+    ///
+    /// Used by the orphan watchdog to detect turns abandoned by crashed pods.
+    async fn find_orphaned_turns<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<TurnModel>, DomainError>;
 }

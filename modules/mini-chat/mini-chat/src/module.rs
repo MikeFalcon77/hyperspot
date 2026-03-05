@@ -9,9 +9,13 @@ use oagw_sdk::ServiceGatewayClientV1;
 use sea_orm_migration::MigrationTrait;
 use tracing::info;
 use types_registry_sdk::{RegisterResult, TypesRegistryClient};
-
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
+use modkit::lifecycle::ReadySignal;
 use crate::api::rest::routes;
-use crate::domain::service::{AppServices as GenericAppServices, Repositories};
+use crate::config::WorkersConfig;
+use crate::domain::service::{AppServices as GenericAppServices, DbProvider, Repositories};
+use crate::infra::leader::{self, LeaderElector};
 
 pub(crate) type AppServices =
     GenericAppServices<TurnRepository, MessageRepository, QuotaUsageRepository, ChatRepository>;
@@ -26,6 +30,7 @@ use crate::infra::db::repo::turn_repo::TurnRepository;
 use crate::infra::db::repo::vector_store_repo::VectorStoreRepository;
 use crate::infra::llm::providers::{ProviderConfig, ProviderKind, create_provider};
 use crate::infra::model_policy::ModelPolicyGateway;
+use crate::infra::workers::orphan_watchdog::OrphanWatchdog;
 
 /// Default URL prefix for all mini-chat REST routes.
 pub const DEFAULT_URL_PREFIX: &str = "/mini-chat";
@@ -34,11 +39,18 @@ pub const DEFAULT_URL_PREFIX: &str = "/mini-chat";
 #[modkit::module(
     name = "mini-chat",
     deps = ["types-registry", "authz-resolver", "oagw"],
-    capabilities = [db, rest],
+    capabilities = [db, rest, stateful],
+    lifecycle(entry = "run_workers", stop_timeout = "30s", await_ready),
 )]
 pub struct MiniChatModule {
     service: OnceLock<Arc<AppServices>>,
     url_prefix: OnceLock<String>,
+
+    // Worker dependencies (populated during init, consumed by run_workers)
+    db: OnceLock<Arc<DbProvider>>,
+    turn_repo: OnceLock<Arc<TurnRepository>>,
+    leader_elector: OnceLock<Arc<dyn LeaderElector>>,
+    workers_config: OnceLock<WorkersConfig>,
 }
 
 impl Default for MiniChatModule {
@@ -46,12 +58,17 @@ impl Default for MiniChatModule {
         Self {
             service: OnceLock::new(),
             url_prefix: OnceLock::new(),
+            db: OnceLock::new(),
+            turn_repo: OnceLock::new(),
+            leader_elector: OnceLock::new(),
+            workers_config: OnceLock::new(),
         }
     }
 }
 
 #[async_trait]
 impl Module for MiniChatModule {
+    #[allow(clippy::cognitive_complexity)]
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
         info!("Initializing {} module", Self::MODULE_NAME);
 
@@ -59,6 +76,9 @@ impl Module for MiniChatModule {
         cfg.streaming
             .validate()
             .map_err(|e| anyhow::anyhow!("streaming config: {e}"))?;
+        cfg.workers
+            .validate()
+            .map_err(|e| anyhow::anyhow!("workers config: {e}"))?;
 
         let vendor = cfg.vendor.trim().to_owned();
         if vendor.is_empty() {
@@ -140,8 +160,99 @@ impl Module for MiniChatModule {
             .set(services)
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
 
+        // Store worker dependencies
+        let _r = self.leader_elector.set(leader::noop());
+        let _r = self.workers_config.set(cfg.workers);
+
         info!("{} module initialized successfully", Self::MODULE_NAME);
         Ok(())
+    }
+}
+
+impl MiniChatModule {
+    /// Lifecycle entry point — spawns all enabled background workers.
+    ///
+    /// Each worker is wrapped in leader election and runs until the
+    /// provided `cancel` token fires (module shutdown).
+    pub(crate) async fn run_workers(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+        ready: ReadySignal,
+    ) -> anyhow::Result<()> {
+        tracing::info!("HTTP server bound on {}", addr);
+        ready.notify(); // Starting -> Running
+
+        // Graceful shutdown on cancel
+        let shutdown = {
+            let cancel = cancel.clone();
+            async move {
+                cancel.cancelled().await;
+                tracing::info!("HTTP server shutting down gracefully (cancellation)");
+            }
+        };
+
+        let mut handles: Vec<tokio::task::JoinHandle<anyhow::Result<()>>> = Vec::new();
+
+        // ── Orphan watchdog ──
+        if config.orphan_watchdog.enabled {
+            let watchdog = Arc::new(OrphanWatchdog::new(
+                Arc::clone(db),
+                Arc::clone(turn_repo),
+                config.orphan_watchdog,
+            ));
+            let leader = Arc::clone(leader);
+            let child = cancel.child_token();
+            handles.push(tokio::spawn(async move {
+                leader
+                    .run_role(
+                        "mini-chat-orphan-watchdog",
+                        child,
+                        leader::work_fn(move |c| {
+                            let w = Arc::clone(&watchdog);
+                            async move { w.run(c).await }
+                        }),
+                    )
+                    .await
+            }));
+            info!("orphan watchdog worker spawned");
+        }
+
+        // ── Thread summary worker (stub — TODO: implement in next phase) ──
+        if config.thread_summary.enabled {
+            info!("thread summary worker enabled (not yet implemented)");
+        }
+
+        // ── Cleanup worker (stub — TODO: implement in next phase) ──
+        if config.cleanup.enabled {
+            info!("cleanup worker enabled (not yet implemented)");
+        }
+
+        if handles.is_empty() {
+            info!("no workers enabled, waiting for shutdown");
+            cancel.cancelled().await;
+            return Ok(());
+        }
+
+        info!(count = handles.len(), "background workers running");
+
+        // Workers run until cancel fires, then we join them
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => warn!(error = %e, "worker exited with error"),
+                Err(e) => warn!(error = %e, "worker task panicked"),
+            }
+        }
+
+        info!("all background workers stopped");
+
+
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
+
+        Ok()
     }
 }
 

@@ -14,8 +14,7 @@ use crate::api::rest::dto::{DoneData, ErrorData, StreamEvent};
 use crate::config::StreamingConfig;
 use crate::domain::error::DomainError;
 use crate::domain::repos::{
-    CasCompleteParams, CasTerminalParams, ChatRepository, CreateTurnParams,
-    InsertAssistantMessageParams, InsertUserMessageParams, MessageRepository, TurnRepository,
+    ChatRepository, CreateTurnParams, InsertUserMessageParams, MessageRepository, TurnRepository,
 };
 use crate::infra::db::entity::chat_turn::{Model as TurnModel, TurnState};
 use crate::infra::llm::{
@@ -646,12 +645,12 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// CAS finalization helpers
+// CAS finalization — delegates to shared finalize module
 // ════════════════════════════════════════════════════════════════════════════
 
-/// CAS-finalize a completed/incomplete turn: insert assistant message then
-/// update turn to `completed`.
-#[allow(clippy::cognitive_complexity)]
+use super::finalize::{self, CompletedFinalizeParams};
+
+/// Fire-and-forget CAS finalization to a completed state.
 async fn cas_finalize_completed<TR: TurnRepository, MR: MessageRepository>(
     p: &PersistenceCtx<TR, MR>,
     text: &str,
@@ -659,96 +658,44 @@ async fn cas_finalize_completed<TR: TurnRepository, MR: MessageRepository>(
     model: Option<String>,
     provider_response_id: Option<String>,
 ) {
-    let conn = match p.db.conn() {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(error = %e, turn_id = %p.turn_id, "CAS finalize: failed to get DB connection");
-            return;
-        }
-    };
-
-    // Insert assistant message
-    let msg_result = p
-        .message_repo
-        .insert_assistant_message(
-            &conn,
-            &p.scope,
-            InsertAssistantMessageParams {
-                id: p.message_id,
-                tenant_id: p.tenant_id,
-                chat_id: p.chat_id,
-                request_id: p.request_id,
-                content: text.to_owned(),
-                input_tokens: usage.map(|u| u.input_tokens),
-                output_tokens: usage.map(|u| u.output_tokens),
-                model,
-                provider_response_id: provider_response_id.clone(),
-            },
-        )
-        .await;
-
-    match msg_result {
-        Ok(msg) => {
-            let rows = p
-                .turn_repo
-                .cas_update_completed(
-                    &conn,
-                    &p.scope,
-                    CasCompleteParams {
-                        turn_id: p.turn_id,
-                        assistant_message_id: msg.id,
-                        provider_response_id,
-                    },
-                )
-                .await;
-            match rows {
-                Ok(0) => warn!(turn_id = %p.turn_id, "CAS completed: lost race (0 rows)"),
-                Ok(_) => debug!(turn_id = %p.turn_id, "CAS completed: turn finalized"),
-                Err(e) => warn!(error = %e, turn_id = %p.turn_id, "CAS completed: update failed"),
-            }
-        }
-        Err(e) => {
-            warn!(error = %e, turn_id = %p.turn_id, "CAS finalize: failed to insert assistant message");
-        }
-    }
+    finalize::persist_finalize_completed(
+        &p.db,
+        &*p.turn_repo,
+        &*p.message_repo,
+        &p.scope,
+        CompletedFinalizeParams {
+            turn_id: p.turn_id,
+            message_id: p.message_id,
+            tenant_id: p.tenant_id,
+            chat_id: p.chat_id,
+            request_id: p.request_id,
+            text: text.to_owned(),
+            input_tokens: usage.map(|u| u.input_tokens),
+            output_tokens: usage.map(|u| u.output_tokens),
+            model,
+            provider_response_id,
+        },
+    )
+    .await;
 }
 
-/// CAS-finalize a terminal (failed/cancelled) turn.
-#[allow(clippy::cognitive_complexity)]
+/// Fire-and-forget CAS finalization to a terminal state.
 async fn cas_finalize_terminal<TR: TurnRepository, MR: MessageRepository>(
     p: &PersistenceCtx<TR, MR>,
     state: TurnState,
     error_code: Option<String>,
     error_detail: Option<String>,
 ) {
-    let conn = match p.db.conn() {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(error = %e, turn_id = %p.turn_id, "CAS finalize: failed to get DB connection");
-            return;
-        }
-    };
-
-    let state_label = format!("{state:?}");
-    let rows = p
-        .turn_repo
-        .cas_update_state(
-            &conn,
-            &p.scope,
-            CasTerminalParams {
-                turn_id: p.turn_id,
-                state,
-                error_code,
-                error_detail,
-            },
-        )
-        .await;
-
-    match rows {
-        Ok(0) => warn!(turn_id = %p.turn_id, "CAS terminal: lost race (0 rows)"),
-        Ok(_) => debug!(turn_id = %p.turn_id, state = %state_label, "CAS terminal: turn finalized"),
-        Err(e) => warn!(error = %e, turn_id = %p.turn_id, "CAS terminal: update failed"),
-    }
+    finalize::persist_finalize_terminal(
+        &p.db,
+        &*p.turn_repo,
+        &p.scope,
+        p.turn_id,
+        state,
+        error_code,
+        error_detail,
+    )
+    .await;
 }
 
 #[cfg(test)]

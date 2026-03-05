@@ -15,6 +15,7 @@ use crate::infra::llm::LlmProvider;
 
 mod attachment_service;
 mod chat_service;
+pub(crate) mod finalize;
 mod model_service;
 mod quota_service;
 mod reaction_service;

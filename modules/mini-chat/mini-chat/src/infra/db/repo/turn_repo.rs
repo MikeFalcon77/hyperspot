@@ -189,4 +189,27 @@ impl crate::domain::repos::TurnRepository for TurnRepository {
             .one(runner)
             .await?)
     }
+
+    async fn find_orphaned_turns<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<TurnModel>, DomainError> {
+        #[allow(clippy::cast_possible_wrap)]
+        let cutoff =
+            OffsetDateTime::now_utc() - time::Duration::seconds(timeout.as_secs() as i64);
+
+        Ok(TurnEntity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::State.eq(TurnState::Running))
+                    .add(Column::StartedAt.lt(cutoff))
+                    .add(Column::DeletedAt.is_null()),
+            )
+            .secure()
+            .scope_with(scope)
+            .all(runner)
+            .await?)
+    }
 }
