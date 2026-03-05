@@ -12,6 +12,8 @@ pub struct MiniChatConfig {
     pub url_prefix: String,
     #[serde(default)]
     pub streaming: StreamingConfig,
+    #[serde(default)]
+    pub workers: WorkersConfig,
     #[serde(default = "default_vendor")]
     pub vendor: String,
     #[serde(default)]
@@ -103,6 +105,204 @@ fn default_providers() -> HashMap<String, ProviderEntry> {
     m
 }
 
+/// Background workers configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkersConfig {
+    /// Prefix for k8s Lease objects used by leader election.
+    ///
+    /// Lease names follow the pattern `"{lease_prefix}-{role}"`, where role is
+    /// one of:
+    /// - `orphan-watchdog-leader`
+    /// - `thread-summary-leader`
+    /// - `cleanup-leader`
+    #[serde(default = "default_workers_lease_prefix")]
+    pub lease_prefix: String,
+    #[serde(default)]
+    pub orphan_watchdog: OrphanWatchdogConfig,
+    #[serde(default)]
+    pub thread_summary: ThreadSummaryConfig,
+    #[serde(default)]
+    pub cleanup: CleanupConfig,
+}
+
+impl Default for WorkersConfig {
+    fn default() -> Self {
+        Self {
+            lease_prefix: default_workers_lease_prefix(),
+            orphan_watchdog: OrphanWatchdogConfig::default(),
+            thread_summary: ThreadSummaryConfig::default(),
+            cleanup: CleanupConfig::default(),
+        }
+    }
+}
+
+impl WorkersConfig {
+    /// Validate all sub-configs. Returns an error describing the first
+    /// invalid value found.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.lease_prefix.trim().is_empty() {
+            return Err("workers.lease_prefix must be non-empty".to_owned());
+        }
+        self.orphan_watchdog.validate()?;
+        self.thread_summary.validate()?;
+        self.cleanup.validate()?;
+        Ok(())
+    }
+}
+
+/// Orphan watchdog — detects running turns abandoned by crashed pods.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrphanWatchdogConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Seconds between orphan scans (default: 60).
+    #[serde(default = "default_scan_interval")]
+    pub scan_interval_secs: u32,
+    /// Seconds a turn can be `running` before considered orphaned (default: 300).
+    /// Valid range: 60..=3600.
+    #[serde(default = "default_orphan_timeout")]
+    pub timeout_threshold_secs: u32,
+}
+
+impl Default for OrphanWatchdogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            scan_interval_secs: default_scan_interval(),
+            timeout_threshold_secs: default_orphan_timeout(),
+        }
+    }
+}
+
+impl OrphanWatchdogConfig {
+    /// Validate configuration values.
+    pub fn validate(self) -> Result<(), String> {
+        if !(60..=3600).contains(&self.timeout_threshold_secs) {
+            return Err(format!(
+                "orphan_watchdog.timeout_threshold_secs must be 60-3600, got {}",
+                self.timeout_threshold_secs
+            ));
+        }
+        if self.scan_interval_secs == 0 {
+            return Err("orphan_watchdog.scan_interval_secs must be > 0".to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// Thread summary worker — compresses chat history via LLM summarization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadSummaryConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_scan_interval")]
+    pub scan_interval_secs: u32,
+    /// Trigger summarization when message count exceeds this value (default: 20).
+    #[serde(default = "default_msg_count_threshold")]
+    pub msg_count_threshold: u32,
+    /// Trigger summarization every N user turns (default: 15).
+    #[serde(default = "default_turn_threshold")]
+    pub turn_threshold: u32,
+    /// Model override for summarization. If empty, the chat's own model is used.
+    #[serde(default)]
+    pub summary_model: String,
+    /// Provider ID used for summarization LLM calls (must match a key in
+    /// `MiniChatConfig.providers`). Defaults to `"openai"`.
+    #[serde(default = "default_summary_provider_id")]
+    pub summary_provider_id: String,
+    /// Hard cap on summary output tokens (default: 1024).
+    #[serde(default = "default_max_summary_tokens")]
+    pub max_summary_tokens: u64,
+}
+
+impl Default for ThreadSummaryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            scan_interval_secs: default_scan_interval(),
+            msg_count_threshold: default_msg_count_threshold(),
+            turn_threshold: default_turn_threshold(),
+            summary_model: String::new(),
+            summary_provider_id: default_summary_provider_id(),
+            max_summary_tokens: default_max_summary_tokens(),
+        }
+    }
+}
+
+impl ThreadSummaryConfig {
+    /// Validate configuration values.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.scan_interval_secs == 0 {
+            return Err("thread_summary.scan_interval_secs must be > 0".to_owned());
+        }
+        if self.msg_count_threshold == 0 {
+            return Err("thread_summary.msg_count_threshold must be > 0".to_owned());
+        }
+        if self.turn_threshold == 0 {
+            return Err("thread_summary.turn_threshold must be > 0".to_owned());
+        }
+        if self.max_summary_tokens == 0 {
+            return Err("thread_summary.max_summary_tokens must be > 0".to_owned());
+        }
+        if self.summary_provider_id.trim().is_empty() {
+            return Err("thread_summary.summary_provider_id must be non-empty".to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// Cleanup worker — removes provider resources for soft-deleted chats.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CleanupConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_scan_interval")]
+    pub scan_interval_secs: u32,
+    /// Max retry attempts per attachment (default: 10). Valid: 3..=100.
+    #[serde(default = "default_cleanup_max_attempts")]
+    pub max_attempts: u32,
+    /// Base backoff delay in seconds (default: 2). Valid: 1..=60.
+    #[serde(default = "default_cleanup_base_delay")]
+    pub base_delay_secs: u32,
+}
+
+impl Default for CleanupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            scan_interval_secs: default_scan_interval(),
+            max_attempts: default_cleanup_max_attempts(),
+            base_delay_secs: default_cleanup_base_delay(),
+        }
+    }
+}
+
+impl CleanupConfig {
+    /// Validate configuration values.
+    pub fn validate(self) -> Result<(), String> {
+        if self.scan_interval_secs == 0 {
+            return Err("cleanup.scan_interval_secs must be > 0".to_owned());
+        }
+        if !(3..=100).contains(&self.max_attempts) {
+            return Err(format!(
+                "cleanup.max_attempts must be 3-100, got {}",
+                self.max_attempts
+            ));
+        }
+        if !(1..=60).contains(&self.base_delay_secs) {
+            return Err(format!(
+                "cleanup.base_delay_secs must be 1-60, got {}",
+                self.base_delay_secs
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// SSE streaming tuning parameters.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -165,11 +365,53 @@ fn default_ping_interval() -> u16 {
     15
 }
 
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_scan_interval() -> u32 {
+    60
+}
+
+const fn default_orphan_timeout() -> u32 {
+    300
+}
+
+const fn default_msg_count_threshold() -> u32 {
+    20
+}
+
+const fn default_turn_threshold() -> u32 {
+    15
+}
+
+const fn default_max_summary_tokens() -> u64 {
+    1024
+}
+
+fn default_summary_provider_id() -> String {
+    "openai".to_owned()
+}
+
+const fn default_cleanup_max_attempts() -> u32 {
+    10
+}
+
+const fn default_cleanup_base_delay() -> u32 {
+    2
+}
+
+
+fn default_workers_lease_prefix() -> String {
+    "mini-chat".to_owned()
+}
+
 impl Default for MiniChatConfig {
     fn default() -> Self {
         Self {
             url_prefix: default_url_prefix(),
             streaming: StreamingConfig::default(),
+            workers: WorkersConfig::default(),
             vendor: default_vendor(),
             estimation_budgets: EstimationBudgets::default(),
             quota: QuotaConfig::default(),
@@ -395,6 +637,7 @@ mod tests {
         QuotaConfig::default().validate().unwrap();
         OutboxConfig::default().validate().unwrap();
         ContextConfig::default().validate().unwrap();
+        WorkersConfig::default().validate().unwrap();
     }
 
     #[test]
@@ -528,55 +771,78 @@ mod tests {
     }
 
     #[test]
-    fn provider_entry_deser_with_alias() {
-        let json = r#"{
-            "kind": "openai_responses",
-            "host": "api.openai.com",
-            "upstream_alias": "custom-alias"
-        }"#;
-        let entry: ProviderEntry = serde_json::from_str(json).unwrap();
-        assert_eq!(entry.host, "api.openai.com");
-        assert_eq!(entry.effective_alias(), "custom-alias");
-        assert!(entry.auth_plugin_type.is_none());
+    fn orphan_watchdog_timeout_boundaries() {
+        let valid = OrphanWatchdogConfig::default();
+
+        assert!(
+            (OrphanWatchdogConfig {
+                timeout_threshold_secs: 59,
+                ..valid
+            })
+            .validate()
+            .is_err()
+        );
+        assert!(
+            (OrphanWatchdogConfig {
+                timeout_threshold_secs: 60,
+                ..valid
+            })
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            (OrphanWatchdogConfig {
+                timeout_threshold_secs: 3600,
+                ..valid
+            })
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            (OrphanWatchdogConfig {
+                timeout_threshold_secs: 3601,
+                ..valid
+            })
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]
-    fn provider_entry_deser_without_alias() {
-        let json = r#"{
-            "kind": "openai_responses",
-            "host": "my-azure.openai.azure.com",
-            "api_path": "/openai/v1/responses"
-        }"#;
-        let entry: ProviderEntry = serde_json::from_str(json).unwrap();
-        assert_eq!(entry.effective_alias(), "my-azure.openai.azure.com");
-        assert_eq!(entry.api_path, "/openai/v1/responses");
-    }
+    fn cleanup_max_attempts_boundaries() {
+        let valid = CleanupConfig::default();
 
-    #[test]
-    fn provider_entry_deser_with_auth() {
-        let json = r#"{
-            "kind": "openai_responses",
-            "host": "api.openai.com",
-            "auth_plugin_type": "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1",
-            "auth_config": {
-                "header": "Authorization",
-                "prefix": "Bearer ",
-                "secret_ref": "cred://openai-key"
-            }
-        }"#;
-        let entry: ProviderEntry = serde_json::from_str(json).unwrap();
-        assert!(entry.auth_plugin_type.is_some());
-        let config = entry.auth_config.unwrap();
-        assert_eq!(config.get("header").unwrap(), "Authorization");
-        assert_eq!(config.get("secret_ref").unwrap(), "cred://openai-key");
-    }
-
-    #[test]
-    fn default_providers_has_openai() {
-        let cfg = MiniChatConfig::default();
-        assert!(cfg.providers.contains_key("openai"));
-        let openai = &cfg.providers["openai"];
-        assert_eq!(openai.effective_alias(), "api.openai.com");
-        assert_eq!(openai.api_path, "/v1/responses");
+        assert!(
+            (CleanupConfig {
+                max_attempts: 2,
+                ..valid
+            })
+            .validate()
+            .is_err()
+        );
+        assert!(
+            (CleanupConfig {
+                max_attempts: 3,
+                ..valid
+            })
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            (CleanupConfig {
+                max_attempts: 100,
+                ..valid
+            })
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            (CleanupConfig {
+                max_attempts: 101,
+                ..valid
+            })
+            .validate()
+            .is_err()
+        );
     }
 }

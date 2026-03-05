@@ -21,7 +21,9 @@ pub(crate) use outbox_enqueuer::OutboxEnqueuer;
 pub(crate) use policy_snapshot_provider::PolicySnapshotProvider;
 pub(crate) use quota_usage_repo::{IncrementReserveParams, QuotaUsageRepository, SettleParams};
 pub(crate) use reaction_repo::{ReactionRepository, UpsertReactionParams};
-pub(crate) use thread_summary_repo::{ThreadSummaryModel, ThreadSummaryRepository};
+pub(crate) use thread_summary_repo::{
+    ThreadSummaryModel, ThreadSummaryRepository, UpsertThreadSummaryParams,
+};
 pub(crate) use turn_repo::{
     CasCompleteParams, CasTerminalParams, CreateTurnParams, TurnRepository,
 };

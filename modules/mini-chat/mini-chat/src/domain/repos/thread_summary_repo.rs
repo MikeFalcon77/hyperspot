@@ -16,6 +16,17 @@ pub struct ThreadSummaryModel {
     pub boundary_created_at: OffsetDateTime,
 }
 
+/// Parameters for upserting a thread summary.
+#[domain_model]
+pub struct UpsertThreadSummaryParams {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub chat_id: Uuid,
+    pub summary_text: String,
+    pub summarized_up_to: Uuid,
+    pub token_estimate: i32,
+}
+
 /// Repository trait for thread summary persistence operations.
 #[async_trait]
 pub trait ThreadSummaryRepository: Send + Sync {
@@ -28,4 +39,23 @@ pub trait ThreadSummaryRepository: Send + Sync {
         scope: &AccessScope,
         chat_id: Uuid,
     ) -> Result<Option<ThreadSummaryModel>, DomainError>;
+
+    /// Load the thread summary for a chat (0..1 relationship).
+    async fn get_by_chat_id<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+    ) -> Result<Option<ThreadSummaryModel>, DomainError>;
+
+    /// Insert or update the thread summary for a chat.
+    ///
+    /// Uses `ON CONFLICT (chat_id) DO UPDATE` to enforce the 1:1 constraint.
+    async fn upsert<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        params: UpsertThreadSummaryParams,
+    ) -> Result<ThreadSummaryModel, DomainError>;
+    
 }

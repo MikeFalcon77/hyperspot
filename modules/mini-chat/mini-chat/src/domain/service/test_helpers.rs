@@ -310,6 +310,29 @@ impl ThreadSummaryRepository for MockThreadSummaryRepo {
     {
         Ok(None)
     }
+
+    async fn get_by_chat_id<C: modkit_db::secure::DBRunner>(
+        &self,
+        _runner: &C,
+        _scope: &modkit_security::AccessScope,
+        _chat_id: uuid::Uuid,
+    ) -> Result<Option<crate::domain::repos::ThreadSummaryModel>, crate::domain::error::DomainError>
+    {
+        Ok(None)
+    }
+
+    async fn upsert<C: modkit_db::secure::DBRunner>(
+        &self,
+        _runner: &C,
+        _scope: &modkit_security::AccessScope,
+        params: crate::domain::repos::UpsertThreadSummaryParams,
+    ) -> Result<crate::domain::repos::ThreadSummaryModel, crate::domain::error::DomainError> {
+        Ok(crate::domain::repos::ThreadSummaryModel {
+            content: params.summary_text,
+            boundary_message_id: params.summarized_up_to,
+            boundary_created_at: time::OffsetDateTime::now_utc(),
+        })
+    }
 }
 
 pub fn mock_thread_summary_repo() -> Arc<MockThreadSummaryRepo> {

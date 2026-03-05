@@ -17,6 +17,10 @@ name = "mini_chat"
 [lints]
 workspace = true
 
+[features]
+default = []
+k8s-leader = ["dep:kube", "dep:k8s-openapi"]
+
 [dependencies]
 # Plugin SDK - policy plugin traits, models, and errors
 mini-chat-sdk = { workspace = true }
@@ -36,6 +40,7 @@ async-trait = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 inventory = { workspace = true }
+opentelemetry = { workspace = true }
 
 # Streaming / async utilities
 tokio-util = { workspace = true }
@@ -76,7 +81,11 @@ modkit-db-macros = { workspace = true }
 modkit-security = { workspace = true }
 modkit-macros = { workspace = true }
 modkit-odata = { workspace = true, features = ["with-utoipa"] }
+# k8s leader election (optional, behind k8s-leader feature)
+kube = { workspace = true, features = ["client"], optional = true }
+k8s-openapi = { workspace = true, features = ["latest"], optional = true }
 
 [dev-dependencies]
 chrono = { workspace = true }
+
 
