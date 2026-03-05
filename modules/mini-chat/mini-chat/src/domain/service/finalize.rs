@@ -3,6 +3,12 @@
 //! Per the `FinalizeTurn` invariant, **every terminal path** (streaming
 //! completion, provider error, client disconnect, orphan watchdog) MUST
 //! use these functions. No exceptions.
+//!
+//! TODO(P1): Add billing + outbox outcome mapping here.
+//! - In particular, `failed + orphan_timeout` MUST map to outbox outcome="aborted",
+//!   settlement_method="estimated" with deterministic formula and
+//!   `minimal_generation_floor_applied`, and it MUST be emitted only by the CAS winner.
+//! - This should be implemented via a transactional outbox enqueue in the same DB tx.
 
 use modkit_db::secure::DBRunner;
 use modkit_macros::domain_model;

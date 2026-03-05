@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::config::OrphanWatchdogConfig;
+use crate::domain::ports::{OutboxPort, WorkersMetricsPort};
 use crate::domain::repos::TurnRepository;
 use crate::domain::service::finalize;
 use crate::domain::service::DbProvider;
@@ -24,15 +25,25 @@ pub struct OrphanWatchdog<TR: TurnRepository> {
     db: Arc<DbProvider>,
     turn_repo: Arc<TR>,
     config: OrphanWatchdogConfig,
+    metrics: Arc<dyn WorkersMetricsPort>,
+    outbox: Arc<dyn OutboxPort>,
 }
 
 impl<TR: TurnRepository + 'static> OrphanWatchdog<TR> {
     #[must_use]
-    pub fn new(db: Arc<DbProvider>, turn_repo: Arc<TR>, config: OrphanWatchdogConfig) -> Self {
+    pub fn new(
+        db: Arc<DbProvider>,
+        turn_repo: Arc<TR>,
+        config: OrphanWatchdogConfig,
+        metrics: Arc<dyn WorkersMetricsPort>,
+        outbox: Arc<dyn OutboxPort>,
+    ) -> Self {
         Self {
             db,
             turn_repo,
             config,
+            metrics,
+            outbox,
         }
     }
 
@@ -53,6 +64,14 @@ impl<TR: TurnRepository + 'static> OrphanWatchdog<TR> {
             "orphan watchdog started"
         );
 
+        // Run an immediate scan on startup, then tick periodically.
+        if let Err(e) = self.scan_and_finalize(timeout, &cancel).await {
+            warn!(error = %e, "orphan watchdog initial scan failed");
+        }
+
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 biased;
@@ -60,8 +79,8 @@ impl<TR: TurnRepository + 'static> OrphanWatchdog<TR> {
                     info!("orphan watchdog stopped");
                     return Ok(());
                 }
-                () = tokio::time::sleep(interval) => {
-                    if let Err(e) = self.scan_and_finalize(timeout).await {
+                _ = ticker.tick() => {
+                    if let Err(e) = self.scan_and_finalize(timeout, &cancel).await {
                         warn!(error = %e, "orphan watchdog scan failed");
                     }
                 }
@@ -70,7 +89,11 @@ impl<TR: TurnRepository + 'static> OrphanWatchdog<TR> {
     }
 
     #[allow(clippy::cognitive_complexity)]
-    async fn scan_and_finalize(&self, timeout: Duration) -> anyhow::Result<()> {
+    async fn scan_and_finalize(
+        &self,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<()> {
         let conn = self.db.conn().context("orphan watchdog: DB connection")?;
         let scope = AccessScope::allow_all();
 
@@ -89,6 +112,10 @@ impl<TR: TurnRepository + 'static> OrphanWatchdog<TR> {
 
         let mut finalized = 0u32;
         for turn in &orphans {
+            if cancel.is_cancelled() {
+                debug!("orphan scan interrupted by cancellation");
+                break;
+            }
             let tenant_scope = AccessScope::for_tenant(turn.tenant_id);
             match finalize::cas_finalize_terminal(
                 &*self.turn_repo,
@@ -102,21 +129,40 @@ impl<TR: TurnRepository + 'static> OrphanWatchdog<TR> {
             .await
             {
                 Ok(true) => {
-                    info!(
-                        turn_id = %turn.id,
-                        chat_id = %turn.chat_id,
-                        tenant_id = %turn.tenant_id,
-                        "orphan turn finalized"
+                    // Low-cardinality metrics only.
+                    self.metrics.orphan_turn_total("finalized");
+                    self.metrics.streams_aborted_total("orphan_timeout");
+
+                    // Outbox stub call (no-op for now).
+                    // TODO(P1): this event must be emitted by the shared finalize path
+                    // (CAS-winner only) as part of the billing/outcome mapping.
+                    let _ = self.outbox.enqueue(
+                        &conn,
+                        &tenant_scope,
+                        "mini-chat",
+                        "turn_finalized",
+                        Some(turn.tenant_id),
+                        Some(format!("{}/{}/{}", turn.tenant_id, turn.id, turn.request_id)),
+                        serde_json::json!({
+                            "turn_id": turn.id,
+                            "chat_id": turn.chat_id,
+                            "request_id": turn.request_id,
+                            "state": "failed",
+                            "error_code": "orphan_timeout",
+                        }),
                     );
+
                     finalized += 1;
                 }
                 Ok(false) => {
+                    self.metrics.orphan_turn_total("lost_race");
                     debug!(
                         turn_id = %turn.id,
                         "orphan turn already finalized by another path"
                     );
                 }
                 Err(e) => {
+                    self.metrics.orphan_turn_total("error");
                     warn!(
                         error = %e,
                         turn_id = %turn.id,

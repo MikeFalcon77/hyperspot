@@ -7,7 +7,6 @@ use modkit::api::OpenApiRegistry;
 use modkit::{DatabaseCapability, Module, ModuleCtx, RestApiCapability};
 use oagw_sdk::ServiceGatewayClientV1;
 use sea_orm_migration::MigrationTrait;
-use tracing::info;
 use types_registry_sdk::{RegisterResult, TypesRegistryClient};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -16,6 +15,8 @@ use crate::api::rest::routes;
 use crate::config::WorkersConfig;
 use crate::domain::service::{AppServices as GenericAppServices, DbProvider, Repositories};
 use crate::infra::leader::{self, LeaderElector};
+use crate::infra::outbox::noop::NoopOutbox;
+use crate::infra::workers::metrics::WorkersMetricsMeter;
 
 pub(crate) type AppServices =
     GenericAppServices<TurnRepository, MessageRepository, QuotaUsageRepository, ChatRepository>;
@@ -46,11 +47,7 @@ pub struct MiniChatModule {
     service: OnceLock<Arc<AppServices>>,
     url_prefix: OnceLock<String>,
 
-    // Worker dependencies (populated during init, consumed by run_workers)
-    db: OnceLock<Arc<DbProvider>>,
-    turn_repo: OnceLock<Arc<TurnRepository>>,
-    leader_elector: OnceLock<Arc<dyn LeaderElector>>,
-    workers_config: OnceLock<WorkersConfig>,
+    workers: OnceLock<Arc<Workers>>,
 }
 
 impl Default for MiniChatModule {
@@ -58,10 +55,7 @@ impl Default for MiniChatModule {
         Self {
             service: OnceLock::new(),
             url_prefix: OnceLock::new(),
-            db: OnceLock::new(),
-            turn_repo: OnceLock::new(),
-            leader_elector: OnceLock::new(),
-            workers_config: OnceLock::new(),
+            workers: OnceLock::new(),
         }
     }
 }
@@ -131,6 +125,7 @@ impl Module for MiniChatModule {
             },
         );
 
+        let turn_repo = Arc::new(TurnRepository);
         let repos = Repositories {
             chat: Arc::new(ChatRepository::new(modkit_db::odata::LimitCfg {
                 default: 20,
@@ -139,7 +134,7 @@ impl Module for MiniChatModule {
             attachment: Arc::new(AttachmentRepository),
             message: Arc::new(MessageRepository),
             quota: Arc::new(QuotaUsageRepository),
-            turn: Arc::new(TurnRepository),
+            turn: Arc::clone(&turn_repo),
             reaction: Arc::new(ReactionRepository),
             model_pref: Arc::new(ModelPrefRepository),
             thread_summary: Arc::new(ThreadSummaryRepository),
@@ -149,7 +144,7 @@ impl Module for MiniChatModule {
         let model_policy_gw = Arc::new(ModelPolicyGateway::new(ctx.client_hub(), vendor));
         let services = Arc::new(AppServices::new(
             &repos,
-            db,
+            Arc::clone(&db),
             authz,
             model_policy_gw,
             llm,
@@ -160,9 +155,11 @@ impl Module for MiniChatModule {
             .set(services)
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
 
-        // Store worker dependencies
-        let _r = self.leader_elector.set(leader::noop());
-        let _r = self.workers_config.set(cfg.workers);
+        // Build workers bundle (leader elector + config + worker instances)
+        let workers = Arc::new(Workers::new(db, turn_repo, cfg.workers.clone()).await?);
+        self.workers
+            .set(workers)
+            .map_err(|_| anyhow::anyhow!("{} workers already set", Self::MODULE_NAME))?;
 
         info!("{} module initialized successfully", Self::MODULE_NAME);
         Ok(())
@@ -179,33 +176,115 @@ impl MiniChatModule {
         cancel: CancellationToken,
         ready: ReadySignal,
     ) -> anyhow::Result<()> {
-        tracing::info!("HTTP server bound on {}", addr);
+        let workers = self
+            .workers
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("run_workers: workers not initialized"))?;
+
+        let handles = workers.spawn_all(cancel.clone());
         ready.notify(); // Starting -> Running
 
-        // Graceful shutdown on cancel
-        let shutdown = {
-            let cancel = cancel.clone();
-            async move {
-                cancel.cancelled().await;
-                tracing::info!("HTTP server shutting down gracefully (cancellation)");
+        if handles.is_empty() {
+            info!("no workers enabled, waiting for shutdown");
+            cancel.cancelled().await;
+            return Ok(());
+        }
+
+        info!(count = handles.len(), "background workers running");
+
+        // Wait for shutdown then join worker tasks.
+        cancel.cancelled().await;
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => warn!(error = %e, "worker exited with error"),
+                Err(e) => warn!(error = %e, "worker task panicked"),
+            }
+        }
+
+        info!("all background workers stopped");
+        Ok(())
+    }
+}
+
+/// Bundle of background workers + their dependencies.
+struct Workers {
+    leader: Arc<dyn LeaderElector>,
+    config: WorkersConfig,
+    orphan_watchdog: Arc<OrphanWatchdog<TurnRepository>>,
+}
+
+impl Workers {
+    async fn new(
+        db: Arc<DbProvider>,
+        turn_repo: Arc<TurnRepository>,
+        config: WorkersConfig,
+    ) -> anyhow::Result<Self> {
+        let meter = opentelemetry::global::meter("mini-chat");
+        let metrics = Arc::new(WorkersMetricsMeter::new(&meter));
+        let outbox = Arc::new(NoopOutbox);
+
+        let leader: Arc<dyn LeaderElector> = {
+            #[cfg(feature = "k8s-leader")]
+            {
+                use crate::infra::leader::k8s_lease::{K8sLeaseConfig, K8sLeaseElector};
+
+                let in_k8s = std::env::var("KUBERNETES_SERVICE_HOST").is_ok();
+                if in_k8s {
+                    let namespace = std::env::var("POD_NAMESPACE")
+                        .map_err(|_| anyhow::anyhow!("POD_NAMESPACE is required in k8s"))?;
+                    let identity =
+                        std::env::var("POD_NAME").map_err(|_| anyhow::anyhow!("POD_NAME is required in k8s"))?;
+
+                    let cfg = K8sLeaseConfig {
+                        namespace,
+                        identity,
+                        lease_prefix: config.lease_prefix.clone(),
+                        lease_duration: std::time::Duration::from_secs(15),
+                        renew_period: std::time::Duration::from_secs(2),
+                    };
+                    cfg.validate()?;
+                    Arc::new(K8sLeaseElector::from_default(cfg).await?)
+                } else {
+                    leader::noop()
+                }
+            }
+            #[cfg(not(feature = "k8s-leader"))]
+            {
+                leader::noop()
             }
         };
 
+        let orphan_watchdog = Arc::new(OrphanWatchdog::new(
+            db,
+            turn_repo,
+            config.orphan_watchdog,
+            metrics,
+            outbox,
+        ));
+
+        Ok(Self {
+            leader,
+            config,
+            orphan_watchdog,
+        })
+    }
+
+    fn spawn_all(
+        &self,
+        cancel: CancellationToken,
+    ) -> Vec<tokio::task::JoinHandle<anyhow::Result<()>>> {
         let mut handles: Vec<tokio::task::JoinHandle<anyhow::Result<()>>> = Vec::new();
 
         // ── Orphan watchdog ──
-        if config.orphan_watchdog.enabled {
-            let watchdog = Arc::new(OrphanWatchdog::new(
-                Arc::clone(db),
-                Arc::clone(turn_repo),
-                config.orphan_watchdog,
-            ));
-            let leader = Arc::clone(leader);
+        if self.config.orphan_watchdog.enabled {
+            let watchdog = Arc::clone(&self.orphan_watchdog);
+            let leader = Arc::clone(&self.leader);
             let child = cancel.child_token();
             handles.push(tokio::spawn(async move {
                 leader
                     .run_role(
-                        "mini-chat-orphan-watchdog",
+                        "orphan-watchdog-leader",
                         child,
                         leader::work_fn(move |c| {
                             let w = Arc::clone(&watchdog);
@@ -217,42 +296,17 @@ impl MiniChatModule {
             info!("orphan watchdog worker spawned");
         }
 
-        // ── Thread summary worker (stub — TODO: implement in next phase) ──
-        if config.thread_summary.enabled {
+        // ── Thread summary worker (stub — TODO) ──
+        if self.config.thread_summary.enabled {
             info!("thread summary worker enabled (not yet implemented)");
         }
 
-        // ── Cleanup worker (stub — TODO: implement in next phase) ──
-        if config.cleanup.enabled {
+        // ── Cleanup worker (stub — TODO) ──
+        if self.config.cleanup.enabled {
             info!("cleanup worker enabled (not yet implemented)");
         }
 
-        if handles.is_empty() {
-            info!("no workers enabled, waiting for shutdown");
-            cancel.cancelled().await;
-            return Ok(());
-        }
-
-        info!(count = handles.len(), "background workers running");
-
-        // Workers run until cancel fires, then we join them
-        for handle in handles {
-            match handle.await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => warn!(error = %e, "worker exited with error"),
-                Err(e) => warn!(error = %e, "worker task panicked"),
-            }
-        }
-
-        info!("all background workers stopped");
-
-
-        axum::serve(listener, router)
-            .with_graceful_shutdown(shutdown)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))
-
-        Ok()
+        handles
     }
 }
 

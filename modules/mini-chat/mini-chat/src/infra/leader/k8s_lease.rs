@@ -9,9 +9,8 @@ use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::jiff::{SignedDuration, Timestamp};
-use kube::api::{Api, ObjectMeta, Patch, PatchParams, PostParams};
+use kube::api::{Api, ObjectMeta, PostParams};
 use kube::Client;
-use serde::Serialize;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
@@ -61,6 +60,33 @@ impl K8sLeaseConfig {
         self.renew_period = renew_period;
         self
     }
+
+    /// Validate config for safe operation.
+    ///
+    /// # Errors
+    /// Returns an error when required invariants are violated.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.namespace.trim().is_empty() {
+            return Err(anyhow!("k8s leader: namespace must be non-empty"));
+        }
+        if self.identity.trim().is_empty() {
+            return Err(anyhow!("k8s leader: identity must be non-empty"));
+        }
+        if self.lease_prefix.trim().is_empty() {
+            return Err(anyhow!("k8s leader: lease_prefix must be non-empty"));
+        }
+        if self.renew_period.is_zero() {
+            return Err(anyhow!("k8s leader: renew_period must be > 0"));
+        }
+        if self.lease_duration <= self.renew_period {
+            return Err(anyhow!(
+                "k8s leader: lease_duration ({:?}) must be > renew_period ({:?})",
+                self.lease_duration,
+                self.renew_period
+            ));
+        }
+        Ok(())
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -102,47 +128,38 @@ impl LeaderElector for K8sLeaseElector {
     ) -> anyhow::Result<()> {
         let lease_name = format!("{}-{role}", self.config.lease_prefix);
         let api: Api<Lease> = Api::namespaced(self.client.clone(), &self.config.namespace);
-        let mut active: Option<ActiveRole> = None;
+        let mut backoff = Backoff::new();
 
         loop {
             let acquired = tokio::select! {
                 biased;
-                () = cancel.cancelled() => {
-                    stop_and_release(&mut active, role, &api, &lease_name).await;
-                    return Ok(());
-                }
-                result = self.try_acquire_or_renew(&api, &lease_name) => result?,
+                () = cancel.cancelled() => return Ok(()),
+                result = self.try_acquire(&api, &lease_name) => result,
             };
 
-            if acquired {
-                if active.is_none() {
-                    let child = CancellationToken::new();
-                    let handle = tokio::spawn(work(child.clone()));
-                    active = Some(ActiveRole { child, handle });
-                    info!(role, identity = %self.config.identity, "acquired leadership");
-                }
-
-                let renew_result = tokio::select! {
-                    biased;
-                    () = cancel.cancelled() => {
-                        stop_and_release(&mut active, role, &api, &lease_name).await;
-                        return Ok(());
+            match acquired {
+                Ok(true) => {
+                    backoff.reset();
+                    info!(role, identity = %self.config.identity, %lease_name, "acquired leadership");
+                    if let Err(e) = self.run_while_leader(role, &api, &lease_name, cancel.clone(), &work).await {
+                        warn!(role, error = %e, "leader loop ended (leadership lost or error)");
                     }
-                    result = self.renew_loop(&api, &lease_name) => result,
-                };
-
-                if let Some(r) = active.take() {
-                    r.stop(role).await;
                 }
-
-                if let Err(e) = renew_result {
-                    warn!(role, error = %e, "lost leadership");
+                Ok(false) => {
+                    tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => return Ok(()),
+                        () = sleep(self.config.renew_period) => {}
+                    }
                 }
-            } else {
-                tokio::select! {
-                    biased;
-                    () = cancel.cancelled() => return Ok(()),
-                    () = sleep(self.config.renew_period) => {}
+                Err(e) => {
+                    let delay = backoff.next_delay();
+                    warn!(role, error = %e, delay_ms = delay.as_millis() as u64, "leader acquire failed");
+                    tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => return Ok(()),
+                        () = sleep(delay) => {}
+                    }
                 }
             }
         }
@@ -150,17 +167,14 @@ impl LeaderElector for K8sLeaseElector {
 }
 
 impl K8sLeaseElector {
-    async fn try_acquire_or_renew(
+    async fn try_acquire(
         &self,
         api: &Api<Lease>,
         lease_name: &str,
     ) -> anyhow::Result<bool> {
         ensure_lease_exists(api, lease_name).await?;
 
-        let lease = api
-            .get(lease_name)
-            .await
-            .with_context(|| format!("get Lease {lease_name}"))?;
+        let lease = api.get(lease_name).await.with_context(|| format!("get Lease {lease_name}"))?;
 
         let now = Timestamp::now();
         let (holder, renew_time, duration_s) = read_lease_state(&lease);
@@ -175,41 +189,99 @@ impl K8sLeaseElector {
         });
         let i_am_holder = holder.as_deref() == Some(self.config.identity.as_str());
 
-        if expired || i_am_holder || holder.is_none() {
-            patch_lease(api, lease_name, &self.config.identity, lease_duration_s, now).await?;
-            Ok(true)
-        } else {
-            Ok(false)
+        if !(expired || i_am_holder || holder.is_none()) {
+            return Ok(false);
+        }
+
+        // Acquire leadership using resourceVersion-guarded replace to avoid split-brain.
+        let mut new_lease = lease.clone();
+        new_lease.spec.get_or_insert_default().holder_identity = Some(self.config.identity.clone());
+        new_lease.spec.get_or_insert_default().lease_duration_seconds = Some(lease_duration_s);
+        new_lease.spec.get_or_insert_default().renew_time =
+            Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now));
+
+        match api
+            .replace(lease_name, &PostParams::default(), &new_lease)
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(kube::Error::Api(resp)) if resp.code == 409 => Ok(false),
+            Err(e) => Err(e.into()),
         }
     }
 
-    async fn renew_loop(&self, api: &Api<Lease>, lease_name: &str) -> anyhow::Result<()> {
+    async fn run_while_leader(
+        &self,
+        role: &str,
+        api: &Api<Lease>,
+        lease_name: &str,
+        cancel: CancellationToken,
+        work: &LeaderWorkFn,
+    ) -> anyhow::Result<()> {
+        let mut active: Option<ActiveRole> = None;
+
         loop {
-            sleep(self.config.renew_period).await;
-
-            let lease = api.get(lease_name).await?;
-            let (holder, renew_time, duration_s) = read_lease_state(&lease);
-
-            if holder.as_deref() != Some(self.config.identity.as_str()) {
-                return Err(anyhow!("lease holder changed to {holder:?}"));
+            // Ensure work is running while we hold leadership.
+            if active.as_ref().is_none_or(|a| a.handle.is_finished()) {
+                if let Some(r) = active.take() {
+                    r.await_and_log(role).await;
+                }
+                let child = CancellationToken::new();
+                let handle = tokio::spawn(work(child.clone()));
+                active = Some(ActiveRole { child, handle });
             }
 
-            let now = Timestamp::now();
-            #[allow(clippy::cast_possible_truncation)]
-            let lease_duration_s =
-                duration_s.unwrap_or(self.config.lease_duration.as_secs() as i32);
-            let lease_span = SignedDuration::from_secs(i64::from(lease_duration_s));
-
-            if let Some(rt) = renew_time {
-                let is_expired = rt
-                    .checked_add(lease_span)
-                    .map_or(true, |expiry| expiry < now);
-                if is_expired {
-                    return Err(anyhow!("lease expired before renew"));
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    stop_and_release(&mut active, role, api, lease_name, &self.config.identity).await;
+                    return Ok(());
+                }
+                () = sleep(self.config.renew_period) => {
+                    if let Err(e) = self.renew_once(api, lease_name).await {
+                        if let Some(r) = active.take() {
+                            r.stop(role).await;
+                        }
+                        return Err(e);
+                    }
                 }
             }
+        }
+    }
 
-            patch_lease(api, lease_name, &self.config.identity, lease_duration_s, now).await?;
+    async fn renew_once(&self, api: &Api<Lease>, lease_name: &str) -> anyhow::Result<()> {
+        let lease = api.get(lease_name).await.with_context(|| format!("get Lease {lease_name}"))?;
+        let (holder, renew_time, duration_s) = read_lease_state(&lease);
+
+        if holder.as_deref() != Some(self.config.identity.as_str()) {
+            return Err(anyhow!("lease holder changed to {holder:?}"));
+        }
+
+        let now = Timestamp::now();
+        #[allow(clippy::cast_possible_truncation)]
+        let lease_duration_s = duration_s.unwrap_or(self.config.lease_duration.as_secs() as i32);
+        let lease_span = SignedDuration::from_secs(i64::from(lease_duration_s));
+
+        if let Some(rt) = renew_time {
+            let is_expired = rt
+                .checked_add(lease_span)
+                .map_or(true, |expiry| expiry < now);
+            if is_expired {
+                return Err(anyhow!("lease expired before renew"));
+            }
+        }
+
+        let mut new_lease = lease.clone();
+        new_lease.spec.get_or_insert_default().renew_time =
+            Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now));
+
+        match api
+            .replace(lease_name, &PostParams::default(), &new_lease)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(kube::Error::Api(resp)) if resp.code == 409 => Err(anyhow!("renew conflict")),
+            Err(e) => Err(e.into()),
         }
     }
 }
@@ -232,6 +304,14 @@ impl ActiveRole {
             Err(e) => warn!(role, error = %e, "leader work task panicked"),
         }
     }
+
+    async fn await_and_log(self, role: &str) {
+        match self.handle.await {
+            Ok(Ok(())) => warn!(role, "leader work exited unexpectedly (Ok)"),
+            Ok(Err(e)) => warn!(role, error = %e, "leader work exited unexpectedly (Err)"),
+            Err(e) => warn!(role, error = %e, "leader work panicked"),
+        }
+    }
 }
 
 async fn stop_and_release(
@@ -239,36 +319,34 @@ async fn stop_and_release(
     role: &str,
     api: &Api<Lease>,
     lease_name: &str,
+    identity: &str,
 ) {
     if let Some(r) = active.take() {
         r.stop(role).await;
     }
-    if let Err(e) = release_lease(api, lease_name).await {
+    if let Err(e) = release_lease(api, lease_name, identity).await {
         warn!(role, error = %e, "best-effort lease release failed");
     }
 }
 
 /// Best-effort release: clear `holderIdentity` to speed up re-election.
-async fn release_lease(api: &Api<Lease>, lease_name: &str) -> anyhow::Result<()> {
-    #[derive(Debug, Serialize)]
-    struct Spec {
-        #[serde(rename = "holderIdentity")]
-        holder_identity: Option<String>,
-    }
-    #[derive(Debug, Serialize)]
-    struct LeasePatch {
-        spec: Spec,
+async fn release_lease(api: &Api<Lease>, lease_name: &str, identity: &str) -> anyhow::Result<()> {
+    let lease = api.get(lease_name).await.context("get lease for release")?;
+    let (holder, _, _) = read_lease_state(&lease);
+
+    if holder.as_deref() != Some(identity) {
+        return Ok(());
     }
 
-    let pp = PatchParams::default();
-    let patch = LeasePatch {
-        spec: Spec {
-            holder_identity: None,
-        },
-    };
-    api.patch(lease_name, &pp, &Patch::Merge(&patch))
-        .await
-        .context("release lease")?;
+    let mut new_lease = lease.clone();
+    new_lease.spec.get_or_insert_default().holder_identity = None;
+
+    // resourceVersion-guarded replace; conflict means someone else already updated.
+    match api.replace(lease_name, &PostParams::default(), &new_lease).await {
+        Ok(_) => {}
+        Err(kube::Error::Api(resp)) if resp.code == 409 => {}
+        Err(e) => return Err(e.into()),
+    }
     Ok(())
 }
 
@@ -301,38 +379,24 @@ fn read_lease_state(lease: &Lease) -> (Option<String>, Option<Timestamp>, Option
     (holder, renew_time, duration)
 }
 
-async fn patch_lease(
-    api: &Api<Lease>,
-    lease_name: &str,
-    identity: &str,
-    lease_duration_s: i32,
-    now: Timestamp,
-) -> anyhow::Result<()> {
-    #[derive(Debug, Serialize)]
-    struct Spec<'a> {
-        #[serde(rename = "holderIdentity")]
-        holder_identity: &'a str,
-        #[serde(rename = "leaseDurationSeconds")]
-        lease_duration_seconds: i32,
-        #[serde(rename = "renewTime")]
-        renew_time: String,
-    }
-    #[derive(Debug, Serialize)]
-    struct LeasePatch<'a> {
-        spec: Spec<'a>,
+struct Backoff {
+    next: Duration,
+}
+
+impl Backoff {
+    fn new() -> Self {
+        Self {
+            next: Duration::from_millis(200),
+        }
     }
 
-    let pp = PatchParams::default();
-    let patch = LeasePatch {
-        spec: Spec {
-            holder_identity: identity,
-            lease_duration_seconds: lease_duration_s,
-            renew_time: now.to_string(),
-        },
-    };
+    fn reset(&mut self) {
+        self.next = Duration::from_millis(200);
+    }
 
-    api.patch(lease_name, &pp, &Patch::Merge(&patch))
-        .await
-        .context("patch lease")?;
-    Ok(())
+    fn next_delay(&mut self) -> Duration {
+        let out = self.next;
+        self.next = std::cmp::min(self.next * 2, Duration::from_secs(5));
+        out
+    }
 }

@@ -20,9 +20,18 @@ pub struct MiniChatConfig {
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Background workers configuration.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkersConfig {
+    /// Prefix for k8s Lease objects used by leader election.
+    ///
+    /// Lease names follow the pattern `"{lease_prefix}-{role}"`, where role is
+    /// one of:
+    /// - `orphan-watchdog-leader`
+    /// - `thread-summary-leader`
+    /// - `cleanup-leader`
+    #[serde(default = "default_workers_lease_prefix")]
+    pub lease_prefix: String,
     #[serde(default)]
     pub orphan_watchdog: OrphanWatchdogConfig,
     #[serde(default)]
@@ -34,7 +43,10 @@ pub struct WorkersConfig {
 impl WorkersConfig {
     /// Validate all sub-configs. Returns an error describing the first
     /// invalid value found.
-    pub fn validate(self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.lease_prefix.trim().is_empty() {
+            return Err("workers.lease_prefix must be non-empty".to_owned());
+        }
         self.orphan_watchdog.validate()?;
         self.thread_summary.validate()?;
         self.cleanup.validate()?;
@@ -253,6 +265,10 @@ const fn default_cleanup_max_attempts() -> u32 {
 
 const fn default_cleanup_base_delay() -> u32 {
     2
+}
+
+fn default_workers_lease_prefix() -> String {
+    "mini-chat".to_owned()
 }
 
 impl Default for MiniChatConfig {

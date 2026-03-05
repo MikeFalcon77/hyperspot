@@ -1240,6 +1240,7 @@ dependencies = [
  "inventory",
  "k8s-openapi",
  "kube",
+ "opentelemetry",
  "pin-project-lite",
  "regex",
  "sea-orm",

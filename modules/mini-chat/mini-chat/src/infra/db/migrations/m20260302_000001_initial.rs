@@ -107,9 +107,9 @@ CREATE TABLE IF NOT EXISTS chat_turns (
     minimal_generation_floor_applied INT,
     deleted_at                  TIMESTAMPTZ,
     replaced_by_request_id      UUID,
-    started_at                  TIMESTAMPTZ NOT NULL,
+    started_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at                TIMESTAMPTZ,
-    updated_at                  TIMESTAMPTZ NOT NULL,
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (chat_id, request_id),
     CHECK (requester_type IN ('user', 'system')),
     CHECK (state IN ('running', 'completed', 'failed', 'cancelled'))
@@ -294,9 +294,9 @@ CREATE TABLE IF NOT EXISTS chat_turns (
     minimal_generation_floor_applied INTEGER,
     deleted_at                  TEXT,
     replaced_by_request_id      TEXT,
-    started_at                  TEXT NOT NULL,
+    started_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at                TEXT,
-    updated_at                  TEXT NOT NULL,
+    updated_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (chat_id, request_id),
     CHECK (requester_type IN ('user', 'system')),
     CHECK (state IN ('running', 'completed', 'failed', 'cancelled'))

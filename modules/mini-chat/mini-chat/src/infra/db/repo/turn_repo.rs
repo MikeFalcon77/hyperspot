@@ -3,7 +3,6 @@ use modkit_db::secure::{DBRunner, SecureEntityExt, SecureUpdateExt, secure_inser
 use modkit_security::AccessScope;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ActiveEnum, ColumnTrait, Condition, EntityTrait, Order, QueryFilter, Set};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
@@ -22,7 +21,6 @@ impl crate::domain::repos::TurnRepository for TurnRepository {
         scope: &AccessScope,
         params: CreateTurnParams,
     ) -> Result<TurnModel, DomainError> {
-        let now = OffsetDateTime::now_utc();
         let am = ActiveModel {
             id: Set(params.id),
             tenant_id: Set(params.tenant_id),
@@ -44,9 +42,11 @@ impl crate::domain::repos::TurnRepository for TurnRepository {
             minimal_generation_floor_applied: Set(params.minimal_generation_floor_applied),
             deleted_at: Set(None),
             replaced_by_request_id: Set(None),
-            started_at: Set(now),
+            // DB server time (DEFAULT now()).
+            started_at: sea_orm::ActiveValue::NotSet,
             completed_at: Set(None),
-            updated_at: Set(now),
+            // DB server time (DEFAULT now()).
+            updated_at: sea_orm::ActiveValue::NotSet,
         };
         Ok(secure_insert::<TurnEntity>(am, scope, runner).await?)
     }
@@ -95,13 +95,12 @@ impl crate::domain::repos::TurnRepository for TurnRepository {
         scope: &AccessScope,
         params: CasTerminalParams,
     ) -> Result<u64, DomainError> {
-        let now = OffsetDateTime::now_utc();
         let result = TurnEntity::update_many()
             .col_expr(Column::State, Expr::value(params.state.into_value()))
             .col_expr(Column::ErrorCode, Expr::value(params.error_code))
             .col_expr(Column::ErrorDetail, Expr::value(params.error_detail))
-            .col_expr(Column::CompletedAt, Expr::value(now))
-            .col_expr(Column::UpdatedAt, Expr::value(now))
+            .col_expr(Column::CompletedAt, Expr::current_timestamp().into())
+            .col_expr(Column::UpdatedAt, Expr::current_timestamp().into())
             .filter(
                 Condition::all()
                     .add(Column::Id.eq(params.turn_id))
@@ -120,7 +119,6 @@ impl crate::domain::repos::TurnRepository for TurnRepository {
         scope: &AccessScope,
         params: CasCompleteParams,
     ) -> Result<u64, DomainError> {
-        let now = OffsetDateTime::now_utc();
         let result = TurnEntity::update_many()
             .col_expr(
                 Column::State,
@@ -134,8 +132,8 @@ impl crate::domain::repos::TurnRepository for TurnRepository {
                 Column::ProviderResponseId,
                 Expr::value(params.provider_response_id),
             )
-            .col_expr(Column::CompletedAt, Expr::value(now))
-            .col_expr(Column::UpdatedAt, Expr::value(now))
+            .col_expr(Column::CompletedAt, Expr::current_timestamp().into())
+            .col_expr(Column::UpdatedAt, Expr::current_timestamp().into())
             .filter(
                 Condition::all()
                     .add(Column::Id.eq(params.turn_id))
@@ -155,14 +153,13 @@ impl crate::domain::repos::TurnRepository for TurnRepository {
         turn_id: Uuid,
         replaced_by_request_id: Option<Uuid>,
     ) -> Result<(), DomainError> {
-        let now = OffsetDateTime::now_utc();
         TurnEntity::update_many()
-            .col_expr(Column::DeletedAt, Expr::value(Some(now)))
+            .col_expr(Column::DeletedAt, Expr::current_timestamp().into())
             .col_expr(
                 Column::ReplacedByRequestId,
                 Expr::value(replaced_by_request_id),
             )
-            .col_expr(Column::UpdatedAt, Expr::value(now))
+            .col_expr(Column::UpdatedAt, Expr::current_timestamp().into())
             .filter(Column::Id.eq(turn_id))
             .secure()
             .scope_with(scope)
@@ -196,15 +193,16 @@ impl crate::domain::repos::TurnRepository for TurnRepository {
         scope: &AccessScope,
         timeout: std::time::Duration,
     ) -> Result<Vec<TurnModel>, DomainError> {
-        #[allow(clippy::cast_possible_wrap)]
-        let cutoff =
-            OffsetDateTime::now_utc() - time::Duration::seconds(timeout.as_secs() as i64);
+        let seconds = timeout.as_secs();
+        // Use DB time (`now()`) to avoid clock skew across pods/nodes.
+        // Note: this expression is Postgres-oriented (mini-chat production DB).
+        let cutoff_expr = Expr::cust(format!("(now() - INTERVAL '{seconds} seconds')"));
 
         Ok(TurnEntity::find()
             .filter(
                 Condition::all()
                     .add(Column::State.eq(TurnState::Running))
-                    .add(Column::StartedAt.lt(cutoff))
+                    .add(Expr::col(Column::StartedAt).lt(cutoff_expr))
                     .add(Column::DeletedAt.is_null()),
             )
             .secure()
