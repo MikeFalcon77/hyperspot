@@ -1436,7 +1436,7 @@ sequenceDiagram
     OAI-->>OG: Updated summary
     OG-->>CS: Updated summary
     CS->>DB: Save new thread_summary
-    CS->>DB: Mark summarized messages as compressed
+    CS->>DB: Mark summarized messages as archived
 ```
 
 **Description**: Thread summary is updated asynchronously after a chat turn when trigger conditions are met. Summary generation is a background task and MUST be attributed as `requester_type=system` so that its usage is not charged to an arbitrary end user.
@@ -1444,8 +1444,8 @@ sequenceDiagram
 **P1 — Simple summarization (no quality gate):**
 
 - The background worker calls the LLM with a summarization prompt over the old messages batch.
-- If the LLM call succeeds: save the new `thread_summary` and mark the batch as `is_compressed = true`.
-- If the LLM call fails (provider error, timeout): keep the previous summary unchanged; do NOT mark messages as compressed; log the failure and increment `mini_chat_summary_fallback_total`.
+- If the LLM call succeeds: save the new `thread_summary` and mark the batch as `is_archived = true`.
+- If the LLM call fails (provider error, timeout): keep the previous summary unchanged; do NOT mark messages as archived; log the failure and increment `mini_chat_summary_fallback_total`.
 - No length or entropy validation is performed in P1.
 
 Observability (P1):
@@ -1458,7 +1458,7 @@ The following quality gate is deferred to P2+. It is preserved here for forward 
 
 - After generating a summary, the domain service MUST validate the candidate summary text.
 - If summary length < `X` OR entropy < `Y`, the domain service MUST attempt regeneration.
-- If regeneration fails quality checks or the provider call fails, the domain service MUST fall back by keeping the previous summary unchanged and MUST NOT mark the message batch as compressed.
+- If regeneration fails quality checks or the provider call fails, the domain service MUST fall back by keeping the previous summary unchanged and MUST NOT mark the message batch as archived.
 
 `X` and `Y` are configurable thresholds. Entropy is a deterministic proxy computed as normalized token entropy over whitespace-delimited tokens:
 
@@ -1516,7 +1516,7 @@ Observability (P2+):
 | input_tokens | BIGINT | Actual input tokens for assistant messages (nullable) |
 | output_tokens | BIGINT | Actual output tokens for assistant messages (nullable) |
 | model | VARCHAR(64) | **effective_model**: actual model used for this turn after quota/policy evaluation (nullable; set for assistant messages). May differ from `chats.model` (selected_model) when a downgrade occurred. Derived from `chat_turns.effective_model`. |
-| is_compressed | BOOLEAN | True if included in a thread summary |
+| is_archived | BOOLEAN | True if included in a thread summary |
 | created_at | TIMESTAMPTZ | Creation time |
 | deleted_at | TIMESTAMPTZ | Soft-delete timestamp (nullable). List queries exclude deleted rows. |
 

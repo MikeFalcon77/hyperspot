@@ -136,7 +136,7 @@ impl<TR: TurnRepository + 'static> OrphanWatchdog<TR> {
                     // Outbox stub call (no-op for now).
                     // TODO(P1): this event must be emitted by the shared finalize path
                     // (CAS-winner only) as part of the billing/outcome mapping.
-                    let _ = self.outbox.enqueue(
+                    if let Err(e) = self.outbox.enqueue(
                         &conn,
                         &tenant_scope,
                         "mini-chat",
@@ -150,7 +150,9 @@ impl<TR: TurnRepository + 'static> OrphanWatchdog<TR> {
                             "state": "failed",
                             "error_code": "orphan_timeout",
                         }),
-                    );
+                    ) {
+                        warn!(error = %e, turn_id = %turn.id, "outbox enqueue failed");
+                    }
 
                     finalized += 1;
                 }

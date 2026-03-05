@@ -1,6 +1,7 @@
 use async_trait::async_trait;
-use modkit_db::secure::{DBRunner, SecureEntityExt, secure_insert};
+use modkit_db::secure::{DBRunner, SecureEntityExt, SecureUpdateExt, secure_insert};
 use modkit_security::AccessScope;
+use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, QueryFilter, Set};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -37,7 +38,7 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
             input_tokens: Set(0),
             output_tokens: Set(0),
             model: Set(None),
-            is_compressed: Set(false),
+            is_archived: Set(false),
             created_at: Set(now),
             deleted_at: Set(None),
         };
@@ -66,7 +67,7 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
             input_tokens: Set(params.input_tokens.unwrap_or(0)),
             output_tokens: Set(params.output_tokens.unwrap_or(0)),
             model: Set(params.model),
-            is_compressed: Set(false),
+            is_archived: Set(false),
             created_at: Set(now),
             deleted_at: Set(None),
         };
@@ -92,5 +93,55 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
             .order_by(Column::CreatedAt, Order::Asc)
             .all(runner)
             .await?)
+    }
+
+    async fn find_non_archived_by_chat<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+    ) -> Result<Vec<MessageModel>, DomainError> {
+        Ok(MessageEntity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::ChatId.eq(chat_id))
+                    .add(Column::IsArchived.eq(false))
+                    .add(Column::DeletedAt.is_null()),
+            )
+            .secure()
+            .scope_with(scope)
+            .order_by(Column::CreatedAt, Order::Asc)
+            .all(runner)
+            .await?)
+    }
+
+    async fn mark_archived<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        up_to_message_id: Uuid,
+    ) -> Result<u64, DomainError> {
+        // Resolve the cutoff timestamp from the anchor message.
+        let cutoff_expr = Expr::cust_with_values(
+            "(SELECT created_at FROM messages WHERE id = $1)",
+            [sea_orm::Value::from(up_to_message_id)],
+        );
+
+        let res = MessageEntity::update_many()
+            .col_expr(Column::IsArchived, Expr::value(true))
+            .filter(
+                Condition::all()
+                    .add(Column::ChatId.eq(chat_id))
+                    .add(Expr::col(Column::CreatedAt).lte(cutoff_expr))
+                    .add(Column::IsArchived.eq(false))
+                    .add(Column::DeletedAt.is_null()),
+            )
+            .secure()
+            .scope_with(scope)
+            .exec(runner)
+            .await?;
+
+        Ok(res.rows_affected)
     }
 }

@@ -72,4 +72,17 @@ pub trait ChatRepository: Send + Sync {
         scope: &AccessScope,
         chat_ids: &[Uuid],
     ) -> Result<HashMap<Uuid, i64>, DomainError>;
+
+    /// Find chat IDs that need thread summarization.
+    ///
+    /// A chat qualifies when either:
+    /// - count of non-archived, non-deleted messages > `msg_count_threshold`
+    /// - count of completed user turns since the last summary > `turn_threshold`
+    async fn find_chats_needing_summary<C: DBRunner>(
+        &self,
+        conn: &C,
+        scope: &AccessScope,
+        msg_count_threshold: u32,
+        turn_threshold: u32,
+    ) -> Result<Vec<Uuid>, DomainError>;
 }

@@ -296,7 +296,7 @@ The system MUST reject upload requests that would exceed any per-chat limit with
 
 The system MUST compress older conversation history into a summary when the conversation exceeds defined thresholds (message count, token count, or turn count). Thread summary access MUST be limited to the owning user within their tenant. The summary MUST preserve key facts, decisions, names, and document references. Summarized messages are retained in storage but replaced by the summary in the LLM context.
 
-**P1 scope — simple summarization**: The background worker calls the LLM with a summarization prompt and stores the result. If the provider call fails, the previous summary is kept and the message batch is not marked as compressed. No quality gate (length or entropy validation) is applied in P1.
+**P1 scope — simple summarization**: The background worker calls the LLM with a summarization prompt and stores the result. If the provider call fails, the previous summary is kept and the message batch is not marked as archived. No quality gate (length or entropy validation) is applied in P1.
 
 **P2+ scope — quality gate**: Length and entropy validation with automatic regeneration on obviously-bad summaries is deferred to P2+. See DESIGN.md `cpt-cf-mini-chat-seq-thread-summary` for the full P2+ specification.
 

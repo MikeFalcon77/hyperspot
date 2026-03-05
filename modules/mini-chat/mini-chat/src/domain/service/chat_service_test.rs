@@ -9,8 +9,8 @@ use crate::infra::db::repo::chat_repo::ChatRepository as OrmChatRepository;
 
 use super::ChatService;
 use crate::domain::service::test_helpers::{
-    inmem_db, mock_db_provider, mock_enforcer, mock_model_resolver, mock_thread_summary_repo,
-    test_security_ctx, test_security_ctx_with_id,
+    inmem_db, mock_db_provider, mock_enforcer, mock_model_resolver, test_security_ctx,
+    test_security_ctx_with_id,
 };
 
 // ── Test Helpers ──
@@ -22,13 +22,7 @@ fn build_service(db: modkit_db::Db) -> ChatService<OrmChatRepository> {
         max: 100,
     }));
 
-    ChatService::new(
-        db,
-        chat_repo,
-        mock_thread_summary_repo(),
-        mock_enforcer(),
-        mock_model_resolver(),
-    )
+    ChatService::new(db, chat_repo, mock_enforcer(), mock_model_resolver())
 }
 
 // ── Tests ──

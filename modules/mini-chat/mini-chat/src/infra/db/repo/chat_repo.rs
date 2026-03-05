@@ -214,10 +214,64 @@ impl crate::domain::repos::ChatRepository for ChatRepository {
         }
         Ok(counts)
     }
+
+    #[allow(clippy::cognitive_complexity)]
+    async fn find_chats_needing_summary<C: DBRunner>(
+        &self,
+        conn: &C,
+        scope: &AccessScope,
+        msg_count_threshold: u32,
+        turn_threshold: u32,
+    ) -> Result<Vec<Uuid>, DomainError> {
+        let msg_thr = msg_count_threshold;
+        let turn_thr = turn_threshold;
+
+        let scoped = Entity::find()
+            .filter(
+                sea_orm::Condition::all().add(Expr::col(Column::DeletedAt).is_null()),
+            )
+            .secure()
+            .scope_with(scope)
+            .into_inner();
+
+        let selector = scoped
+            .select_only()
+            .column(Column::Id)
+            .filter(
+                sea_orm::Condition::any()
+                    .add(Expr::cust(format!(
+                        "(SELECT COUNT(*) FROM messages \
+                         WHERE chat_id = chats.id \
+                         AND is_archived = false \
+                         AND deleted_at IS NULL) > {msg_thr}"
+                    )))
+                    .add(Expr::cust(format!(
+                        "(SELECT COUNT(*) FROM chat_turns \
+                         WHERE chat_id = chats.id \
+                         AND requester_type = 'user' \
+                         AND state = 'completed' \
+                         AND deleted_at IS NULL \
+                         AND started_at > COALESCE(\
+                             (SELECT updated_at FROM thread_summaries \
+                              WHERE chat_id = chats.id), \
+                             '1970-01-01T00:00:00Z'::timestamptz\
+                         )) > {turn_thr}"
+                    ))),
+            )
+            .into_model::<ChatIdOnly>();
+
+        let rows = exec_custom_all(selector, conn).await.map_err(db_err)?;
+        Ok(rows.into_iter().map(|r| r.id).collect())
+    }
 }
 
 #[derive(Debug, FromQueryResult)]
 struct ChatMessageCount {
     chat_id: Uuid,
     cnt: i64,
+}
+
+#[derive(Debug, FromQueryResult)]
+struct ChatIdOnly {
+    id: Uuid,
 }

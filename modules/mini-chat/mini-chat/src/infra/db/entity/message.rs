@@ -25,7 +25,7 @@ pub struct Model {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub model: Option<String>,
-    pub is_compressed: bool,
+    pub is_archived: bool,
     pub created_at: OffsetDateTime,
     pub deleted_at: Option<OffsetDateTime>,
 }

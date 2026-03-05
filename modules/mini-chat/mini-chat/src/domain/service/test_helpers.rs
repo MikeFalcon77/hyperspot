@@ -14,7 +14,7 @@ use sea_orm_migration::MigratorTrait;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
-use crate::domain::repos::{ModelResolver, ThreadSummaryRepository};
+use crate::domain::repos::ModelResolver;
 
 // ── Mock AuthZ Resolver ──
 
@@ -173,12 +173,6 @@ pub fn mock_enforcer() -> PolicyEnforcer {
 
 pub fn mock_model_resolver() -> Arc<dyn ModelResolver> {
     Arc::new(MockModelResolver)
-}
-
-pub fn mock_thread_summary_repo() -> Arc<dyn ThreadSummaryRepository> {
-    struct MockThreadSummaryRepo;
-    impl ThreadSummaryRepository for MockThreadSummaryRepo {}
-    Arc::new(MockThreadSummaryRepo)
 }
 
 pub fn mock_db_provider(db: Db) -> Arc<DBProvider<modkit_db::DbError>> {

@@ -9,6 +9,8 @@ use uuid::Uuid;
 pub trait WorkersMetricsPort: Send + Sync {
     fn orphan_turn_total(&self, result: &'static str);
     fn streams_aborted_total(&self, trigger: &'static str);
+    fn summary_runs_total(&self, result: &'static str);
+    fn cleanup_runs_total(&self, result: &'static str);
 }
 
 /// Outbox port (stub for P1 wiring).
@@ -16,6 +18,7 @@ pub trait WorkersMetricsPort: Send + Sync {
 /// Producers should call this inside the same DB transaction as the side effects.
 /// This is a placeholder until `modkit_db::outbox::enqueue` is available.
 pub trait OutboxPort: Send + Sync {
+    #[allow(clippy::too_many_arguments)]
     fn enqueue(
         &self,
         runner: &dyn DBRunner,

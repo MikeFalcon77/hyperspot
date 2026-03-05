@@ -18,7 +18,7 @@ pub(crate) use model_pref_repo::ModelPrefRepository;
 pub(crate) use model_resolver::ModelResolver;
 pub(crate) use quota_usage_repo::{IncrementReserveParams, QuotaUsageRepository, SettleParams};
 pub(crate) use reaction_repo::ReactionRepository;
-pub(crate) use thread_summary_repo::ThreadSummaryRepository;
+pub(crate) use thread_summary_repo::{ThreadSummaryRepository, UpsertThreadSummaryParams};
 pub(crate) use turn_repo::{
     CasCompleteParams, CasTerminalParams, CreateTurnParams, TurnRepository,
 };

@@ -20,7 +20,7 @@ pub struct MiniChatConfig {
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Background workers configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkersConfig {
     /// Prefix for k8s Lease objects used by leader election.
@@ -38,6 +38,17 @@ pub struct WorkersConfig {
     pub thread_summary: ThreadSummaryConfig,
     #[serde(default)]
     pub cleanup: CleanupConfig,
+}
+
+impl Default for WorkersConfig {
+    fn default() -> Self {
+        Self {
+            lease_prefix: default_workers_lease_prefix(),
+            orphan_watchdog: OrphanWatchdogConfig::default(),
+            thread_summary: ThreadSummaryConfig::default(),
+            cleanup: CleanupConfig::default(),
+        }
+    }
 }
 
 impl WorkersConfig {
@@ -96,7 +107,7 @@ impl OrphanWatchdogConfig {
 }
 
 /// Thread summary worker — compresses chat history via LLM summarization.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThreadSummaryConfig {
     #[serde(default = "default_true")]
@@ -109,6 +120,12 @@ pub struct ThreadSummaryConfig {
     /// Trigger summarization every N user turns (default: 15).
     #[serde(default = "default_turn_threshold")]
     pub turn_threshold: u32,
+    /// Model override for summarization. If empty, the chat's own model is used.
+    #[serde(default)]
+    pub summary_model: String,
+    /// Hard cap on summary output tokens (default: 1024).
+    #[serde(default = "default_max_summary_tokens")]
+    pub max_summary_tokens: u64,
 }
 
 impl Default for ThreadSummaryConfig {
@@ -118,13 +135,15 @@ impl Default for ThreadSummaryConfig {
             scan_interval_secs: default_scan_interval(),
             msg_count_threshold: default_msg_count_threshold(),
             turn_threshold: default_turn_threshold(),
+            summary_model: String::new(),
+            max_summary_tokens: default_max_summary_tokens(),
         }
     }
 }
 
 impl ThreadSummaryConfig {
     /// Validate configuration values.
-    pub fn validate(self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         if self.scan_interval_secs == 0 {
             return Err("thread_summary.scan_interval_secs must be > 0".to_owned());
         }
@@ -133,6 +152,9 @@ impl ThreadSummaryConfig {
         }
         if self.turn_threshold == 0 {
             return Err("thread_summary.turn_threshold must be > 0".to_owned());
+        }
+        if self.max_summary_tokens == 0 {
+            return Err("thread_summary.max_summary_tokens must be > 0".to_owned());
         }
         Ok(())
     }
@@ -257,6 +279,10 @@ const fn default_msg_count_threshold() -> u32 {
 
 const fn default_turn_threshold() -> u32 {
     15
+}
+
+const fn default_max_summary_tokens() -> u64 {
+    1024
 }
 
 const fn default_cleanup_max_attempts() -> u32 {

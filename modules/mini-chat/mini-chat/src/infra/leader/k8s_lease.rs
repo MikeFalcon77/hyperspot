@@ -154,7 +154,9 @@ impl LeaderElector for K8sLeaseElector {
                 }
                 Err(e) => {
                     let delay = backoff.next_delay();
-                    warn!(role, error = %e, delay_ms = delay.as_millis() as u64, "leader acquire failed");
+                    #[allow(clippy::cast_possible_truncation)]
+                    let delay_ms = delay.as_millis() as u64;
+                    warn!(role, error = %e, delay_ms, "leader acquire failed");
                     tokio::select! {
                         biased;
                         () = cancel.cancelled() => return Ok(()),
@@ -305,6 +307,7 @@ impl ActiveRole {
         }
     }
 
+    #[allow(clippy::cognitive_complexity)]
     async fn await_and_log(self, role: &str) {
         match self.handle.await {
             Ok(Ok(())) => warn!(role, "leader work exited unexpectedly (Ok)"),

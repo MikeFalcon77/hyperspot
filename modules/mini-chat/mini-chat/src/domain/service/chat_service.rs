@@ -11,7 +11,7 @@ use tracing::instrument;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
-use crate::domain::repos::{ChatRepository, ModelResolver, ThreadSummaryRepository};
+use crate::domain::repos::{ChatRepository, ModelResolver};
 
 use super::{DbProvider, actions, resources};
 
@@ -20,8 +20,6 @@ use super::{DbProvider, actions, resources};
 pub struct ChatService<CR: ChatRepository> {
     db: Arc<DbProvider>,
     chat_repo: Arc<CR>,
-    #[allow(dead_code)]
-    thread_summary_repo: Arc<dyn ThreadSummaryRepository>,
     enforcer: PolicyEnforcer,
     model_resolver: Arc<dyn ModelResolver>,
 }
@@ -30,14 +28,12 @@ impl<CR: ChatRepository> ChatService<CR> {
     pub(crate) fn new(
         db: Arc<DbProvider>,
         chat_repo: Arc<CR>,
-        thread_summary_repo: Arc<dyn ThreadSummaryRepository>,
         enforcer: PolicyEnforcer,
         model_resolver: Arc<dyn ModelResolver>,
     ) -> Self {
         Self {
             db,
             chat_repo,
-            thread_summary_repo,
             enforcer,
             model_resolver,
         }

@@ -16,6 +16,7 @@ use crate::config::WorkersConfig;
 use crate::domain::service::{AppServices as GenericAppServices, DbProvider, Repositories};
 use crate::infra::leader::{self, LeaderElector};
 use crate::infra::outbox::noop::NoopOutbox;
+use crate::domain::ports::WorkersMetricsPort;
 use crate::infra::workers::metrics::WorkersMetricsMeter;
 
 pub(crate) type AppServices =
@@ -26,12 +27,14 @@ use crate::infra::db::repo::message_repo::MessageRepository;
 use crate::infra::db::repo::model_pref_repo::ModelPrefRepository;
 use crate::infra::db::repo::quota_usage_repo::QuotaUsageRepository;
 use crate::infra::db::repo::reaction_repo::ReactionRepository;
-use crate::infra::db::repo::thread_summary_repo::ThreadSummaryRepository;
+
 use crate::infra::db::repo::turn_repo::TurnRepository;
 use crate::infra::db::repo::vector_store_repo::VectorStoreRepository;
 use crate::infra::llm::providers::{ProviderConfig, ProviderKind, create_provider};
 use crate::infra::model_policy::ModelPolicyGateway;
+use crate::infra::workers::cleanup_worker::CleanupWorker;
 use crate::infra::workers::orphan_watchdog::OrphanWatchdog;
+use crate::infra::workers::thread_summary_worker::ThreadSummaryWorker;
 
 /// Default URL prefix for all mini-chat REST routes.
 pub const DEFAULT_URL_PREFIX: &str = "/mini-chat";
@@ -137,7 +140,6 @@ impl Module for MiniChatModule {
             turn: Arc::clone(&turn_repo),
             reaction: Arc::new(ReactionRepository),
             model_pref: Arc::new(ModelPrefRepository),
-            thread_summary: Arc::new(ThreadSummaryRepository),
             vector_store: Arc::new(VectorStoreRepository),
         };
 
@@ -147,7 +149,7 @@ impl Module for MiniChatModule {
             Arc::clone(&db),
             authz,
             model_policy_gw,
-            llm,
+            Arc::clone(&llm),
             cfg.streaming,
         ));
 
@@ -156,7 +158,17 @@ impl Module for MiniChatModule {
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
 
         // Build workers bundle (leader elector + config + worker instances)
-        let workers = Arc::new(Workers::new(db, turn_repo, cfg.workers.clone()).await?);
+        let workers = Arc::new(
+            Workers::new(
+                db,
+                turn_repo,
+                Arc::clone(&repos.chat),
+                Arc::clone(&repos.message),
+                llm,
+                cfg.workers.clone(),
+            )
+            .await?,
+        );
         self.workers
             .set(workers)
             .map_err(|_| anyhow::anyhow!("{} workers already set", Self::MODULE_NAME))?;
@@ -171,6 +183,7 @@ impl MiniChatModule {
     ///
     /// Each worker is wrapped in leader election and runs until the
     /// provided `cancel` token fires (module shutdown).
+    #[allow(clippy::cognitive_complexity)]
     pub(crate) async fn run_workers(
         self: Arc<Self>,
         cancel: CancellationToken,
@@ -181,7 +194,7 @@ impl MiniChatModule {
             .get()
             .ok_or_else(|| anyhow::anyhow!("run_workers: workers not initialized"))?;
 
-        let handles = workers.spawn_all(cancel.clone());
+        let handles = workers.spawn_all(&cancel);
         ready.notify(); // Starting -> Running
 
         if handles.is_empty() {
@@ -212,16 +225,22 @@ struct Workers {
     leader: Arc<dyn LeaderElector>,
     config: WorkersConfig,
     orphan_watchdog: Arc<OrphanWatchdog<TurnRepository>>,
+    thread_summary: Arc<ThreadSummaryWorker<ChatRepository, MessageRepository>>,
+    cleanup: Arc<CleanupWorker>,
 }
 
 impl Workers {
+    #[allow(clippy::unused_async)]
     async fn new(
         db: Arc<DbProvider>,
         turn_repo: Arc<TurnRepository>,
+        chat_repo: Arc<ChatRepository>,
+        message_repo: Arc<MessageRepository>,
+        llm: Arc<dyn crate::infra::llm::LlmProvider>,
         config: WorkersConfig,
     ) -> anyhow::Result<Self> {
         let meter = opentelemetry::global::meter("mini-chat");
-        let metrics = Arc::new(WorkersMetricsMeter::new(&meter));
+        let metrics: Arc<dyn WorkersMetricsPort> = Arc::new(WorkersMetricsMeter::new(&meter));
         let outbox = Arc::new(NoopOutbox);
 
         let leader: Arc<dyn LeaderElector> = {
@@ -256,23 +275,45 @@ impl Workers {
         };
 
         let orphan_watchdog = Arc::new(OrphanWatchdog::new(
-            db,
+            Arc::clone(&db),
             turn_repo,
             config.orphan_watchdog,
-            metrics,
+            Arc::clone(&metrics),
             outbox,
+        ));
+
+        let thread_summary_repo = Arc::new(
+            crate::infra::db::repo::thread_summary_repo::ThreadSummaryRepository,
+        );
+        let thread_summary = Arc::new(ThreadSummaryWorker::new(
+            Arc::clone(&db),
+            config.thread_summary.clone(),
+            Arc::clone(&metrics),
+            llm,
+            chat_repo,
+            message_repo,
+            thread_summary_repo,
+        ));
+
+        let cleanup = Arc::new(CleanupWorker::new(
+            db,
+            config.cleanup,
+            metrics,
         ));
 
         Ok(Self {
             leader,
             config,
             orphan_watchdog,
+            thread_summary,
+            cleanup,
         })
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn spawn_all(
         &self,
-        cancel: CancellationToken,
+        cancel: &CancellationToken,
     ) -> Vec<tokio::task::JoinHandle<anyhow::Result<()>>> {
         let mut handles: Vec<tokio::task::JoinHandle<anyhow::Result<()>>> = Vec::new();
 
@@ -296,14 +337,44 @@ impl Workers {
             info!("orphan watchdog worker spawned");
         }
 
-        // ── Thread summary worker (stub — TODO) ──
+        // ── Thread summary worker ──
         if self.config.thread_summary.enabled {
-            info!("thread summary worker enabled (not yet implemented)");
+            let worker = Arc::clone(&self.thread_summary);
+            let leader = Arc::clone(&self.leader);
+            let child = cancel.child_token();
+            handles.push(tokio::spawn(async move {
+                leader
+                    .run_role(
+                        "thread-summary-leader",
+                        child,
+                        leader::work_fn(move |c| {
+                            let w = Arc::clone(&worker);
+                            async move { w.run(c).await }
+                        }),
+                    )
+                    .await
+            }));
+            info!("thread summary worker spawned");
         }
 
-        // ── Cleanup worker (stub — TODO) ──
+        // ── Cleanup worker ──
         if self.config.cleanup.enabled {
-            info!("cleanup worker enabled (not yet implemented)");
+            let worker = Arc::clone(&self.cleanup);
+            let leader = Arc::clone(&self.leader);
+            let child = cancel.child_token();
+            handles.push(tokio::spawn(async move {
+                leader
+                    .run_role(
+                        "cleanup-leader",
+                        child,
+                        leader::work_fn(move |c| {
+                            let w = Arc::clone(&worker);
+                            async move { w.run(c).await }
+                        }),
+                    )
+                    .await
+            }));
+            info!("cleanup worker spawned");
         }
 
         handles

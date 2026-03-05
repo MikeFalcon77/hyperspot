@@ -8,8 +8,7 @@ use modkit_macros::domain_model;
 use crate::config::StreamingConfig;
 use crate::domain::repos::{
     AttachmentRepository, ChatRepository, MessageRepository, ModelPrefRepository, ModelResolver,
-    QuotaUsageRepository, ReactionRepository, ThreadSummaryRepository, TurnRepository,
-    VectorStoreRepository,
+    QuotaUsageRepository, ReactionRepository, TurnRepository, VectorStoreRepository,
 };
 use crate::infra::llm::LlmProvider;
 
@@ -86,7 +85,6 @@ pub(crate) struct Repositories<
     pub(crate) turn: Arc<TR>,
     pub(crate) reaction: Arc<dyn ReactionRepository>,
     pub(crate) model_pref: Arc<dyn ModelPrefRepository>,
-    pub(crate) thread_summary: Arc<dyn ThreadSummaryRepository>,
     pub(crate) vector_store: Arc<dyn VectorStoreRepository>,
 }
 
@@ -132,7 +130,6 @@ impl<
             chats: ChatService::new(
                 Arc::clone(&db),
                 Arc::clone(&repos.chat),
-                Arc::clone(&repos.thread_summary),
                 enforcer.clone(),
                 model_resolver,
             ),

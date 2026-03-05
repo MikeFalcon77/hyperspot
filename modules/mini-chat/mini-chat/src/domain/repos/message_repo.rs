@@ -60,4 +60,23 @@ pub trait MessageRepository: Send + Sync {
         chat_id: Uuid,
         request_id: Uuid,
     ) -> Result<Vec<MessageModel>, DomainError>;
+
+    /// Load all non-archived, non-deleted messages for a chat, ordered by `created_at ASC`.
+    async fn find_non_archived_by_chat<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+    ) -> Result<Vec<MessageModel>, DomainError>;
+
+    /// Mark messages as archived up to (and including) the message identified
+    /// by `up_to_message_id`. Only non-archived, non-deleted messages in the
+    /// given chat are affected. Returns the number of rows updated.
+    async fn mark_archived<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        up_to_message_id: Uuid,
+    ) -> Result<u64, DomainError>;
 }
