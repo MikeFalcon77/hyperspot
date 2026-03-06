@@ -12,11 +12,13 @@ Cyber Fabric takes a **defense-in-depth** approach to security, combining Rust's
 - [4. Compile-Time Linting — Clippy](#4-compile-time-linting--clippy)
 - [5. Compile-Time Linting — Custom Dylint Rules](#5-compile-time-linting--custom-dylint-rules)
 - [6. Dependency Security — cargo-deny](#6-dependency-security--cargo-deny)
-- [7. Continuous Fuzzing](#7-continuous-fuzzing)
-- [8. Security Scanners in CI](#8-security-scanners-in-ci)
-- [9. PR Review Bots](#9-pr-review-bots)
-- [10. Specification Templates & SDLC](#10-specification-templates--sdlc)
-- [11. Opportunities for Improvement](#11-opportunities-for-improvement)
+- [7. Cryptographic Stack & FIPS-140-3](#7-cryptographic-stack--fips-140-3)
+- [8. Continuous Fuzzing](#8-continuous-fuzzing)
+- [9. Security Scanners in CI](#9-security-scanners-in-ci)
+- [10. PR Review Bots](#10-pr-review-bots)
+- [11. Specification Templates & SDLC](#11-specification-templates--sdlc)
+- [12. Repository Scaffolding — Cyber Fabric CLI](#12-repository-scaffolding--cyber-fabric-cli)
+- [13. Opportunities for Improvement](#13-opportunities-for-improvement)
 
 ---
 
@@ -110,6 +112,35 @@ Hierarchical multi-tenancy with tenant forest topology (see [`TENANT_MODEL.md`](
 - **Hierarchical access** — parent tenants may access child data (configurable)
 - **Barriers** — child tenants can opt out of parent visibility (`self_managed` flag)
 
+### GTS-Based Attribute Access Control (ABAC)
+
+> Source: [`.gts-spec/`](../../.gts-spec/) · [`dylint_lints/de09_gts_layer/`](../../dylint_lints/de09_gts_layer/) · [`modules/system/types-registry/`](../../modules/system/types-registry/)
+
+Cyber Fabric uses the **Global Type System (GTS)** as the foundation for attribute-based access control. GTS defines a hierarchical identifier scheme for data types and instances:
+
+```
+gts.<vendor>.<package>.<namespace>.<type>.v<MAJOR>[.<MINOR>]~
+```
+
+**How GTS enables ABAC:**
+
+- **Token claims** — authenticated user tokens carry GTS type patterns in `token_scopes`, defining the capability ceiling for the subject (e.g., `["gts.x.core.srr.resource.v1~*"]` grants access to all SRR resource types under that schema).
+- **Wildcard matching** — GTS supports segment-wise wildcard patterns (`*`), chain-aware evaluation, and attribute predicates for fine-grained policy expressions.
+- **Secure ORM integration** *(under development)* — the `ScopableEntity` trait supports a `type_col` dimension. The planned flow: AuthZ Resolver (PDP) evaluates GTS type constraints → compiles them into `AccessScope` → Secure ORM translates to SQL `WHERE` clauses, automatically filtering rows by type at the database level.
+
+**Current implementation status:**
+
+| Component | Status |
+|---|---|
+| GTS identifier parsing & validation | Implemented |
+| GTS type patterns in token scopes | Implemented |
+| Wildcard pattern matching (`GtsWildcard`) | Implemented |
+| GTS → UUID resolution (Types Registry) | Implemented |
+| Domain-level type filtering (e.g., SRR) | Implemented |
+| Secure ORM `type_col` auto-injection via PDP | Under development |
+
+Custom dylint rules (`DE0901`, `DE0902`) validate GTS identifier correctness at compile time, preventing malformed type strings from entering the codebase.
+
 ## 4. Compile-Time Linting — Clippy
 
 > Source: [`Cargo.toml` (workspace.lints.clippy)](../../Cargo.toml) · [`clippy.toml`](../../clippy.toml)
@@ -162,7 +193,20 @@ The architectural lints in the `DE03xx` series enforce **strict layering** (cont
 - **Source restrictions** — only `crates.io` allowed; unknown registries and git sources warned
 - **Duplicate version detection** — warns on multiple versions of the same crate in the dependency graph
 
-## 7. Continuous Fuzzing
+## 7. Cryptographic Stack & FIPS-140-3
+
+The project uses `aws-lc-rs` (via `rustls`) as its primary TLS cryptographic backend. JWT validation uses `jsonwebtoken` and `aliri`.
+
+| Layer | Library | Backend |
+|---|---|---|
+| TLS | `rustls` + `hyper-rustls` | `aws-lc-rs` |
+| Certificate verification | `rustls-webpki` | `aws-lc-rs`, `ring` |
+| JWT validation | `jsonwebtoken`, `aliri` | `sha2`, `hmac`, `ring` |
+| Database TLS | `sqlx` (`tls-rustls-aws-lc-rs`) | `aws-lc-rs` |
+
+**FIPS-140-3 status:** the current build **does not** enable FIPS mode. `aws-lc-rs` supports a `fips` feature flag that switches to the FIPS-validated AWS-LC module (`aws-lc-fips-sys`), providing a viable path to FIPS-140-3 compliance. Enabling it requires replacing `ring`-dependent libraries and building with CMake + Go toolchains. See [Opportunities for Improvement](#13-opportunities-for-improvement) for the roadmap.
+
+## 8. Continuous Fuzzing
 
 > Source: [`fuzz/`](../../fuzz/) · CI workflow: `.github/workflows/clusterfuzzlite.yml`
 
@@ -191,7 +235,7 @@ make fuzz-run FUZZ_TARGET=fuzz_odata_filter FUZZ_SECONDS=300
 make fuzz-list     # List available targets
 ```
 
-## 8. Security Scanners in CI
+## 9. Security Scanners in CI
 
 Multiple automated scanners run on every pull request and/or on schedule:
 
@@ -207,7 +251,7 @@ Multiple automated scanners run on every pull request and/or on schedule:
 The OpenSSF Scorecard badge is displayed in the project README:
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cyberfabric/cyberfabric-core/badge)](https://scorecard.dev/viewer/?uri=github.com/cyberfabric/cyberfabric-core)
 
-## 9. PR Review Bots
+## 10. PR Review Bots
 
 Every pull request is reviewed by automated bots before human review:
 
@@ -217,7 +261,7 @@ Every pull request is reviewed by automated bots before human review:
 | **[Graphite](https://graphite.dev/)** | Manual trigger | Stacked PR management and review automation |
 | **[Claude Code](https://docs.anthropic.com/)** | Manual trigger | LLM-powered deep code review |
 
-## 10. Specification Templates & SDLC
+## 11. Specification Templates & SDLC
 
 > Source: [`docs/spec-templates/`](../spec-templates/) · [`docs/spec-templates/cf-sdlc/`](../spec-templates/cf-sdlc/)
 
@@ -229,20 +273,34 @@ Cyber Fabric follows a **spec-driven development** lifecycle where PRD and DESIG
 - **Testing strategy** — 90%+ code coverage target with explicit security testing category (unit, integration, e2e, security, performance)
 - **Git/PR record** — all changes flow through PRs with review and immutable merge/audit trail
 
-## 11. Opportunities for Improvement
+## 12. Repository Scaffolding — Cyber Fabric CLI
+
+Cyber Fabric provides a CLI tool for scaffolding new repositories that automatically inherit the platform's security posture:
+
+| Inherited Configuration | Description |
+|---|---|
+| **Compiler configuration** | `rust-toolchain.toml`, workspace lint rules (`#[deny(warnings)]`, 90+ Clippy rules at deny level), `unsafe_code = "forbid"` |
+| **Custom dylint rules** | Architectural boundary enforcement (DE01xx–DE13xx series), GTS validation (DE09xx) |
+| **Makefile targets** | `make deny` (cargo-deny), `make fuzz` (continuous fuzzing), `make dylint` (custom lints), `make safety` (full suite) |
+| **cargo-deny configuration** | `deny.toml` with RustSec advisory checks, license allow-lists, source restrictions |
+
+This ensures every new service or module repository starts with the same defense-in-depth baseline described in this document, eliminating configuration drift across the platform.
+
+## 13. Opportunities for Improvement
 
 The following areas have been identified for future hardening:
 
-1. **Security guidelines in spec templates** — add explicit security checklist sections to PRD and DESIGN templates (threat modeling, data classification, authentication requirements per feature)
-2. **Security-focused dylint lints** — extend the `DE07xx` series with additional rules, such as:
+1. **FIPS-140-3 compliance** — enable the `aws-lc-rs` `fips` feature to switch TLS to the FIPS-validated AWS-LC module; replace `ring`-dependent libraries (`aliri`, `rustls-webpki`) with FIPS-capable alternatives; route JWT and hashing operations through `aws-lc-fips-sys`
+2. **Security guidelines in spec templates** — add explicit security checklist sections to PRD and DESIGN templates (threat modeling, data classification, authentication requirements per feature)
+3. **Security-focused dylint lints** — extend the `DE07xx` series with additional rules, such as:
    - Detecting hardcoded secrets or API keys
    - Enforcing `SecretString` usage for sensitive fields
    - Flagging raw SQL string construction
    - Validating `SecurityContext` propagation in module handlers
-3. **Fuzz target expansion** — implement planned targets (`fuzz_yaml_config`, `fuzz_html_parser`, `fuzz_pdf_parser`, `fuzz_json_config`, `fuzz_markdown_parser`) and enable `fuzz_odata_filter` after [#377](https://github.com/cyberfabric/cyberfabric-core/issues/377) is resolved
-4. **Kani formal verification** — expand use of the [Kani Rust Verifier](https://model-checking.github.io/kani/) for proving safety properties on critical code paths (`make kani`)
-5. **SBOM generation** — add Software Bill of Materials generation to CI for supply-chain transparency
-6. **Dependency update automation** — configure Dependabot or Renovate for automated dependency updates with security advisory prioritization
+4. **Fuzz target expansion** — implement planned targets (`fuzz_yaml_config`, `fuzz_html_parser`, `fuzz_pdf_parser`, `fuzz_json_config`, `fuzz_markdown_parser`) and enable `fuzz_odata_filter` after [#377](https://github.com/cyberfabric/cyberfabric-core/issues/377) is resolved
+5. **Kani formal verification** — expand use of the [Kani Rust Verifier](https://model-checking.github.io/kani/) for proving safety properties on critical code paths (`make kani`)
+6. **SBOM generation** — add Software Bill of Materials generation to CI for supply-chain transparency
+7. **Dependency update automation** — configure Dependabot or Renovate for automated dependency updates with security advisory prioritization
 
 ---
 
