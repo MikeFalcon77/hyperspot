@@ -19,8 +19,9 @@ use tracing::{debug, info, warn};
 
 use crate::api::rest::dto::{MessageDto, StreamMessageRequest};
 use crate::api::rest::sse::{StreamEventKind, StreamPhase};
-use crate::domain::service::StreamError;
+use crate::domain::service::{StreamError, replay};
 use crate::domain::stream_events::StreamEvent;
+use crate::infra::db::entity::chat_turn::Model as TurnModel;
 use crate::module::AppServices;
 
 /// GET /mini-chat/v1/chats/{id}/messages
@@ -69,9 +70,10 @@ pub(crate) async fn stream_message(
         }
     };
 
+    let selected_model = chat.model;
     let resolved = match svc
         .models
-        .resolve_model(ctx.subject_id(), Some(chat.model))
+        .resolve_model(ctx.subject_id(), Some(selected_model.clone()))
         .await
     {
         Ok(r) => r,
@@ -106,6 +108,9 @@ pub(crate) async fn stream_message(
         .await
     {
         Ok(handle) => handle,
+        Err(StreamError::Replay { turn }) => {
+            return replay_response(&svc, &selected_model, &turn, ping_secs).await;
+        }
         Err(e) => return stream_error_response(e),
     };
 
@@ -128,6 +133,8 @@ pub(crate) async fn stream_message(
 fn stream_error_response(err: StreamError) -> Response {
     match err {
         StreamError::Replay { .. } => {
+            // Completed turns are handled by replay_response(); this arm covers
+            // the defensive case where Replay leaks through without interception.
             Problem::new(StatusCode::CONFLICT, "Conflict", "Duplicate request_id").into_response()
         }
         StreamError::Conflict { message, .. } => {
@@ -149,7 +156,61 @@ fn stream_error_response(err: StreamError) -> Response {
             )
             .into_response()
         }
+        StreamError::QuotaExhausted {
+            error_code,
+            http_status,
+        } => {
+            let status = StatusCode::from_u16(http_status).unwrap_or(StatusCode::TOO_MANY_REQUESTS);
+            Problem::new(status, "Quota Exhausted", &error_code).into_response()
+        }
     }
+}
+
+/// Build an SSE replay response for a completed turn.
+///
+/// Fetches stored assistant content and emits `delta` + `done` events through
+/// the same `SseRelay` infrastructure as normal streaming.
+async fn replay_response(
+    svc: &AppServices,
+    selected_model: &str,
+    turn: &TurnModel,
+    ping_secs: u64,
+) -> Response {
+    let scope = modkit_security::AccessScope::allow_all().tenant_only();
+
+    let events = match replay::replay_turn(
+        &svc.db,
+        &*svc.message_repo,
+        &scope,
+        turn,
+        selected_model,
+    )
+    .await
+    {
+        Ok(ev) => ev,
+        Err(e) => {
+            warn!(error = %e, turn_id = %turn.id, "replay failed");
+            return Problem::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal Error",
+                "Failed to replay turn",
+            )
+            .into_response();
+        }
+    };
+
+    let (tx, rx) = mpsc::channel::<StreamEvent>(4);
+    tokio::spawn(async move {
+        drop(tx.send(events.delta).await);
+        drop(tx.send(events.done).await);
+    });
+
+    let cancel = CancellationToken::new();
+    let relay = SseRelay::new(rx, cancel, ping_secs);
+
+    Sse::new(relay)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(30)))
+        .into_response()
 }
 
 // ════════════════════════════════════════════════════════════════════════════

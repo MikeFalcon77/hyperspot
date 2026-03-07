@@ -13,7 +13,6 @@ pub struct EstimationInput {
     pub num_images: u32,
     pub tools_enabled: bool,
     pub web_search_enabled: bool,
-    pub max_output_tokens: u32,
 }
 
 /// Result of token estimation.
@@ -21,7 +20,6 @@ pub struct EstimationInput {
 #[allow(dead_code)]
 pub struct EstimationResult {
     pub estimated_input_tokens: u64,
-    pub reserve_tokens: u64,
 }
 
 /// Estimate input tokens and reserve from request metadata.
@@ -64,11 +62,9 @@ pub fn estimate_tokens(input: &EstimationInput, budgets: &EstimationBudgets) -> 
         .saturating_add(image_surcharge)
         .saturating_add(tool_surcharge)
         .saturating_add(web_search_surcharge);
-    let reserve_tokens = estimated_input_tokens.saturating_add(u64::from(input.max_output_tokens));
 
     EstimationResult {
         estimated_input_tokens,
-        reserve_tokens,
     }
 }
 
@@ -95,14 +91,12 @@ mod tests {
             num_images: 0,
             tools_enabled: false,
             web_search_enabled: false,
-            max_output_tokens: 1000,
         };
         let result = estimate_tokens(&input, &default_budgets());
 
         // base = ceil(4000/4) + 100 = 1000 + 100 = 1100
         // with margin = ceil(1100 * 1.10) = ceil(1210.0) = 1210
         assert_eq!(result.estimated_input_tokens, 1210);
-        assert_eq!(result.reserve_tokens, 1210 + 1000);
     }
 
     #[test]
@@ -112,7 +106,6 @@ mod tests {
             num_images: 3,
             tools_enabled: false,
             web_search_enabled: false,
-            max_output_tokens: 500,
         };
         let result = estimate_tokens(&input, &default_budgets());
 
@@ -128,7 +121,6 @@ mod tests {
             num_images: 0,
             tools_enabled: true,
             web_search_enabled: true,
-            max_output_tokens: 100,
         };
         let result = estimate_tokens(&input, &default_budgets());
 
@@ -143,14 +135,12 @@ mod tests {
             num_images: 2,
             tools_enabled: true,
             web_search_enabled: true,
-            max_output_tokens: 1000,
         };
         let result = estimate_tokens(&input, &default_budgets());
 
         // text: ceil(4000/4)+100 = 1100, margin: ceil(1100.0*1.1)=1210
         // images: 2*1000=2000, tool: 500, web: 500
         assert_eq!(result.estimated_input_tokens, 1210 + 2000 + 500 + 500);
-        assert_eq!(result.reserve_tokens, 1210 + 2000 + 500 + 500 + 1000);
     }
 
     #[test]
@@ -160,13 +150,11 @@ mod tests {
             num_images: 0,
             tools_enabled: false,
             web_search_enabled: false,
-            max_output_tokens: 100,
         };
         let result = estimate_tokens(&input, &default_budgets());
 
         // base = 100 (overhead only), margin: ceil(100*110/100) = 110
         assert_eq!(result.estimated_input_tokens, 110);
-        assert_eq!(result.reserve_tokens, 210);
     }
 
     #[test]
@@ -181,7 +169,6 @@ mod tests {
             num_images: 0,
             tools_enabled: false,
             web_search_enabled: false,
-            max_output_tokens: 0,
         };
         let result = estimate_tokens(&input, &budgets);
 

@@ -23,6 +23,7 @@ mod model_service;
 mod quota_service;
 pub(crate) mod quota_settler;
 mod reaction_service;
+pub(crate) mod replay;
 mod stream_service;
 #[cfg(test)]
 pub(crate) mod test_helpers;
@@ -114,12 +115,14 @@ pub(crate) struct AppServices<
 > {
     pub(crate) chats: ChatService<CR>,
     pub(crate) messages: MessageService<MR, CR>,
-    pub(crate) stream: StreamService<TR, MR, CR>,
+    pub(crate) stream: StreamService<TR, MR, QR, CR>,
     pub(crate) reactions: ReactionService<RR, MR, CR>,
     pub(crate) attachments: AttachmentService<CR>,
     pub(crate) models: ModelService,
-    pub(crate) quota: QuotaService<QR>,
+    pub(crate) quota: Arc<QuotaService<QR>>,
     pub(crate) finalization: Arc<FinalizationService<TR, MR>>,
+    pub(crate) db: Arc<DbProvider>,
+    pub(crate) message_repo: Arc<MR>,
 }
 
 impl<
@@ -145,14 +148,13 @@ impl<
     ) -> Self {
         let enforcer = PolicyEnforcer::new(authz);
 
-        // Type-erase QuotaService<QR> → Arc<dyn QuotaSettler> for FinalizationService (D2).
-        // QuotaService is stateless (holds only Arc refs and Copy configs), so a second
-        // instance is functionally identical to sharing via Arc.
-        let quota_settler: Arc<dyn QuotaSettler> = Arc::new(QuotaService::new(
+        // Shared QuotaService used by both StreamService (preflight) and
+        // FinalizationService (settlement via QuotaSettler trait).
+        let quota_svc = Arc::new(QuotaService::new(
             Arc::clone(&db),
             Arc::clone(&repos.quota),
-            Arc::clone(&policy_provider),
-            Arc::clone(&limits_provider),
+            policy_provider,
+            limits_provider,
             estimation_budgets,
             quota_config,
         ));
@@ -161,7 +163,7 @@ impl<
             Arc::clone(&db),
             Arc::clone(&repos.turn),
             Arc::clone(&repos.message),
-            quota_settler,
+            Arc::clone(&quota_svc) as Arc<dyn QuotaSettler>,
         ));
 
         Self {
@@ -187,6 +189,7 @@ impl<
                 provider_resolver,
                 streaming_config,
                 Arc::clone(&finalization),
+                Arc::clone(&quota_svc),
             ),
             reactions: ReactionService::new(
                 Arc::clone(&db),
@@ -208,15 +211,10 @@ impl<
                 enforcer,
                 Arc::clone(model_resolver),
             ),
-            quota: QuotaService::new(
-                db,
-                Arc::clone(&repos.quota),
-                policy_provider,
-                limits_provider,
-                estimation_budgets,
-                quota_config,
-            ),
+            quota: Arc::clone(&quota_svc),
             finalization,
+            db,
+            message_repo: Arc::clone(&repos.message),
         }
     }
 }

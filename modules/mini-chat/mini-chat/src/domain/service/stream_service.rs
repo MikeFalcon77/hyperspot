@@ -12,8 +12,8 @@ use uuid::Uuid;
 use crate::config::StreamingConfig;
 use crate::domain::error::DomainError;
 use crate::domain::repos::{
-    ChatRepository, CreateTurnParams, InsertUserMessageParams, MessageRepository, TurnRepository,
-    model_resolver::ResolvedModel,
+    ChatRepository, CreateTurnParams, InsertUserMessageParams, MessageRepository,
+    QuotaUsageRepository, TurnRepository, model_resolver::ResolvedModel,
 };
 use crate::domain::stream_events::{DoneData, ErrorData, StreamEvent};
 use crate::infra::db::entity::chat_turn::{Model as TurnModel, TurnState};
@@ -92,6 +92,11 @@ pub enum StreamError {
     AuthorizationFailed { source: DomainError },
     /// Chat does not exist or is not visible to the caller.
     ChatNotFound { chat_id: Uuid },
+    /// Quota exhausted — preflight rejected the request.
+    QuotaExhausted {
+        error_code: String,
+        http_status: u16,
+    },
 }
 
 impl From<authz_resolver_sdk::EnforcerError> for StreamError {
@@ -221,6 +226,79 @@ fn normalize_error(err: &LlmProviderError) -> (String, String) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// PreflightResult — flattened preflight outcome for run_stream()
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Flattened preflight fields used by `run_stream()` after `preflight_reserve()`.
+#[domain_model]
+struct PreflightResult {
+    effective_model: String,
+    reserve_tokens: i64,
+    max_output_tokens_applied: i32,
+    reserved_credits_micro: i64,
+    policy_version_applied: i64,
+    minimal_generation_floor_applied: i32,
+    quota_decision: String,
+    downgrade_from: Option<String>,
+    downgrade_reason: Option<String>,
+}
+
+/// Convert a `PreflightDecision` into a flat `PreflightResult` or a `StreamError`.
+fn flatten_preflight(
+    decision: crate::domain::model::quota::PreflightDecision,
+) -> Result<PreflightResult, StreamError> {
+    use crate::domain::model::quota::PreflightDecision;
+    match decision {
+        PreflightDecision::Allow {
+            effective_model,
+            reserve_tokens,
+            max_output_tokens_applied,
+            reserved_credits_micro,
+            policy_version_applied,
+            minimal_generation_floor_applied,
+        } => Ok(PreflightResult {
+            effective_model,
+            reserve_tokens,
+            max_output_tokens_applied,
+            reserved_credits_micro,
+            policy_version_applied,
+            minimal_generation_floor_applied,
+            quota_decision: "allow".to_owned(),
+            downgrade_from: None,
+            downgrade_reason: None,
+        }),
+        PreflightDecision::Downgrade {
+            effective_model,
+            reserve_tokens,
+            max_output_tokens_applied,
+            reserved_credits_micro,
+            policy_version_applied,
+            minimal_generation_floor_applied,
+            downgrade_from,
+            downgrade_reason,
+        } => Ok(PreflightResult {
+            effective_model,
+            reserve_tokens,
+            max_output_tokens_applied,
+            reserved_credits_micro,
+            policy_version_applied,
+            minimal_generation_floor_applied,
+            quota_decision: "downgrade".to_owned(),
+            downgrade_from: Some(downgrade_from),
+            downgrade_reason: Some(downgrade_reason.as_str().to_owned()),
+        }),
+        PreflightDecision::Reject {
+            error_code,
+            http_status,
+            ..
+        } => Err(StreamError::QuotaExhausted {
+            error_code,
+            http_status,
+        }),
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // StreamService
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -234,6 +312,7 @@ fn normalize_error(err: &LlmProviderError) -> (String, String) {
 pub struct StreamService<
     TR: TurnRepository + 'static,
     MR: MessageRepository + 'static,
+    QR: QuotaUsageRepository + 'static,
     CR: ChatRepository,
 > {
     db: Arc<DbProvider>,
@@ -244,10 +323,15 @@ pub struct StreamService<
     provider_resolver: Arc<ProviderResolver>,
     streaming_config: StreamingConfig,
     finalization: Arc<crate::domain::service::finalization_service::FinalizationService<TR, MR>>,
+    quota: Arc<crate::domain::service::QuotaService<QR>>,
 }
 
-impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepository>
-    StreamService<TR, MR, CR>
+impl<
+    TR: TurnRepository + 'static,
+    MR: MessageRepository + 'static,
+    QR: QuotaUsageRepository + 'static,
+    CR: ChatRepository,
+> StreamService<TR, MR, QR, CR>
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -261,6 +345,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
         finalization: Arc<
             crate::domain::service::finalization_service::FinalizationService<TR, MR>,
         >,
+        quota: Arc<crate::domain::service::QuotaService<QR>>,
     ) -> Self {
         Self {
             db,
@@ -271,6 +356,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
             provider_resolver,
             streaming_config,
             finalization,
+            quota,
         }
     }
 
@@ -329,15 +415,24 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
 
         let scope = scope.tenant_only();
 
-        // ── Idempotency check ──
+        // ── Idempotency check (DESIGN §3.7 Check Priority Order) ──
         if let Some(existing_turn) = self
             .turn_repo
             .find_by_chat_and_request_id(&conn, &scope, chat_id, request_id)
             .await
             .map_err(|e| StreamError::TurnCreationFailed { source: e })?
         {
-            return Err(StreamError::Replay {
-                turn: Box::new(existing_turn),
+            return Err(match existing_turn.state {
+                TurnState::Completed => StreamError::Replay {
+                    turn: Box::new(existing_turn),
+                },
+                _ => StreamError::Conflict {
+                    code: "request_id_conflict".to_owned(),
+                    message: format!(
+                        "Turn for request_id {request_id} exists with state {:?}",
+                        existing_turn.state
+                    ),
+                },
             });
         }
 
@@ -354,21 +449,72 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
             });
         }
 
-        // ── Insert user message + create turn (atomic) ──
+        // ── Preflight quota evaluate (external I/O, no DB writes) ──
+        let selected_model = model;
+        let computed = self
+            .quota
+            .preflight_evaluate(crate::domain::model::quota::PreflightInput {
+                tenant_id,
+                user_id,
+                selected_model: selected_model.clone(),
+                utf8_bytes: content.len() as u64,
+                num_images: 0,
+                tools_enabled: false,
+                web_search_enabled: false,
+                max_output_tokens_cap: self.streaming_config.max_output_tokens,
+            })
+            .await
+            .map_err(|e| StreamError::TurnCreationFailed { source: e })?;
+
+        let pf = flatten_preflight(computed.decision.clone())?;
+
+        // Period boundaries from the computed preflight (used by finalization for settlement)
+        let period_starts = computed.periods.clone();
+
+        // ── Single transaction: reserve + user message + turn ──
         let user_msg_id = Uuid::new_v4();
         let turn_id = Uuid::new_v4();
         let requester_type = ctx.subject_type().unwrap_or("user").to_owned();
-        let effective_model = model.clone();
 
         let message_repo = Arc::clone(&self.message_repo);
         let turn_repo = Arc::clone(&self.turn_repo);
+        let quota_repo = Arc::clone(&self.quota.repo);
         let content_clone = content.clone();
         let scope_tx = scope.clone();
-        let effective_model_tx = effective_model.clone();
+        let effective_model_tx = pf.effective_model.clone();
+        let computed_for_tx = computed;
 
         self.db
             .transaction(|tx| {
+                use crate::domain::repos::IncrementReserveParams;
                 Box::pin(async move {
+                    // 1. Write quota reserve
+                    if !computed_for_tx.buckets.is_empty() {
+                        let reserve_scope = AccessScope::for_tenant(computed_for_tx.tenant_id);
+                        for bucket in &computed_for_tx.buckets {
+                            for (period_type, period_start) in &computed_for_tx.periods {
+                                quota_repo
+                                    .increment_reserve(
+                                        tx,
+                                        &reserve_scope,
+                                        IncrementReserveParams {
+                                            tenant_id: computed_for_tx.tenant_id,
+                                            user_id: computed_for_tx.user_id,
+                                            period_type: period_type.clone(),
+                                            period_start: *period_start,
+                                            bucket: bucket.clone(),
+                                            amount_micro: computed_for_tx.reserved_credits_micro,
+                                        },
+                                    )
+                                    .await
+                                    .map_err(|e| {
+                                        modkit_db::DbError::Other(anyhow::Error::new(e))
+                                    })?;
+                            }
+                        }
+                    }
+
+                    // 2. Insert user message
                     message_repo
                         .insert_user_message(
                             tx,
@@ -384,6 +530,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
                         .await
                         .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
 
+                    // 3. Create turn
                     turn_repo
                         .create_turn(
                             tx,
@@ -395,12 +542,14 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
                                 request_id,
                                 requester_type,
                                 requester_user_id: Some(user_id),
-                                reserve_tokens: None,
-                                max_output_tokens_applied: None,
-                                reserved_credits_micro: None,
-                                policy_version_applied: None,
+                                reserve_tokens: Some(pf.reserve_tokens),
+                                max_output_tokens_applied: Some(pf.max_output_tokens_applied),
+                                reserved_credits_micro: Some(pf.reserved_credits_micro),
+                                policy_version_applied: Some(pf.policy_version_applied),
                                 effective_model: Some(effective_model_tx),
-                                minimal_generation_floor_applied: None,
+                                minimal_generation_floor_applied: Some(
+                                    pf.minimal_generation_floor_applied,
+                                ),
                             },
                         )
                         .await
@@ -423,12 +572,6 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
         // Pre-generate assistant message ID (sent in DoneData and used in CAS)
         let message_id = Uuid::new_v4();
 
-        // TODO(P3→P4): populate quota fields from PreflightDecision once preflight
-        // is wired in. For now, use conservative placeholder values so that
-        // settlement validation passes and turns finalize correctly.
-        // reserve_tokens must be large enough to avoid overshoot-capping on
-        // normal responses; max_output_tokens_applied and
-        // minimal_generation_floor_applied must be positive.
         let finalization_ctx = FinalizationCtx {
             finalization_svc: Arc::clone(&self.finalization),
             scope,
@@ -438,17 +581,17 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
             request_id,
             user_id,
             message_id,
-            effective_model: effective_model.clone(),
-            selected_model: model.clone(),
-            reserve_tokens: 1_000_000,
-            max_output_tokens_applied: 32_768,
-            reserved_credits_micro: 0,
-            policy_version_applied: 1,
-            minimal_generation_floor_applied: 50,
-            quota_decision: "allow".to_owned(),
-            downgrade_from: None,
-            downgrade_reason: None,
-            period_starts: Vec::new(),
+            effective_model: pf.effective_model.clone(),
+            selected_model: selected_model.clone(),
+            reserve_tokens: pf.reserve_tokens,
+            max_output_tokens_applied: pf.max_output_tokens_applied,
+            reserved_credits_micro: pf.reserved_credits_micro,
+            policy_version_applied: pf.policy_version_applied,
+            minimal_generation_floor_applied: pf.minimal_generation_floor_applied,
+            quota_decision: pf.quota_decision,
+            downgrade_from: pf.downgrade_from,
+            downgrade_reason: pf.downgrade_reason,
+            period_starts,
         };
 
         let resolved_provider = self.provider_resolver.resolve(&provider_id).map_err(|e| {
@@ -457,7 +600,9 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
             }
         })?;
         // Build the full OAGW proxy path: {alias}{api_path} with {model} substituted.
-        let api_path = resolved_provider.api_path.replace("{model}", &model);
+        let api_path = resolved_provider
+            .api_path
+            .replace("{model}", &pf.effective_model);
         let proxy_path = format!("{}{api_path}", resolved_provider.upstream_alias);
 
         Ok(spawn_provider_task(
@@ -465,7 +610,8 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
             proxy_path,
             ctx,
             content,
-            model,
+            pf.effective_model,
+            pf.max_output_tokens_applied.cast_unsigned(),
             cancel,
             tx,
             Some(finalization_ctx),
@@ -494,6 +640,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
     ctx: SecurityContext,
     content: String,
     model: String,
+    max_output_tokens: u32,
     cancel: CancellationToken,
     tx: mpsc::Sender<StreamEvent>,
     fin_ctx: Option<FinalizationCtx<TR, MR>>,
@@ -506,6 +653,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
         // Build the LLM request
         let request = LlmRequestBuilder::new(&model)
             .message(LlmMessage::user(&content))
+            .max_output_tokens(u64::from(max_output_tokens))
             .build_streaming();
 
         // Call the provider to start streaming
@@ -752,8 +900,8 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                                 .send(StreamEvent::Done(Box::new(DoneData {
                                     message_id: msg_id_str.clone(),
                                     usage: Some(usage),
-                                    effective_model: model.clone(),
-                                    selected_model: model.clone(),
+                                    effective_model: fctx.effective_model.clone(),
+                                    selected_model: fctx.selected_model.clone(),
                                     quota_decision: fctx.quota_decision.clone(),
                                     downgrade_from: fctx.downgrade_from.clone(),
                                     downgrade_reason: fctx.downgrade_reason.clone(),
@@ -768,8 +916,8 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                                 .send(StreamEvent::Done(Box::new(DoneData {
                                     message_id: msg_id_str.clone(),
                                     usage: Some(usage),
-                                    effective_model: model.clone(),
-                                    selected_model: model.clone(),
+                                    effective_model: fctx.effective_model.clone(),
+                                    selected_model: fctx.selected_model.clone(),
                                     quota_decision: "allow".into(),
                                     downgrade_from: None,
                                     downgrade_reason: None,
@@ -837,8 +985,8 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                                 .send(StreamEvent::Done(Box::new(DoneData {
                                     message_id: msg_id_str.clone(),
                                     usage: Some(usage),
-                                    effective_model: model.clone(),
-                                    selected_model: model.clone(),
+                                    effective_model: fctx.effective_model.clone(),
+                                    selected_model: fctx.selected_model.clone(),
                                     quota_decision: fctx.quota_decision.clone(),
                                     downgrade_from: fctx.downgrade_from.clone(),
                                     downgrade_reason: fctx.downgrade_reason.clone(),
@@ -852,8 +1000,8 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                                 .send(StreamEvent::Done(Box::new(DoneData {
                                     message_id: msg_id_str.clone(),
                                     usage: Some(usage),
-                                    effective_model: model.clone(),
-                                    selected_model: model.clone(),
+                                    effective_model: fctx.effective_model.clone(),
+                                    selected_model: fctx.selected_model.clone(),
                                     quota_decision: "allow".into(),
                                     downgrade_from: None,
                                     downgrade_reason: None,
@@ -1100,6 +1248,7 @@ mod tests {
             mock_ctx(),
             "hi".into(),
             "test-model".into(),
+            4096,
             cancel,
             tx,
             None,
@@ -1144,6 +1293,7 @@ mod tests {
             mock_ctx(),
             "hi".into(),
             "test-model".into(),
+            4096,
             cancel,
             tx,
             None,
@@ -1221,6 +1371,7 @@ mod tests {
             mock_ctx(),
             "hi".into(),
             "test-model".into(),
+            4096,
             cancel.clone(),
             tx,
             None,
@@ -1242,14 +1393,16 @@ mod tests {
     // ── Pre-stream check tests (7.6) ──
 
     use crate::domain::service::test_helpers::{
-        inmem_db, mock_db_provider, mock_enforcer, test_security_ctx_with_id,
+        MockPolicySnapshotProvider, MockUserLimitsProvider, inmem_db, mock_db_provider,
+        mock_enforcer, test_security_ctx_with_id,
     };
+    use crate::infra::db::repo::quota_usage_repo::QuotaUsageRepository as OrmQuotaUsageRepo;
 
     /// Build a `StreamService` with real DB repos and a mock LLM provider.
     fn build_stream_service(
         db: Arc<DbProvider>,
         provider: Arc<dyn LlmProvider>,
-    ) -> StreamService<TurnRepo, MsgRepo, OrmChatRepo> {
+    ) -> StreamService<TurnRepo, MsgRepo, OrmQuotaUsageRepo, OrmChatRepo> {
         use crate::domain::service::finalization_service::FinalizationService;
         use crate::domain::service::quota_settler::QuotaSettler;
 
@@ -1289,6 +1442,52 @@ mod tests {
             Arc::new(MockQuotaSettler) as Arc<dyn QuotaSettler>,
         ));
 
+        // QuotaService with permissive defaults — model catalog includes
+        // "gpt-5.2" (standard) so that preflight allows test requests.
+        let quota_svc = Arc::new(crate::domain::service::QuotaService::new(
+            Arc::clone(&db),
+            Arc::new(OrmQuotaUsageRepo),
+            Arc::new(MockPolicySnapshotProvider::new(
+                mini_chat_sdk::PolicySnapshot {
+                    user_id: Uuid::nil(),
+                    policy_version: 1,
+                    model_catalog: vec![mini_chat_sdk::ModelCatalogEntry {
+                        model_id: "gpt-5.2".to_owned(),
+                        display_name: "GPT 5.2".to_owned(),
+                        tier: mini_chat_sdk::ModelTier::Standard,
+                        global_enabled: true,
+                        is_default: true,
+                        input_tokens_credit_multiplier_micro: 1_000_000,
+                        output_tokens_credit_multiplier_micro: 1_000_000,
+                        multimodal_capabilities: vec![],
+                        context_window: 128_000,
+                        max_output_tokens: 4096,
+                        description: String::new(),
+                        provider_display_name: String::new(),
+                        multiplier_display: "1x".to_owned(),
+                        provider_id: "openai".to_owned(),
+                    }],
+                    kill_switches: mini_chat_sdk::KillSwitches::default(),
+                },
+            )),
+            Arc::new(MockUserLimitsProvider::new(mini_chat_sdk::UserLimits {
+                user_id: Uuid::nil(),
+                policy_version: 1,
+                standard: mini_chat_sdk::TierLimits {
+                    limit_daily_credits_micro: 100_000_000,
+                    limit_monthly_credits_micro: 1_000_000_000,
+                },
+                premium: mini_chat_sdk::TierLimits {
+                    limit_daily_credits_micro: 50_000_000,
+                    limit_monthly_credits_micro: 500_000_000,
+                },
+            })),
+            crate::config::EstimationBudgets::default(),
+            crate::config::QuotaConfig {
+                overshoot_tolerance_factor: 1.10,
+            },
+        ));
+
         StreamService::new(
             db,
             turn_repo,
@@ -1301,6 +1500,7 @@ mod tests {
             provider_resolver,
             crate::config::StreamingConfig::default(),
             finalization,
+            quota_svc,
         )
     }
 
@@ -1409,6 +1609,237 @@ mod tests {
             matches!(err, StreamError::Replay { .. }),
             "expected Replay, got: {err:?}"
         );
+    }
+
+    /// 6.2: Running turn with same `request_id` → Conflict (not Replay).
+    #[tokio::test]
+    async fn idempotency_running_turn_returns_conflict() {
+        let db = mock_db_provider(inmem_db().await);
+        let tenant_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        insert_test_chat(&db, tenant_id, user_id, chat_id).await;
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::completed(&["hi"]));
+        let svc = build_stream_service(db.clone(), provider);
+
+        // Pre-create a running turn (default state after create_turn)
+        let scope = AccessScope::allow_all();
+        let conn = db.conn().unwrap();
+        let turn_repo = TurnRepo;
+        turn_repo
+            .create_turn(
+                &conn,
+                &scope,
+                CreateTurnParams {
+                    id: Uuid::new_v4(),
+                    tenant_id,
+                    chat_id,
+                    request_id,
+                    requester_type: "user".to_owned(),
+                    requester_user_id: None,
+                    reserve_tokens: None,
+                    max_output_tokens_applied: None,
+                    reserved_credits_micro: None,
+                    policy_version_applied: None,
+                    effective_model: None,
+                    minimal_generation_floor_applied: None,
+                },
+            )
+            .await
+            .expect("create turn");
+
+        let ctx = test_security_ctx_with_id(tenant_id, user_id);
+        let (tx, _rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        let err = svc
+            .run_stream(
+                ctx,
+                chat_id,
+                request_id,
+                "hello".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
+                cancel,
+                tx,
+            )
+            .await
+            .expect_err("should be Conflict");
+
+        match err {
+            StreamError::Conflict { code, .. } => {
+                assert_eq!(code, "request_id_conflict");
+            }
+            other => panic!("expected Conflict, got: {other:?}"),
+        }
+    }
+
+    /// 6.3: Failed turn with same `request_id` → Conflict (not Replay).
+    #[tokio::test]
+    async fn idempotency_failed_turn_returns_conflict() {
+        let db = mock_db_provider(inmem_db().await);
+        let tenant_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        insert_test_chat(&db, tenant_id, user_id, chat_id).await;
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::completed(&["hi"]));
+        let svc = build_stream_service(db.clone(), provider);
+
+        let scope = AccessScope::allow_all();
+        let conn = db.conn().unwrap();
+        let turn_repo = TurnRepo;
+        let turn = turn_repo
+            .create_turn(
+                &conn,
+                &scope,
+                CreateTurnParams {
+                    id: Uuid::new_v4(),
+                    tenant_id,
+                    chat_id,
+                    request_id,
+                    requester_type: "user".to_owned(),
+                    requester_user_id: None,
+                    reserve_tokens: None,
+                    max_output_tokens_applied: None,
+                    reserved_credits_micro: None,
+                    policy_version_applied: None,
+                    effective_model: None,
+                    minimal_generation_floor_applied: None,
+                },
+            )
+            .await
+            .expect("create turn");
+
+        turn_repo
+            .cas_update_state(
+                &conn,
+                &scope,
+                CasTerminalParams {
+                    turn_id: turn.id,
+                    state: TurnState::Failed,
+                    error_code: Some("provider_error".to_owned()),
+                    error_detail: Some("timeout".to_owned()),
+                    assistant_message_id: None,
+                    provider_response_id: None,
+                },
+            )
+            .await
+            .expect("fail turn");
+
+        let ctx = test_security_ctx_with_id(tenant_id, user_id);
+        let (tx, _rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        let err = svc
+            .run_stream(
+                ctx,
+                chat_id,
+                request_id,
+                "hello".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
+                cancel,
+                tx,
+            )
+            .await
+            .expect_err("should be Conflict");
+
+        match err {
+            StreamError::Conflict { code, .. } => {
+                assert_eq!(code, "request_id_conflict");
+            }
+            other => panic!("expected Conflict, got: {other:?}"),
+        }
+    }
+
+    /// 6.4: Cancelled turn with same `request_id` → Conflict (not Replay).
+    #[tokio::test]
+    async fn idempotency_cancelled_turn_returns_conflict() {
+        let db = mock_db_provider(inmem_db().await);
+        let tenant_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        insert_test_chat(&db, tenant_id, user_id, chat_id).await;
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::completed(&["hi"]));
+        let svc = build_stream_service(db.clone(), provider);
+
+        let scope = AccessScope::allow_all();
+        let conn = db.conn().unwrap();
+        let turn_repo = TurnRepo;
+        let turn = turn_repo
+            .create_turn(
+                &conn,
+                &scope,
+                CreateTurnParams {
+                    id: Uuid::new_v4(),
+                    tenant_id,
+                    chat_id,
+                    request_id,
+                    requester_type: "user".to_owned(),
+                    requester_user_id: None,
+                    reserve_tokens: None,
+                    max_output_tokens_applied: None,
+                    reserved_credits_micro: None,
+                    policy_version_applied: None,
+                    effective_model: None,
+                    minimal_generation_floor_applied: None,
+                },
+            )
+            .await
+            .expect("create turn");
+
+        turn_repo
+            .cas_update_state(
+                &conn,
+                &scope,
+                CasTerminalParams {
+                    turn_id: turn.id,
+                    state: TurnState::Cancelled,
+                    error_code: None,
+                    error_detail: None,
+                    assistant_message_id: None,
+                    provider_response_id: None,
+                },
+            )
+            .await
+            .expect("cancel turn");
+
+        let ctx = test_security_ctx_with_id(tenant_id, user_id);
+        let (tx, _rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        let err = svc
+            .run_stream(
+                ctx,
+                chat_id,
+                request_id,
+                "hello".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
+                cancel,
+                tx,
+            )
+            .await
+            .expect_err("should be Conflict");
+
+        match err {
+            StreamError::Conflict { code, .. } => {
+                assert_eq!(code, "request_id_conflict");
+            }
+            other => panic!("expected Conflict, got: {other:?}"),
+        }
     }
 
     /// 7.6: Parallel turn guard — returns Conflict when a running turn exists.
@@ -1750,6 +2181,500 @@ mod tests {
             }
             other => panic!("expected ChatNotFound, got: {other:?}"),
         }
+    }
+
+    /// 8.6: `DoneData` uses `fctx.effective_model` / `fctx.selected_model` when they differ.
+    ///
+    /// Constructs a `FinalizationCtx` with `effective_model = "gpt-4o-mini"` and
+    /// `selected_model = "gpt-4o"`, then verifies the Done SSE event reflects both.
+    #[tokio::test]
+    async fn done_data_uses_fctx_model_fields_when_they_differ() {
+        use crate::domain::service::finalization_service::FinalizationService;
+        use crate::domain::service::quota_settler::QuotaSettler;
+
+        #[allow(de0309_must_have_domain_model)]
+        struct NoopSettler;
+        #[async_trait::async_trait]
+        impl QuotaSettler for NoopSettler {
+            async fn settle_in_tx(
+                &self,
+                _tx: &modkit_db::secure::DbTx<'_>,
+                _scope: &AccessScope,
+                _input: crate::domain::model::quota::SettlementInput,
+            ) -> Result<
+                crate::domain::model::quota::SettlementOutcome,
+                crate::domain::error::DomainError,
+            > {
+                Ok(crate::domain::model::quota::SettlementOutcome {
+                    settlement_method: crate::domain::model::quota::SettlementMethod::Released,
+                    actual_credits_micro: 0,
+                    charged_tokens: 0,
+                    overshoot_capped: false,
+                })
+            }
+        }
+
+        let db = mock_db_provider(inmem_db().await);
+        let tenant_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let message_id = Uuid::new_v4();
+        insert_test_chat(&db, tenant_id, user_id, chat_id).await;
+
+        // Create a running turn in DB so that CAS finalization succeeds
+        let scope = AccessScope::allow_all();
+        let conn = db.conn().unwrap();
+        let turn_repo = TurnRepo;
+        turn_repo
+            .create_turn(
+                &conn,
+                &scope,
+                CreateTurnParams {
+                    id: turn_id,
+                    tenant_id,
+                    chat_id,
+                    request_id,
+                    requester_type: "user".to_owned(),
+                    requester_user_id: Some(user_id),
+                    reserve_tokens: Some(5000),
+                    max_output_tokens_applied: Some(4096),
+                    reserved_credits_micro: Some(250),
+                    policy_version_applied: Some(1),
+                    effective_model: Some("gpt-4o-mini".to_owned()),
+                    minimal_generation_floor_applied: Some(50),
+                },
+            )
+            .await
+            .expect("create turn");
+
+        let turn_repo_arc = Arc::new(TurnRepo);
+        let message_repo_arc = Arc::new(MsgRepo::new(modkit_db::odata::LimitCfg {
+            default: 20,
+            max: 100,
+        }));
+        let finalization_svc = Arc::new(FinalizationService::new(
+            Arc::clone(&db),
+            Arc::clone(&turn_repo_arc),
+            Arc::clone(&message_repo_arc),
+            Arc::new(NoopSettler) as Arc<dyn QuotaSettler>,
+        ));
+
+        let fctx = FinalizationCtx {
+            finalization_svc,
+            scope,
+            turn_id,
+            tenant_id,
+            chat_id,
+            request_id,
+            user_id,
+            message_id,
+            effective_model: "gpt-4o-mini".to_owned(),
+            selected_model: "gpt-4o".to_owned(),
+            reserve_tokens: 5000,
+            max_output_tokens_applied: 4096,
+            reserved_credits_micro: 250,
+            policy_version_applied: 1,
+            minimal_generation_floor_applied: 50,
+            quota_decision: "downgrade".to_owned(),
+            downgrade_from: Some("gpt-4o".to_owned()),
+            downgrade_reason: Some("premium_exhausted".to_owned()),
+            period_starts: Vec::new(),
+        };
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::completed(&["Hello"]));
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(32);
+        let cancel = CancellationToken::new();
+
+        let handle = spawn_provider_task(
+            provider,
+            "test-alias".to_owned(),
+            mock_ctx(),
+            "hi".into(),
+            "gpt-4o-mini".into(), // effective_model passed as the model param
+            4096,
+            cancel,
+            tx,
+            Some(fctx),
+        );
+
+        // Collect events
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let is_term = ev.is_terminal();
+            events.push(ev);
+            if is_term {
+                break;
+            }
+        }
+
+        let _outcome = handle.await.expect("task should complete");
+
+        // Find the Done event and verify model fields
+        let done = events
+            .iter()
+            .find_map(|ev| match ev {
+                StreamEvent::Done(d) => Some(d),
+                _ => None,
+            })
+            .expect("should have a Done event");
+
+        assert_eq!(
+            done.effective_model, "gpt-4o-mini",
+            "effective_model should be the downgraded model"
+        );
+        assert_eq!(
+            done.selected_model, "gpt-4o",
+            "selected_model should be the user's original choice"
+        );
+        assert_eq!(done.quota_decision, "downgrade");
+        assert_eq!(done.downgrade_from.as_deref(), Some("gpt-4o"));
+        assert_eq!(done.downgrade_reason.as_deref(), Some("premium_exhausted"));
+    }
+
+    // ── Preflight wiring tests (11.x) ──
+
+    fn make_catalog_entry(
+        id: &str,
+        tier: mini_chat_sdk::ModelTier,
+    ) -> mini_chat_sdk::ModelCatalogEntry {
+        mini_chat_sdk::ModelCatalogEntry {
+            model_id: id.to_owned(),
+            display_name: id.to_owned(),
+            tier,
+            global_enabled: true,
+            is_default: tier == mini_chat_sdk::ModelTier::Standard,
+            input_tokens_credit_multiplier_micro: 1_000_000,
+            output_tokens_credit_multiplier_micro: 1_000_000,
+            multimodal_capabilities: vec![],
+            context_window: 128_000,
+            max_output_tokens: 4096,
+            description: String::new(),
+            provider_display_name: String::new(),
+            multiplier_display: "1x".to_owned(),
+            provider_id: "openai".to_owned(),
+        }
+    }
+
+    fn build_stream_service_with_catalog(
+        db: Arc<DbProvider>,
+        provider: Arc<dyn LlmProvider>,
+        catalog: Vec<mini_chat_sdk::ModelCatalogEntry>,
+        limits: mini_chat_sdk::UserLimits,
+    ) -> StreamService<TurnRepo, MsgRepo, OrmQuotaUsageRepo, OrmChatRepo> {
+        use crate::domain::service::finalization_service::FinalizationService;
+        use crate::domain::service::quota_settler::QuotaSettler;
+
+        #[allow(de0309_must_have_domain_model)]
+        struct MockQuotaSettler;
+        #[async_trait::async_trait]
+        impl QuotaSettler for MockQuotaSettler {
+            async fn settle_in_tx(
+                &self,
+                _tx: &modkit_db::secure::DbTx<'_>,
+                _scope: &AccessScope,
+                _input: crate::domain::model::quota::SettlementInput,
+            ) -> Result<
+                crate::domain::model::quota::SettlementOutcome,
+                crate::domain::error::DomainError,
+            > {
+                Ok(crate::domain::model::quota::SettlementOutcome {
+                    settlement_method: crate::domain::model::quota::SettlementMethod::Released,
+                    actual_credits_micro: 0,
+                    charged_tokens: 0,
+                    overshoot_capped: false,
+                })
+            }
+        }
+
+        let provider_resolver = Arc::new(ProviderResolver::single_provider(provider));
+        let turn_repo = Arc::new(TurnRepo);
+        let message_repo = Arc::new(MsgRepo::new(modkit_db::odata::LimitCfg {
+            default: 20,
+            max: 100,
+        }));
+        let finalization = Arc::new(FinalizationService::new(
+            Arc::clone(&db),
+            Arc::clone(&turn_repo),
+            Arc::clone(&message_repo),
+            Arc::new(MockQuotaSettler) as Arc<dyn QuotaSettler>,
+        ));
+
+        let quota_svc = Arc::new(crate::domain::service::QuotaService::new(
+            Arc::clone(&db),
+            Arc::new(OrmQuotaUsageRepo),
+            Arc::new(MockPolicySnapshotProvider::new(
+                mini_chat_sdk::PolicySnapshot {
+                    user_id: Uuid::nil(),
+                    policy_version: 1,
+                    model_catalog: catalog,
+                    kill_switches: mini_chat_sdk::KillSwitches::default(),
+                },
+            )),
+            Arc::new(MockUserLimitsProvider::new(limits)),
+            crate::config::EstimationBudgets::default(),
+            crate::config::QuotaConfig {
+                overshoot_tolerance_factor: 1.10,
+            },
+        ));
+
+        StreamService::new(
+            db,
+            turn_repo,
+            message_repo,
+            Arc::new(OrmChatRepo::new(modkit_db::odata::LimitCfg {
+                default: 20,
+                max: 100,
+            })),
+            mock_enforcer(),
+            provider_resolver,
+            crate::config::StreamingConfig::default(),
+            finalization,
+            quota_svc,
+        )
+    }
+
+    fn permissive_limits() -> mini_chat_sdk::UserLimits {
+        mini_chat_sdk::UserLimits {
+            user_id: Uuid::nil(),
+            policy_version: 1,
+            standard: mini_chat_sdk::TierLimits {
+                limit_daily_credits_micro: 100_000_000,
+                limit_monthly_credits_micro: 1_000_000_000,
+            },
+            premium: mini_chat_sdk::TierLimits {
+                limit_daily_credits_micro: 50_000_000,
+                limit_monthly_credits_micro: 500_000_000,
+            },
+        }
+    }
+
+    /// 11.1: Allow path populates `FinalizationCtx` with real quota fields.
+    #[tokio::test]
+    async fn preflight_allow_populates_real_quota_fields() {
+        let db = mock_db_provider(inmem_db().await);
+        let tenant_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        insert_test_chat(&db, tenant_id, user_id, chat_id).await;
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::completed(&["Hello"]));
+        let catalog = vec![make_catalog_entry(
+            "gpt-5.2",
+            mini_chat_sdk::ModelTier::Standard,
+        )];
+        let svc =
+            build_stream_service_with_catalog(db.clone(), provider, catalog, permissive_limits());
+
+        let ctx = test_security_ctx_with_id(tenant_id, user_id);
+        let (tx, mut rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        let handle = svc
+            .run_stream(
+                ctx,
+                chat_id,
+                Uuid::new_v4(),
+                "hello".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
+                cancel,
+                tx,
+            )
+            .await
+            .expect("should succeed");
+
+        // Drain events
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let is_term = ev.is_terminal();
+            events.push(ev);
+            if is_term {
+                break;
+            }
+        }
+
+        let _outcome = handle.await.expect("task should complete");
+
+        // Verify Done event has allow quota_decision
+        let done = events
+            .iter()
+            .find_map(|ev| match ev {
+                StreamEvent::Done(d) => Some(d),
+                _ => None,
+            })
+            .expect("should have a Done event");
+
+        assert_eq!(done.quota_decision, "allow");
+        assert_eq!(done.effective_model, "gpt-5.2");
+        assert_eq!(done.selected_model, "gpt-5.2");
+        assert!(done.downgrade_from.is_none());
+
+        // Verify turn was created with real quota fields (not placeholder 1_000_000)
+        let scope = AccessScope::allow_all().tenant_only();
+        let conn = db.conn().unwrap();
+        let turn_repo = TurnRepo;
+        let turn = turn_repo
+            .find_latest_turn(&conn, &scope, chat_id)
+            .await
+            .expect("find turn")
+            .expect("turn should exist");
+
+        assert!(
+            turn.reserve_tokens.unwrap() < 1_000_000,
+            "reserve_tokens should be from real preflight, not placeholder 1_000_000"
+        );
+        assert!(
+            turn.reserved_credits_micro.unwrap() > 0,
+            "reserved_credits_micro should be from real preflight, not placeholder 0"
+        );
+    }
+
+    /// 11.3: Reject path returns `StreamError::QuotaExhausted`.
+    #[tokio::test]
+    async fn preflight_reject_returns_quota_exhausted() {
+        let db = mock_db_provider(inmem_db().await);
+        let tenant_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        insert_test_chat(&db, tenant_id, user_id, chat_id).await;
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::completed(&["Hello"]));
+        // Exhausted limits: 0 credits for all tiers
+        let limits = mini_chat_sdk::UserLimits {
+            user_id: Uuid::nil(),
+            policy_version: 1,
+            standard: mini_chat_sdk::TierLimits {
+                limit_daily_credits_micro: 0,
+                limit_monthly_credits_micro: 0,
+            },
+            premium: mini_chat_sdk::TierLimits {
+                limit_daily_credits_micro: 0,
+                limit_monthly_credits_micro: 0,
+            },
+        };
+        let catalog = vec![make_catalog_entry(
+            "gpt-5.2",
+            mini_chat_sdk::ModelTier::Standard,
+        )];
+        let svc = build_stream_service_with_catalog(db, provider, catalog, limits);
+
+        let ctx = test_security_ctx_with_id(tenant_id, user_id);
+        let (tx, _rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        let err = svc
+            .run_stream(
+                ctx,
+                chat_id,
+                Uuid::new_v4(),
+                "hello".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
+                cancel,
+                tx,
+            )
+            .await
+            .expect_err("should be QuotaExhausted");
+
+        match err {
+            StreamError::QuotaExhausted {
+                error_code,
+                http_status,
+            } => {
+                assert_eq!(http_status, 429);
+                assert!(!error_code.is_empty());
+            }
+            other => panic!("expected QuotaExhausted, got: {other:?}"),
+        }
+    }
+
+    /// 11.2: Downgrade path sets `effective_model` != `selected_model`.
+    #[tokio::test]
+    async fn preflight_downgrade_sets_correct_model_fields() {
+        let db = mock_db_provider(inmem_db().await);
+        let tenant_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        insert_test_chat(&db, tenant_id, user_id, chat_id).await;
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::completed(&["Hello"]));
+        // Catalog with premium model "gpt-5" and standard fallback "gpt-5-mini"
+        let catalog = vec![
+            make_catalog_entry("gpt-5", mini_chat_sdk::ModelTier::Premium),
+            make_catalog_entry("gpt-5-mini", mini_chat_sdk::ModelTier::Standard),
+        ];
+        // Premium limits are 0 → forces downgrade to standard
+        let limits = mini_chat_sdk::UserLimits {
+            user_id: Uuid::nil(),
+            policy_version: 1,
+            standard: mini_chat_sdk::TierLimits {
+                limit_daily_credits_micro: 100_000_000,
+                limit_monthly_credits_micro: 1_000_000_000,
+            },
+            premium: mini_chat_sdk::TierLimits {
+                limit_daily_credits_micro: 0,
+                limit_monthly_credits_micro: 0,
+            },
+        };
+        let svc = build_stream_service_with_catalog(db, provider, catalog, limits);
+
+        let ctx = test_security_ctx_with_id(tenant_id, user_id);
+        let (tx, mut rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        let handle = svc
+            .run_stream(
+                ctx,
+                chat_id,
+                Uuid::new_v4(),
+                "hello".into(),
+                ResolvedModel {
+                    model_id: "gpt-5".into(),
+                    provider_id: "openai".into(),
+                },
+                cancel,
+                tx,
+            )
+            .await
+            .expect("should succeed (downgrade, not reject)");
+
+        // Drain events
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let is_term = ev.is_terminal();
+            events.push(ev);
+            if is_term {
+                break;
+            }
+        }
+
+        let _outcome = handle.await.expect("task should complete");
+
+        // Verify Done event reflects downgrade
+        let done = events
+            .iter()
+            .find_map(|ev| match ev {
+                StreamEvent::Done(d) => Some(d),
+                _ => None,
+            })
+            .expect("should have a Done event");
+
+        assert_eq!(done.quota_decision, "downgrade");
+        assert_eq!(
+            done.effective_model, "gpt-5-mini",
+            "should be downgraded model"
+        );
+        assert_eq!(
+            done.selected_model, "gpt-5",
+            "should be original selected model"
+        );
+        assert_eq!(done.downgrade_from.as_deref(), Some("gpt-5"));
     }
 
     /// Non-existent chat returns `ChatNotFound`.

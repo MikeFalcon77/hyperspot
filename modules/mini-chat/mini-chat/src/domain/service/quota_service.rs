@@ -37,7 +37,7 @@ use super::DbProvider;
 #[domain_model]
 pub struct QuotaService<QR: QuotaUsageRepository> {
     db: Arc<DbProvider>,
-    repo: Arc<QR>,
+    pub(crate) repo: Arc<QR>,
     policy_provider: Arc<dyn PolicySnapshotProvider>,
     limits_provider: Arc<dyn UserLimitsProvider>,
     estimation_budgets: EstimationBudgets,
@@ -227,14 +227,31 @@ fn to_db(e: DomainError) -> modkit_db::DbError {
     modkit_db::DbError::Other(anyhow::anyhow!(e))
 }
 
-// ── preflight_reserve ──
+// ── PreflightComputed ──
+
+/// Intermediate result from `preflight_evaluate()`.
+/// Contains the decision and all data needed for `preflight_write_reserve()`.
+#[domain_model]
+#[derive(Debug, Clone)]
+pub struct PreflightComputed {
+    pub decision: PreflightDecision,
+    pub(crate) buckets: Vec<String>,
+    pub(crate) reserved_credits_micro: i64,
+    pub(crate) periods: Vec<(PeriodType, time::Date)>,
+    pub(crate) tenant_id: uuid::Uuid,
+    pub(crate) user_id: uuid::Uuid,
+}
+
+// ── preflight_evaluate + preflight_write_reserve ──
 
 impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
-    pub async fn preflight_reserve(
+    /// Evaluate preflight: external I/O, token estimation, cascade decision.
+    /// Does NOT write reserves — call `preflight_write_reserve` in the caller's transaction.
+    pub async fn preflight_evaluate(
         &self,
         input: PreflightInput,
-    ) -> Result<PreflightDecision, DomainError> {
-        // 1. Resolve policy
+    ) -> Result<PreflightComputed, DomainError> {
+        // 1. Resolve policy (external I/O)
         let policy_version = self
             .policy_provider
             .get_current_version(input.user_id)
@@ -255,12 +272,11 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                 num_images: input.num_images,
                 tools_enabled: input.tools_enabled,
                 web_search_enabled: input.web_search_enabled,
-                max_output_tokens: input.max_output_tokens,
             },
             &self.estimation_budgets,
         );
 
-        // 3. Find selected model's multipliers for initial reserve computation
+        // 3. Find selected model's multipliers for conservative initial reserve
         let catalog_entry = snapshot
             .model_catalog
             .iter()
@@ -276,10 +292,10 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
             },
         );
 
-        // 4. Compute reserve credits
+        // 4. Conservative initial reserve using config cap (pre-cascade)
         let initial_reserved = credits_micro_checked(
             estimation.estimated_input_tokens,
-            u64::from(input.max_output_tokens),
+            u64::from(input.max_output_tokens_cap),
             in_mult,
             out_mult,
         )
@@ -292,12 +308,12 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
             .map_err(|e| DomainError::internal(e.to_string()))?;
         let periods = vec![(PeriodType::Daily, now), (PeriodType::Monthly, month_start)];
 
-        // 6. Transaction: lock rows, cascade, reserve
+        // 6. Read-only transaction: lock rows, run cascade
         let repo = Arc::clone(&self.repo);
         let tenant_id = input.tenant_id;
         let user_id = input.user_id;
         let selected_model = input.selected_model.clone();
-        let max_output_tokens = input.max_output_tokens;
+        let max_output_tokens_cap = input.max_output_tokens_cap;
         let estimation_budgets = self.estimation_budgets;
 
         let tx_result = self
@@ -338,10 +354,17 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                     let decision = Self::resolve_effective_model(&selected_model, &cascade_ctx);
 
                     match decision {
-                        CascadeDecision::Reject => Ok(PreflightDecision::Reject {
-                            error_code: "quota_exceeded".to_owned(),
-                            http_status: 429,
-                            quota_scope: "tokens".to_owned(),
+                        CascadeDecision::Reject => Ok(PreflightComputed {
+                            decision: PreflightDecision::Reject {
+                                error_code: "quota_exceeded".to_owned(),
+                                http_status: 429,
+                                quota_scope: "tokens".to_owned(),
+                            },
+                            buckets: vec![],
+                            reserved_credits_micro: 0,
+                            periods: periods.clone(),
+                            tenant_id,
+                            user_id,
                         }),
                         CascadeDecision::Allow {
                             ref effective_model,
@@ -354,73 +377,58 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                         } => {
                             let effective_model = effective_model.clone();
 
-                            // Recompute credits if downgraded
-                            let final_reserved = if effective_model == selected_model {
-                                initial_reserved
-                            } else {
-                                let eff_entry = snapshot
-                                    .model_catalog
-                                    .iter()
-                                    .find(|m| m.model_id == effective_model)
-                                    .ok_or_else(|| {
-                                        to_db(DomainError::internal(
-                                            "effective model not in catalog",
-                                        ))
-                                    })?;
-                                credits_micro_checked(
-                                    estimation.estimated_input_tokens,
-                                    max_output_tokens as u64,
-                                    eff_entry.input_tokens_credit_multiplier_micro,
-                                    eff_entry.output_tokens_credit_multiplier_micro,
-                                )
-                                .map_err(|e| to_db(DomainError::internal(e.to_string())))?
-                            };
+                            // Look up effective model's catalog entry for per-model max_output
+                            let eff_entry = snapshot
+                                .model_catalog
+                                .iter()
+                                .find(|m| m.model_id == effective_model)
+                                .ok_or_else(|| {
+                                    to_db(DomainError::internal("effective model not in catalog"))
+                                })?;
 
-                            let buckets: Vec<&str> = match tier {
-                                ModelTier::Premium => vec!["total", "tier:premium"],
-                                ModelTier::Standard => vec!["total"],
-                            };
+                            // Resolve per-model max_output_tokens: min(catalog, config cap)
+                            let max_output_tokens_applied =
+                                std::cmp::min(eff_entry.max_output_tokens, max_output_tokens_cap);
 
-                            use crate::domain::repos::IncrementReserveParams;
-                            for bucket in &buckets {
-                                for (period_type, period_start) in &periods {
-                                    repo.increment_reserve(
-                                        tx,
-                                        &scope,
-                                        IncrementReserveParams {
-                                            tenant_id,
-                                            user_id,
-                                            period_type: period_type.clone(),
-                                            period_start: *period_start,
-                                            bucket: (*bucket).to_owned(),
-                                            amount_micro: final_reserved,
-                                        },
-                                    )
-                                    .await
-                                    .map_err(to_db)?;
+                            // Recompute credits with effective model's multipliers and resolved max_output
+                            let final_reserved = credits_micro_checked(
+                                estimation.estimated_input_tokens,
+                                max_output_tokens_applied as u64,
+                                eff_entry.input_tokens_credit_multiplier_micro,
+                                eff_entry.output_tokens_credit_multiplier_micro,
+                            )
+                            .map_err(|e| to_db(DomainError::internal(e.to_string())))?;
+
+                            let buckets: Vec<String> = match tier {
+                                ModelTier::Premium => {
+                                    vec!["total".to_owned(), "tier:premium".to_owned()]
                                 }
-                            }
+                                ModelTier::Standard => vec!["total".to_owned()],
+                            };
 
-                            let reserve_tokens = estimation.reserve_tokens as i64;
-                            let max_output_tokens_applied = max_output_tokens as i32;
+                            let reserve_tokens = estimation
+                                .estimated_input_tokens
+                                .saturating_add(max_output_tokens_applied as u64)
+                                as i64;
+                            let max_output_tokens_applied = max_output_tokens_applied as i32;
                             let policy_version_applied = policy_version as i64;
                             let minimal_generation_floor_applied =
                                 estimation_budgets.minimal_generation_floor as i32;
 
-                            match decision {
-                                CascadeDecision::Allow { .. } => Ok(PreflightDecision::Allow {
+                            let preflight_decision = match decision {
+                                CascadeDecision::Allow { .. } => PreflightDecision::Allow {
                                     effective_model,
                                     reserve_tokens,
                                     max_output_tokens_applied,
                                     reserved_credits_micro: final_reserved,
                                     policy_version_applied,
                                     minimal_generation_floor_applied,
-                                }),
+                                },
                                 CascadeDecision::Downgrade {
                                     downgrade_from,
                                     reason,
                                     ..
-                                } => Ok(PreflightDecision::Downgrade {
+                                } => PreflightDecision::Downgrade {
                                     effective_model,
                                     reserve_tokens,
                                     max_output_tokens_applied,
@@ -429,9 +437,18 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                                     minimal_generation_floor_applied,
                                     downgrade_from,
                                     downgrade_reason: reason,
-                                }),
+                                },
                                 CascadeDecision::Reject => unreachable!(),
-                            }
+                            };
+
+                            Ok(PreflightComputed {
+                                decision: preflight_decision,
+                                buckets,
+                                reserved_credits_micro: final_reserved,
+                                periods: periods.clone(),
+                                tenant_id,
+                                user_id,
+                            })
                         }
                     }
                 })
@@ -439,6 +456,96 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
             .await;
 
         tx_result.map_err(DomainError::from)
+    }
+
+    /// Write the reserve increments. Call inside the caller's transaction
+    /// alongside turn/message creation for atomicity.
+    pub async fn preflight_write_reserve(
+        &self,
+        runner: &impl DBRunner,
+        computed: &PreflightComputed,
+    ) -> Result<(), DomainError> {
+        // No-op for Reject decisions
+        if computed.buckets.is_empty() {
+            return Ok(());
+        }
+
+        let scope = AccessScope::for_tenant(computed.tenant_id);
+
+        use crate::domain::repos::IncrementReserveParams;
+        for bucket in &computed.buckets {
+            for (period_type, period_start) in &computed.periods {
+                self.repo
+                    .increment_reserve(
+                        runner,
+                        &scope,
+                        IncrementReserveParams {
+                            tenant_id: computed.tenant_id,
+                            user_id: computed.user_id,
+                            period_type: period_type.clone(),
+                            period_start: *period_start,
+                            bucket: bucket.clone(),
+                            amount_micro: computed.reserved_credits_micro,
+                        },
+                    )
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Combined evaluate + write for backward compatibility.
+    /// Delegates to `preflight_evaluate` + `preflight_write_reserve`.
+    pub async fn preflight_reserve(
+        &self,
+        input: PreflightInput,
+    ) -> Result<PreflightDecision, DomainError> {
+        let computed = self.preflight_evaluate(input).await?;
+
+        // Write reserve in its own transaction (legacy behavior)
+        let repo = Arc::clone(&self.repo);
+        let buckets = computed.buckets.clone();
+        let reserved_credits_micro = computed.reserved_credits_micro;
+        let periods = computed.periods.clone();
+        let tenant_id = computed.tenant_id;
+        let user_id = computed.user_id;
+
+        if !buckets.is_empty() {
+            self.db
+                .transaction(|tx| {
+                    let buckets = buckets.clone();
+                    let periods = periods.clone();
+                    Box::pin(async move {
+                        let scope = AccessScope::for_tenant(tenant_id);
+
+                        use crate::domain::repos::IncrementReserveParams;
+                        for bucket in &buckets {
+                            for (period_type, period_start) in &periods {
+                                repo.increment_reserve(
+                                    tx,
+                                    &scope,
+                                    IncrementReserveParams {
+                                        tenant_id,
+                                        user_id,
+                                        period_type: period_type.clone(),
+                                        period_start: *period_start,
+                                        bucket: bucket.clone(),
+                                        amount_micro: reserved_credits_micro,
+                                    },
+                                )
+                                .await
+                                .map_err(to_db)?;
+                            }
+                        }
+                        Ok(())
+                    })
+                })
+                .await
+                .map_err(DomainError::from)?;
+        }
+
+        Ok(computed.decision)
     }
 }
 
@@ -1367,7 +1474,7 @@ mod tests {
             num_images: 0,
             tools_enabled: false,
             web_search_enabled: false,
-            max_output_tokens: 1000,
+            max_output_tokens_cap: 4096,
         }
     }
 
@@ -1393,12 +1500,95 @@ mod tests {
             } => {
                 assert_eq!(effective_model, "gpt-5");
                 assert!(reserve_tokens > 0);
-                assert_eq!(max_output_tokens_applied, 1000);
+                assert_eq!(max_output_tokens_applied, 4096);
                 assert!(reserved_credits_micro > 0);
                 assert_eq!(policy_version_applied, 1);
                 assert!(minimal_generation_floor_applied > 0);
             }
             other => panic!("expected Allow, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_max_output_tokens_capped_by_model_catalog() {
+        // Task 3.7: model max_output_tokens=4096, config cap=32768 → applied=4096
+        let db_raw = inmem_db().await;
+        let db = mock_db_provider(db_raw);
+        let snapshot = default_snapshot(); // catalog has max_output_tokens: 4096
+        let svc = make_test_service(Arc::clone(&db), snapshot, 1.10);
+
+        let mut input = preflight_input("gpt-5");
+        input.max_output_tokens_cap = 32768; // config cap much larger than model
+
+        let result = svc.preflight_reserve(input).await.unwrap();
+        match result {
+            PreflightDecision::Allow {
+                max_output_tokens_applied,
+                ..
+            } => {
+                assert_eq!(max_output_tokens_applied, 4096); // model's value wins
+            }
+            other => panic!("expected Allow, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_max_output_tokens_capped_by_config() {
+        // Task 3.8: model max_output_tokens=65536, config cap=32768 → applied=32768
+        let db_raw = inmem_db().await;
+        let db = mock_db_provider(db_raw);
+        let mut snapshot = default_snapshot();
+        for entry in &mut snapshot.model_catalog {
+            entry.max_output_tokens = 65536;
+        }
+        let svc = make_test_service(Arc::clone(&db), snapshot, 1.10);
+
+        let mut input = preflight_input("gpt-5");
+        input.max_output_tokens_cap = 32768;
+
+        let result = svc.preflight_reserve(input).await.unwrap();
+        match result {
+            PreflightDecision::Allow {
+                max_output_tokens_applied,
+                ..
+            } => {
+                assert_eq!(max_output_tokens_applied, 32768); // config cap wins
+            }
+            other => panic!("expected Allow, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_downgrade_uses_effective_model_max_output() {
+        // Task 3.9: downgrade to model with different max_output_tokens
+        let db_raw = inmem_db().await;
+        let db = mock_db_provider(db_raw);
+        let mut snapshot = default_snapshot();
+        // Premium model: max_output_tokens=8192, Standard: max_output_tokens=2048
+        for entry in &mut snapshot.model_catalog {
+            if entry.tier == ModelTier::Premium {
+                entry.max_output_tokens = 8192;
+            } else {
+                entry.max_output_tokens = 2048;
+            }
+        }
+        snapshot.kill_switches.force_standard_tier = true; // force downgrade
+        let svc = make_test_service(Arc::clone(&db), snapshot, 1.10);
+
+        let mut input = preflight_input("gpt-5");
+        input.max_output_tokens_cap = 32768;
+
+        let result = svc.preflight_reserve(input).await.unwrap();
+        match result {
+            PreflightDecision::Downgrade {
+                max_output_tokens_applied,
+                effective_model,
+                ..
+            } => {
+                assert_eq!(effective_model, "gpt-5-mini");
+                assert_eq!(max_output_tokens_applied, 2048); // standard model's value
+            }
+            other => panic!("expected Downgrade, got {other:?}"),
         }
     }
 
@@ -1531,6 +1721,92 @@ mod tests {
         assert!(
             !rows.iter().any(|r| r.bucket == "tier:premium"),
             "tier:premium should NOT be reserved"
+        );
+    }
+
+    // ── preflight_evaluate / preflight_write_reserve tests ──
+
+    #[tokio::test]
+    async fn preflight_evaluate_returns_decision_without_writing() {
+        let db_raw = inmem_db().await;
+        let db = mock_db_provider(db_raw);
+        let snapshot = default_snapshot();
+        let svc = make_test_service(Arc::clone(&db), snapshot, 1.10);
+
+        let computed = svc
+            .preflight_evaluate(preflight_input("gpt-5"))
+            .await
+            .unwrap();
+        assert!(matches!(computed.decision, PreflightDecision::Allow { .. }));
+
+        // Verify NO rows were written to quota_usage
+        let conn = db.conn().unwrap();
+        let scope = AccessScope::for_tenant(Uuid::nil());
+        use crate::domain::repos::QuotaUsageRepository as QURepo;
+        let repo = QuotaUsageRepo;
+        let rows = repo
+            .find_bucket_rows(&conn, &scope, Uuid::nil(), Uuid::nil())
+            .await
+            .unwrap();
+        assert!(rows.is_empty(), "evaluate must not write quota_usage rows");
+    }
+
+    #[tokio::test]
+    async fn preflight_write_reserve_increments_buckets() {
+        let db_raw = inmem_db().await;
+        let db = mock_db_provider(db_raw);
+        let snapshot = default_snapshot();
+        let svc = make_test_service(Arc::clone(&db), snapshot, 1.10);
+
+        let computed = svc
+            .preflight_evaluate(preflight_input("gpt-5"))
+            .await
+            .unwrap();
+
+        // Write inside a transaction
+        db.transaction(|tx| {
+            let svc_repo = Arc::new(QuotaUsageRepo);
+            let computed = computed.clone();
+            Box::pin(async move {
+                let scope = AccessScope::for_tenant(computed.tenant_id);
+                use crate::domain::repos::IncrementReserveParams;
+                for bucket in &computed.buckets {
+                    for (period_type, period_start) in &computed.periods {
+                        svc_repo
+                            .increment_reserve(
+                                tx,
+                                &scope,
+                                IncrementReserveParams {
+                                    tenant_id: computed.tenant_id,
+                                    user_id: computed.user_id,
+                                    period_type: period_type.clone(),
+                                    period_start: *period_start,
+                                    bucket: bucket.clone(),
+                                    amount_micro: computed.reserved_credits_micro,
+                                },
+                            )
+                            .await
+                            .map_err(to_db)?;
+                    }
+                }
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+
+        // Verify rows WERE written
+        let conn = db.conn().unwrap();
+        let scope = AccessScope::for_tenant(Uuid::nil());
+        use crate::domain::repos::QuotaUsageRepository as QURepo;
+        let repo = QuotaUsageRepo;
+        let rows = repo
+            .find_bucket_rows(&conn, &scope, Uuid::nil(), Uuid::nil())
+            .await
+            .unwrap();
+        assert!(
+            rows.iter().any(|r| r.reserved_credits_micro > 0),
+            "write_reserve should have incremented quota_usage"
         );
     }
 

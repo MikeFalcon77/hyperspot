@@ -111,6 +111,11 @@ pub struct StreamingConfig {
     /// Valid range: 5–60 (default 15).
     #[serde(default = "default_ping_interval")]
     pub sse_ping_interval_seconds: u16,
+
+    /// Maximum output tokens sent to the preflight reserve.
+    /// Default 32768 (matching common model limits).
+    #[serde(default = "default_max_output_tokens")]
+    pub max_output_tokens: u32,
 }
 
 impl Default for StreamingConfig {
@@ -118,8 +123,13 @@ impl Default for StreamingConfig {
         Self {
             sse_channel_capacity: default_channel_capacity(),
             sse_ping_interval_seconds: default_ping_interval(),
+            max_output_tokens: default_max_output_tokens(),
         }
     }
+}
+
+fn default_max_output_tokens() -> u32 {
+    32_768
 }
 
 impl StreamingConfig {

@@ -83,7 +83,7 @@ pub struct PreflightInput {
     pub num_images: u32,
     pub tools_enabled: bool,
     pub web_search_enabled: bool,
-    pub max_output_tokens: u32,
+    pub max_output_tokens_cap: u32,
 }
 
 /// Input to `settle()`.
