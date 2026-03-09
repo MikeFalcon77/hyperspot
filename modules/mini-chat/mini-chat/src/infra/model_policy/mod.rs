@@ -100,8 +100,8 @@ impl ModelResolver for ModelPolicyGateway {
                 let default = snapshot
                     .model_catalog
                     .iter()
-                    .find(|m| m.is_default && m.global_enabled)
-                    .or_else(|| snapshot.model_catalog.iter().find(|m| m.global_enabled));
+                    .find(|m| m.preference.is_default && m.enabled)
+                    .or_else(|| snapshot.model_catalog.iter().find(|m| m.enabled));
 
                 match default {
                     Some(entry) => Ok(ResolvedModel::from(entry)),
@@ -115,7 +115,7 @@ impl ModelResolver for ModelPolicyGateway {
                 let entry = snapshot
                     .model_catalog
                     .iter()
-                    .find(|m| m.model_id == model && m.global_enabled);
+                    .find(|m| m.model_id == model && m.enabled);
 
                 match entry {
                     Some(e) => Ok(ResolvedModel::from(e)),
@@ -131,7 +131,7 @@ impl ModelResolver for ModelPolicyGateway {
         Ok(snapshot
             .model_catalog
             .iter()
-            .filter(|m| m.global_enabled)
+            .filter(|m| m.enabled)
             .map(ResolvedModel::from)
             .collect())
     }
@@ -146,7 +146,7 @@ impl ModelResolver for ModelPolicyGateway {
         snapshot
             .model_catalog
             .iter()
-            .find(|m| m.model_id == model_id && m.global_enabled)
+            .find(|m| m.model_id == model_id && m.enabled)
             .map(ResolvedModel::from)
             .ok_or_else(|| DomainError::model_not_found(model_id))
     }

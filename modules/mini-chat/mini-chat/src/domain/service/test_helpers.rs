@@ -136,12 +136,12 @@ impl MockModelResolver {
 impl Default for MockModelResolver {
     fn default() -> Self {
         Self::new(vec![
-            ModelCatalogEntry {
+            test_catalog_entry(TestCatalogEntryParams {
                 model_id: "gpt-5.2".to_owned(),
                 provider_model_id: "gpt-5.2-2025-03-26".to_owned(),
                 display_name: "GPT-5.2".to_owned(),
                 tier: mini_chat_sdk::ModelTier::Premium,
-                global_enabled: true,
+                enabled: true,
                 is_default: true,
                 input_tokens_credit_multiplier_micro: 2_000_000,
                 output_tokens_credit_multiplier_micro: 6_000_000,
@@ -152,13 +152,13 @@ impl Default for MockModelResolver {
                 provider_display_name: "OpenAI".to_owned(),
                 multiplier_display: "2x".to_owned(),
                 provider_id: "openai".to_owned(),
-            },
-            ModelCatalogEntry {
+            }),
+            test_catalog_entry(TestCatalogEntryParams {
                 model_id: "gpt-5-mini".to_owned(),
                 provider_model_id: "gpt-5-mini-2025-03-26".to_owned(),
                 display_name: "GPT-5 Mini".to_owned(),
                 tier: mini_chat_sdk::ModelTier::Standard,
-                global_enabled: false,
+                enabled: false,
                 is_default: false,
                 input_tokens_credit_multiplier_micro: 1_000_000,
                 output_tokens_credit_multiplier_micro: 3_000_000,
@@ -169,7 +169,7 @@ impl Default for MockModelResolver {
                 provider_display_name: "OpenAI".to_owned(),
                 multiplier_display: "1x".to_owned(),
                 provider_id: "openai".to_owned(),
-            },
+            }),
         ])
     }
 }
@@ -186,8 +186,8 @@ impl ModelResolver for MockModelResolver {
             None => {
                 let default = catalog
                     .iter()
-                    .find(|m| m.is_default && m.global_enabled)
-                    .or_else(|| catalog.iter().find(|m| m.global_enabled));
+                    .find(|m| m.preference.is_default && m.enabled)
+                    .or_else(|| catalog.iter().find(|m| m.enabled));
                 match default {
                     Some(e) => Ok(ResolvedModel::from(e)),
                     None => Err(DomainError::invalid_model("no models available in catalog")),
@@ -195,7 +195,7 @@ impl ModelResolver for MockModelResolver {
             }
             Some(m) if m.is_empty() => Err(DomainError::invalid_model("model must not be empty")),
             Some(m) => {
-                let entry = catalog.iter().find(|e| e.model_id == m && e.global_enabled);
+                let entry = catalog.iter().find(|e| e.model_id == m && e.enabled);
                 match entry {
                     Some(e) => Ok(ResolvedModel::from(e)),
                     None => Err(DomainError::invalid_model(&m)),
@@ -208,7 +208,7 @@ impl ModelResolver for MockModelResolver {
         let catalog = self.catalog.lock().unwrap();
         Ok(catalog
             .iter()
-            .filter(|m| m.global_enabled)
+            .filter(|m| m.enabled)
             .map(ResolvedModel::from)
             .collect())
     }
@@ -221,7 +221,7 @@ impl ModelResolver for MockModelResolver {
         let catalog = self.catalog.lock().unwrap();
         catalog
             .iter()
-            .find(|m| m.model_id == model_id && m.global_enabled)
+            .find(|m| m.model_id == model_id && m.enabled)
             .map(ResolvedModel::from)
             .ok_or_else(|| DomainError::model_not_found(model_id))
     }
@@ -311,6 +311,130 @@ pub fn mock_db_provider(db: Db) -> Arc<DBProvider<modkit_db::DbError>> {
 // ── Mock Policy Snapshot Provider ──
 
 use mini_chat_sdk::{PolicySnapshot, UserLimits};
+
+/// Parameters for building a test [`ModelCatalogEntry`].
+pub struct TestCatalogEntryParams {
+    pub model_id: String,
+    pub provider_model_id: String,
+    pub display_name: String,
+    pub tier: mini_chat_sdk::ModelTier,
+    pub enabled: bool,
+    pub is_default: bool,
+    pub input_tokens_credit_multiplier_micro: u64,
+    pub output_tokens_credit_multiplier_micro: u64,
+    pub multimodal_capabilities: Vec<String>,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+    pub description: String,
+    pub provider_display_name: String,
+    pub multiplier_display: String,
+    pub provider_id: String,
+}
+
+/// Build a [`ModelCatalogEntry`] for tests, filling in new required fields with defaults.
+#[allow(clippy::cast_precision_loss)]
+pub fn test_catalog_entry(params: TestCatalogEntryParams) -> ModelCatalogEntry {
+    use mini_chat_sdk::models::*;
+    use time::OffsetDateTime;
+
+    let tier_str = match params.tier {
+        mini_chat_sdk::ModelTier::Premium => "premium",
+        mini_chat_sdk::ModelTier::Standard => "standard",
+    };
+    let input_mult = params.input_tokens_credit_multiplier_micro as f64 / 1_000_000.0;
+    let output_mult = params.output_tokens_credit_multiplier_micro as f64 / 1_000_000.0;
+    let has_vision = params
+        .multimodal_capabilities
+        .iter()
+        .any(|c| c == "VISION_INPUT");
+
+    ModelCatalogEntry {
+        model_id: params.model_id,
+        provider_model_id: params.provider_model_id,
+        display_name: params.display_name,
+        description: params.description,
+        version: String::new(),
+        provider_id: params.provider_id,
+        provider_display_name: params.provider_display_name,
+        icon: String::new(),
+        tier: params.tier,
+        enabled: params.enabled,
+        multimodal_capabilities: params.multimodal_capabilities,
+        context_window: params.context_window,
+        max_output_tokens: params.max_output_tokens,
+        max_input_tokens: params.context_window,
+        input_tokens_credit_multiplier_micro: params.input_tokens_credit_multiplier_micro,
+        output_tokens_credit_multiplier_micro: params.output_tokens_credit_multiplier_micro,
+        multiplier_display: params.multiplier_display.clone(),
+        estimation_budgets: EstimationBudgets::default(),
+        max_retrieved_chunks_per_turn: 5,
+        general_config: ModelGeneralConfig {
+            config_type: String::new(),
+            tier: tier_str.to_owned(),
+            available_from: OffsetDateTime::UNIX_EPOCH,
+            max_file_size_mb: 25,
+            api_params: ModelApiParams {
+                temperature: 0.7,
+                top_p: 1.0,
+                frequency_penalty: 0.0,
+                presence_penalty: 0.0,
+                stop: vec![],
+            },
+            features: ModelFeatures {
+                streaming: true,
+                function_calling: true,
+                structured_output: true,
+                fine_tuning: false,
+                distillation: false,
+                fim_completion: false,
+                chat_prefix_completion: false,
+            },
+            input_type: ModelInputType {
+                text: true,
+                image: has_vision,
+                audio: false,
+                video: false,
+            },
+            tool_support: ModelToolSupport {
+                web_search: false,
+                file_search: false,
+                image_generation: false,
+                code_interpreter: false,
+                computer_use: false,
+                mcp: false,
+            },
+            supported_endpoints: ModelSupportedEndpoints {
+                chat_completions: true,
+                responses: false,
+                realtime: false,
+                assistants: false,
+                batch_api: false,
+                fine_tuning: false,
+                embeddings: false,
+                videos: false,
+                image_generation: false,
+                image_edit: false,
+                audio_speech_generation: false,
+                audio_transcription: false,
+                audio_translation: false,
+                moderations: false,
+                completions: false,
+            },
+            token_policy: ModelTokenPolicy {
+                input_tokens_credit_multiplier: input_mult,
+                output_tokens_credit_multiplier: output_mult,
+            },
+            performance: ModelPerformance {
+                response_latency_ms: 500,
+                speed_tokens_per_second: 100,
+            },
+        },
+        preference: ModelPreference {
+            is_default: params.is_default,
+            sort_order: 0,
+        },
+    }
+}
 
 pub struct MockPolicySnapshotProvider {
     snapshot: Mutex<PolicySnapshot>,

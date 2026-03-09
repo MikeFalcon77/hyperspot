@@ -6,20 +6,20 @@ use uuid::Uuid;
 use crate::domain::error::DomainError;
 use crate::domain::service::model_service::ModelService;
 use crate::domain::service::test_helpers::{
-    MockModelResolver, inmem_db, mock_db_provider, mock_denying_enforcer, mock_enforcer,
-    test_security_ctx,
+    MockModelResolver, TestCatalogEntryParams, inmem_db, mock_db_provider, mock_denying_enforcer,
+    mock_enforcer, test_catalog_entry, test_security_ctx,
 };
 
 // ── Test Helpers ──
 
 fn mock_catalog() -> Vec<ModelCatalogEntry> {
     vec![
-        ModelCatalogEntry {
+        test_catalog_entry(TestCatalogEntryParams {
             model_id: "gpt-5.2".to_owned(),
             provider_model_id: "gpt-5.2-2025-03-26".to_owned(),
             display_name: "GPT-5.2".to_owned(),
             tier: ModelTier::Premium,
-            global_enabled: true,
+            enabled: true,
             is_default: true,
             input_tokens_credit_multiplier_micro: 2_000_000,
             output_tokens_credit_multiplier_micro: 6_000_000,
@@ -30,13 +30,13 @@ fn mock_catalog() -> Vec<ModelCatalogEntry> {
             provider_display_name: "OpenAI".to_owned(),
             multiplier_display: "2x".to_owned(),
             provider_id: "openai".to_owned(),
-        },
-        ModelCatalogEntry {
+        }),
+        test_catalog_entry(TestCatalogEntryParams {
             model_id: "gpt-5-mini".to_owned(),
             provider_model_id: "gpt-5-mini-2025-03-26".to_owned(),
             display_name: "GPT-5 Mini".to_owned(),
             tier: ModelTier::Standard,
-            global_enabled: true,
+            enabled: true,
             is_default: false,
             input_tokens_credit_multiplier_micro: 1_000_000,
             output_tokens_credit_multiplier_micro: 3_000_000,
@@ -47,13 +47,13 @@ fn mock_catalog() -> Vec<ModelCatalogEntry> {
             provider_display_name: "OpenAI".to_owned(),
             multiplier_display: "1x".to_owned(),
             provider_id: "openai".to_owned(),
-        },
-        ModelCatalogEntry {
+        }),
+        test_catalog_entry(TestCatalogEntryParams {
             model_id: "disabled-model".to_owned(),
             provider_model_id: "disabled-model-2025-03-26".to_owned(),
             display_name: "Disabled Model".to_owned(),
             tier: ModelTier::Standard,
-            global_enabled: false,
+            enabled: false,
             is_default: false,
             input_tokens_credit_multiplier_micro: 1_000_000,
             output_tokens_credit_multiplier_micro: 3_000_000,
@@ -64,7 +64,7 @@ fn mock_catalog() -> Vec<ModelCatalogEntry> {
             provider_display_name: "OpenAI".to_owned(),
             multiplier_display: "1x".to_owned(),
             provider_id: "openai".to_owned(),
-        },
+        }),
     ]
 }
 

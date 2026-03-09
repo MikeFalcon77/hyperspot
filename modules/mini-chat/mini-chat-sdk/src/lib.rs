@@ -6,7 +6,7 @@ pub mod plugin_api;
 pub use error::{MiniChatModelPolicyPluginError, PublishError};
 pub use gts::MiniChatModelPolicyPluginSpecV1;
 pub use models::{
-    KillSwitches, ModelCatalogEntry, ModelTier, PolicySnapshot, PolicyVersionInfo, TierLimits,
-    UsageEvent, UsageTokens, UserLimits,
+    EstimationBudgets, KillSwitches, ModelCatalogEntry, ModelGeneralConfig, ModelPreference,
+    ModelTier, PolicySnapshot, PolicyVersionInfo, TierLimits, UsageEvent, UsageTokens, UserLimits,
 };
 pub use plugin_api::MiniChatModelPolicyPluginClientV1;

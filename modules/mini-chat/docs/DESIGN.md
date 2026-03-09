@@ -276,6 +276,7 @@ Global emergency flags / kill switches (P1): operators MUST have a way to immedi
 - `force_standard_tier` — if enabled, all requests MUST use the standard-tier model regardless of quota state or user selection.
 - `disable_file_search` — if enabled, `file_search` tool calls MUST be skipped; responses proceed without retrieval.
 - `disable_web_search` — if enabled, requests with `web_search.enabled=true` MUST be rejected with HTTP 400 and error code `web_search_disabled` before opening an SSE stream. The system MUST NOT silently ignore the parameter.
+- `disable_images` — if enabled, image uploads and image attachments MUST be rejected; requests containing image content MUST be rejected with HTTP 400 and error code `images_disabled` before opening an SSE stream.
 
 Ownership: these flags are owned and operated by platform configuration (P1: deployment config). Long-term, they are expected to be owned by Settings Service / License Manager with privileged operator access.
 
@@ -3555,9 +3556,9 @@ Contents (logically):
 
 **Estimation Budgets Source (P1)**:
 
-In P1, `estimation_budgets` (image_token_budget, tool_surcharge_tokens, web_search_surcharge_tokens, bytes_per_token_conservative, fixed_overhead_tokens, safety_margin_pct, minimal_generation_floor) are configured **locally in MiniChat** via Kubernetes ConfigMap (or equivalent deployment configuration file). CCM PolicySnapshot in P1 does NOT include `estimation_budgets`.
+In P1, `estimation_budgets` (image_token_budget, tool_surcharge_tokens, web_search_surcharge_tokens, bytes_per_token_conservative, fixed_overhead_tokens, safety_margin_pct, minimal_generation_floor) are embedded **per-model** in the policy snapshot catalog (each `ModelCatalogEntry` carries its own `estimation_budgets`). This allows per-model tuning of estimation parameters.
 
-These budgets are used ONLY for preflight reserve estimation and admission control. They MUST be loaded at MiniChat startup and validated (non-negative values, sane bounds, `minimal_generation_floor <= max_output_tokens`). ConfigMap/config changes are operationally expected to be rolled out consistently across MiniChat pods (best-effort operational note; config drift detection is out of scope for P1).
+These budgets are used ONLY for preflight reserve estimation and admission control. Values are delivered as part of the policy plugin configuration and are validated at startup (non-negative values, sane bounds, `minimal_generation_floor <= max_output_tokens`). Because they are part of the model catalog entry, changes to `estimation_budgets` for a model constitute a catalog change and trigger a policy version bump.
 
 - `user_limits` (per user allocation; delivered/derived per-user, but tied to `policy_version`):
 
@@ -3623,7 +3624,7 @@ A PolicySnapshot is a versioned, immutable configuration object published by CCM
 - `policy_version` (monotonic identifier)
 - `model_catalog` (model entries with credit multipliers, capabilities, tier, display metadata)
 - `estimation_budgets` (fixed surcharge token budgets for preflight reserve estimation). **Source split (normative)**: the fields `bytes_per_token_conservative`, `fixed_overhead_tokens`, `safety_margin_pct`, `image_token_budget`, `tool_surcharge_tokens`, and `web_search_surcharge_tokens` are part of this PolicySnapshot and versioned by `policy_version`. The field `minimal_generation_floor` is sourced from the MiniChat ConfigMap (NOT from this PolicySnapshot) and is captured per-turn into `chat_turns.minimal_generation_floor_applied` at preflight. PolicySnapshot-sourced values take effect when CCM publishes a new `policy_version`. ConfigMap-sourced values take effect on the next preflight after the ConfigMap is reloaded.
-- global kill switches (`disable_premium_tier`, `force_standard_tier`, `disable_web_search`)
+- global kill switches (`disable_premium_tier`, `force_standard_tier`, `disable_web_search`, `disable_file_search`, `disable_images`)
 
 PolicySnapshot rules:
 
@@ -3975,8 +3976,8 @@ mini-chat selects `effective_model` (with downgrade if needed) based on the curr
 
 Then it computes:
 
-- `estimated_text_tokens` — sum of text content, metadata, and retrieved chunks (see ConfigMap `estimation_budgets`, line 3194)
-- `image_surcharge_tokens` — if images present, apply `estimation_budgets.image_token_budget` per image (ConfigMap-defined conservative estimate, line 3195)
+- `estimated_text_tokens` — sum of text content, metadata, and retrieved chunks (see `estimation_budgets` from the selected model's catalog entry, section 5.2.1)
+- `image_surcharge_tokens` — if images present, apply `estimation_budgets.image_token_budget` per image (per-model conservative estimate from catalog entry, section 5.2.1)
 - `tool_surcharge_tokens` — apply `estimation_budgets.tool_surcharge_tokens` if tool use enabled (line 3196)
 - `web_search_surcharge_tokens` — apply `estimation_budgets.web_search_surcharge_tokens` if web search enabled (line 3197)
 - `max_output_tokens_applied` — the `max_output_tokens` value used for this turn; persisted on `chat_turns.max_output_tokens_applied` (immutable after insert)
@@ -5824,11 +5825,11 @@ A monotonic, strictly increasing integer that identifies a specific immutable po
 **Bump Triggers**:
 - Changes to model catalog
 - Changes to credit multipliers (`input_tokens_credit_multiplier`, `output_tokens_credit_multiplier`)
-- Changes to kill switches (`disable_premium_tier`, `force_standard_tier`, `disable_web_search`)
+- Changes to kill switches (`disable_premium_tier`, `force_standard_tier`, `disable_web_search`, `disable_file_search`, `disable_images`)
 - User allocation logic changes affecting `GetUserLimits` output
 - User entitlements/plan changes
 
-**Note (P1)**: Estimation budgets (image_token_budget, tool_surcharge_tokens, web_search_surcharge_tokens, etc.) are configured **locally in MiniChat ConfigMap**, NOT in CCM PolicySnapshot. Changes to estimation budgets do NOT trigger CCM policy version bumps. See section 5.2.1 "Estimation Budgets Source (P1)" for details.
+**Note (P1)**: Estimation budgets (image_token_budget, tool_surcharge_tokens, web_search_surcharge_tokens, etc.) are embedded **per-model in the policy snapshot catalog** (each `ModelCatalogEntry` carries its own `estimation_budgets`). Changes to `estimation_budgets` for a model constitute a catalog change and MUST trigger a policy version bump. See section 5.2.1 "Estimation Budgets Source (P1)" for details.
 
 **MiniChat Integration**:
 - MiniChat caches snapshots keyed by `(user_id, policy_version)`.
@@ -5899,7 +5900,8 @@ A monotonic, strictly increasing integer that identifies a specific immutable po
     ],
     "kill_switches": {
       "disable_web_search": false,
-      "disable_file_search": false
+      "disable_file_search": false,
+      "disable_images": false
     }
   }
 }
@@ -5911,10 +5913,10 @@ A monotonic, strictly increasing integer that identifies a specific immutable po
 - `provider_display_name` is UI-only and MUST NOT be a routing key, deployment handle, or internal provider identifier.
 
 **P1 Note — Estimation Budgets**:
-- In P1, `estimation_budgets` (image_token_budget, tool_surcharge_tokens, web_search_surcharge_tokens, bytes_per_token_conservative, fixed_overhead_tokens, safety_margin_pct, minimal_generation_floor) are NOT supplied by CCM.
-- `estimation_budgets` are configured locally in MiniChat via Kubernetes ConfigMap (or equivalent deployment config file).
-- MiniChat persists `minimal_generation_floor_applied` per turn (on `chat_turns` table) for deterministic estimated settlement independent of ConfigMap changes.
-- CCM PolicySnapshot in P1 MUST NOT include `estimation_budgets` fields. The snapshot example above omits them intentionally.
+- In P1, `estimation_budgets` (image_token_budget, tool_surcharge_tokens, web_search_surcharge_tokens, bytes_per_token_conservative, fixed_overhead_tokens, safety_margin_pct, minimal_generation_floor) are embedded **per-model** in each `ModelCatalogEntry` within the PolicySnapshot.
+- This enables per-model tuning of estimation parameters (e.g. different `bytes_per_token_conservative` for different model families).
+- MiniChat persists `minimal_generation_floor_applied` per turn (on `chat_turns` table) for deterministic estimated settlement independent of future policy changes.
+- CCM PolicySnapshot MUST include `estimation_budgets` on each model catalog entry.
 
 **Multimodal Capability Flags**: Enumerated values include:
 - `VISION_INPUT`
@@ -6132,6 +6134,7 @@ All fields below are per-model entries inside the catalog.
 |-----------|------|---------|--------|---------------|
 | `disable_web_search` | `bool` | — | **CCM API**: `GET /policies/{v}` | `snapshot.kill_switches.disable_web_search` |
 | `disable_file_search` | `bool` | — | **CCM API**: `GET /policies/{v}` | `snapshot.kill_switches.disable_file_search` |
+| `disable_images` | `bool` | — | **CCM API**: `GET /policies/{v}` | `snapshot.kill_switches.disable_images` |
 | `disable_premium_tier` | `bool` | — | **n/a** | Not present in current CCM API; design-only |
 | `force_standard_tier` | `bool` | — | **n/a** | Not present in current CCM API; design-only |
 
@@ -6177,15 +6180,17 @@ All fields below are per-model entries inside the catalog.
 
 ### B.5.2 Estimation budgets (preflight reserve)
 
+Estimation budgets are embedded **per-model** in the policy snapshot catalog. Each `ModelCatalogEntry` carries its own `estimation_budgets`, allowing per-model tuning.
+
 | Parameter | Type | Default | Source |
 |-----------|------|---------|--------|
-| `estimation_budgets.bytes_per_token_conservative` | — | — | **ConfigMap** |
-| `estimation_budgets.fixed_overhead_tokens` | — | — | **ConfigMap** |
-| `estimation_budgets.safety_margin_pct` | — | — | **ConfigMap** |
-| `estimation_budgets.image_token_budget` | — | — | **ConfigMap** |
-| `estimation_budgets.tool_surcharge_tokens` | — | — | **ConfigMap** |
-| `estimation_budgets.web_search_surcharge_tokens` | — | — | **ConfigMap** |
-| `estimation_budgets.minimal_generation_floor` | — | — | **ConfigMap** |
+| `estimation_budgets.bytes_per_token_conservative` | — | — | **PolicySnapshot** (per-model catalog entry) |
+| `estimation_budgets.fixed_overhead_tokens` | — | — | **PolicySnapshot** (per-model catalog entry) |
+| `estimation_budgets.safety_margin_pct` | — | — | **PolicySnapshot** (per-model catalog entry) |
+| `estimation_budgets.image_token_budget` | — | — | **PolicySnapshot** (per-model catalog entry) |
+| `estimation_budgets.tool_surcharge_tokens` | — | — | **PolicySnapshot** (per-model catalog entry) |
+| `estimation_budgets.web_search_surcharge_tokens` | — | — | **PolicySnapshot** (per-model catalog entry) |
+| `estimation_budgets.minimal_generation_floor` | — | — | **PolicySnapshot** (per-model catalog entry) |
 
 ### B.5.3 Overshoot tolerance
 

@@ -158,36 +158,173 @@ modules:
       vendor: "hyperspot"
       priority: 100
       model_catalog:
+        # ── GPT-4.1 (Premium) ──
         - model_id: "gpt-4.1"
           provider_model_id: "gpt-4.1"
           display_name: "GPT-4.1"
+          description: "Most capable model"
+          version: "4.1"
+          provider_id: "azure_openai"
+          provider_display_name: "Azure OpenAI"
+          icon: ""
           tier: Premium
-          global_enabled: true
-          is_default: true
-          input_tokens_credit_multiplier_micro: 3000000
-          output_tokens_credit_multiplier_micro: 15000000
+          enabled: true
           multimodal_capabilities: ["VISION_INPUT"]
           context_window: 1047576
           max_output_tokens: 32768
-          description: "Most capable model"
-          provider_display_name: "Azure OpenAI"
+          max_input_tokens: 1047576
+          input_tokens_credit_multiplier_micro: 3000000
+          output_tokens_credit_multiplier_micro: 15000000
           multiplier_display: "3x"
-          provider_id: "azure_openai"
+          estimation_budgets:
+            bytes_per_token_conservative: 4
+            fixed_overhead_tokens: 100
+            safety_margin_pct: 10
+            image_token_budget: 1000
+            tool_surcharge_tokens: 500
+            web_search_surcharge_tokens: 500
+            minimal_generation_floor: 50
+          max_retrieved_chunks_per_turn: 5
+          general_config:
+            type: ""
+            tier: "premium"
+            available_from: "1970-01-01T00:00:00Z"
+            max_file_size_mb: 25
+            api_params:
+              temperature: 0.7
+              top_p: 1.0
+              frequency_penalty: 0.0
+              presence_penalty: 0.0
+              stop: []
+            features:
+              streaming: true
+              function_calling: true
+              structured_output: true
+              fine_tuning: false
+              distillation: false
+              fim_completion: false
+              chat_prefix_completion: false
+            input_type:
+              text: true
+              image: true
+              audio: false
+              video: false
+            tool_support:
+              web_search: true
+              file_search: true
+              image_generation: false
+              code_interpreter: false
+              computer_use: false
+              mcp: false
+            supported_endpoints:
+              chat_completions: true
+              responses: true
+              realtime: false
+              assistants: false
+              batch_api: false
+              fine_tuning: false
+              embeddings: false
+              videos: false
+              image_generation: false
+              image_edit: false
+              audio_speech_generation: false
+              audio_transcription: false
+              audio_translation: false
+              moderations: false
+              completions: false
+            token_policy:
+              input_tokens_credit_multiplier: 3.0
+              output_tokens_credit_multiplier: 15.0
+            performance:
+              response_latency_ms: 800
+              speed_tokens_per_second: 75
+          preference:
+            is_default: true
+            sort_order: 0
+
+        # ── GPT-4.1 Mini (Standard) ──
         - model_id: "gpt-4.1-mini"
           provider_model_id: "gpt-4.1-mini"
           display_name: "GPT-4.1 Mini"
+          description: "Fast and efficient model"
+          version: "4.1"
+          provider_id: "azure_openai"
+          provider_display_name: "Azure OpenAI"
+          icon: ""
           tier: Standard
-          global_enabled: true
-          is_default: false
-          input_tokens_credit_multiplier_micro: 1000000
-          output_tokens_credit_multiplier_micro: 3000000
+          enabled: true
           multimodal_capabilities: ["VISION_INPUT"]
           context_window: 1047576
           max_output_tokens: 32768
-          description: "Fast and efficient model"
-          provider_display_name: "Azure OpenAI"
+          max_input_tokens: 1047576
+          input_tokens_credit_multiplier_micro: 1000000
+          output_tokens_credit_multiplier_micro: 3000000
           multiplier_display: "1x"
-          provider_id: "azure_openai"
+          estimation_budgets:
+            bytes_per_token_conservative: 4
+            fixed_overhead_tokens: 100
+            safety_margin_pct: 10
+            image_token_budget: 1000
+            tool_surcharge_tokens: 500
+            web_search_surcharge_tokens: 500
+            minimal_generation_floor: 50
+          max_retrieved_chunks_per_turn: 5
+          general_config:
+            type: ""
+            tier: "standard"
+            available_from: "1970-01-01T00:00:00Z"
+            max_file_size_mb: 25
+            api_params:
+              temperature: 0.7
+              top_p: 1.0
+              frequency_penalty: 0.0
+              presence_penalty: 0.0
+              stop: []
+            features:
+              streaming: true
+              function_calling: true
+              structured_output: true
+              fine_tuning: false
+              distillation: false
+              fim_completion: false
+              chat_prefix_completion: false
+            input_type:
+              text: true
+              image: true
+              audio: false
+              video: false
+            tool_support:
+              web_search: false
+              file_search: false
+              image_generation: false
+              code_interpreter: false
+              computer_use: false
+              mcp: false
+            supported_endpoints:
+              chat_completions: true
+              responses: true
+              realtime: false
+              assistants: false
+              batch_api: false
+              fine_tuning: false
+              embeddings: false
+              videos: false
+              image_generation: false
+              image_edit: false
+              audio_speech_generation: false
+              audio_transcription: false
+              audio_translation: false
+              moderations: false
+              completions: false
+            token_policy:
+              input_tokens_credit_multiplier: 1.0
+              output_tokens_credit_multiplier: 3.0
+            performance:
+              response_latency_ms: 400
+              speed_tokens_per_second: 150
+          preference:
+            is_default: false
+            sort_order: 1
 
 tracing:
   enabled: false

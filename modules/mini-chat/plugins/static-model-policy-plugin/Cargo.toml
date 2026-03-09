@@ -41,3 +41,6 @@ tracing = { workspace = true }
 
 # Required by modkit::module macro
 inventory = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

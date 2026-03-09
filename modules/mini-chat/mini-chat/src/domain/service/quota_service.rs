@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use mini_chat_sdk::{ModelTier, PolicySnapshot, UserLimits};
+use mini_chat_sdk::{ModelCatalogEntry, ModelTier, PolicySnapshot, UserLimits};
 use modkit_db::secure::DBRunner;
 use modkit_macros::domain_model;
 use modkit_security::AccessScope;
@@ -102,7 +102,7 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
         let selected_entry = catalog.iter().find(|m| m.model_id == selected_model);
 
         let (selected_tier, mut downgrade_reason) = match selected_entry {
-            Some(e) if e.global_enabled => (e.tier, None),
+            Some(e) if e.enabled => (e.tier, None),
             Some(e) => {
                 // Model exists but is disabled — cascade from its own tier
                 (e.tier, Some(DowngradeReason::ModelDisabled))
@@ -161,11 +161,20 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
             }
 
             // 3d. Select concrete model for this tier
+            //     Prefer the explicitly requested model when it belongs to this
+            //     tier and is enabled; fall back to the tier default or any
+            //     enabled model otherwise.
+            let tier_matches = |m: &&ModelCatalogEntry| m.tier == tier && m.enabled;
             let model = catalog
                 .iter()
-                .filter(|m| m.tier == tier && m.global_enabled)
-                .find(|m| m.is_default)
-                .or_else(|| catalog.iter().find(|m| m.tier == tier && m.global_enabled));
+                .find(|m| tier_matches(m) && m.model_id == selected_model)
+                .or_else(|| {
+                    catalog
+                        .iter()
+                        .filter(|m| tier_matches(m))
+                        .find(|m| m.preference.is_default)
+                })
+                .or_else(|| catalog.iter().find(|m| tier_matches(m)));
 
             let Some(effective) = model else {
                 continue; // all models in tier are individually disabled
@@ -193,12 +202,15 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
 
 /// Map bucket name + `period_type` to the correct limit from `UserLimits`.
 fn limit_credits_micro(bucket: &str, period_type: &PeriodType, limits: &UserLimits) -> i64 {
-    match (bucket, period_type) {
-        ("total", PeriodType::Daily) => limits.standard.limit_daily_credits_micro,
-        ("total", PeriodType::Monthly) => limits.standard.limit_monthly_credits_micro,
-        ("tier:premium", PeriodType::Daily) => limits.premium.limit_daily_credits_micro,
-        ("tier:premium", PeriodType::Monthly) => limits.premium.limit_monthly_credits_micro,
-        _ => 0, // unknown bucket — no budget
+    let tier = match bucket {
+        "total" => &limits.standard,
+        "tier:premium" => &limits.premium,
+        _ => return 0, // unknown bucket — no budget
+    };
+
+    match period_type {
+        PeriodType::Daily => tier.limit_daily_credits_micro,
+        PeriodType::Monthly => tier.limit_monthly_credits_micro,
     }
 }
 
@@ -280,7 +292,7 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
         let catalog_entry = snapshot
             .model_catalog
             .iter()
-            .find(|m| m.model_id == input.selected_model && m.global_enabled);
+            .find(|m| m.model_id == input.selected_model && m.enabled);
 
         let (in_mult, out_mult) = catalog_entry.map_or(
             (1_000_000, 1_000_000), // fallback for disabled models
@@ -813,16 +825,17 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::service::test_helpers::{TestCatalogEntryParams, test_catalog_entry};
     use mini_chat_sdk::{KillSwitches, ModelCatalogEntry, TierLimits};
     use uuid::Uuid;
 
     fn make_model(id: &str, tier: ModelTier, enabled: bool, is_default: bool) -> ModelCatalogEntry {
-        ModelCatalogEntry {
+        test_catalog_entry(TestCatalogEntryParams {
             model_id: id.to_owned(),
             provider_model_id: format!("provider-{id}"),
             display_name: id.to_owned(),
             tier,
-            global_enabled: enabled,
+            enabled,
             is_default,
             input_tokens_credit_multiplier_micro: 1_000_000,
             output_tokens_credit_multiplier_micro: 1_000_000,
@@ -833,7 +846,7 @@ mod tests {
             provider_display_name: String::new(),
             multiplier_display: "1x".to_owned(),
             provider_id: "openai".to_owned(),
-        }
+        })
     }
 
     fn default_limits() -> UserLimits {
@@ -1013,7 +1026,7 @@ mod tests {
     fn disabled_model_triggers_downgrade() {
         let mut snapshot = default_snapshot();
         // Disable the selected premium model
-        snapshot.model_catalog[0].global_enabled = false;
+        snapshot.model_catalog[0].enabled = false;
         let limits = default_limits();
         let today = OffsetDateTime::now_utc().date();
         let periods = default_periods(today);
@@ -1037,7 +1050,7 @@ mod tests {
     fn disabled_standard_model_does_not_escalate_to_premium() {
         let mut snapshot = default_snapshot();
         // Disable the standard model (index 1 = gpt-5-mini)
-        snapshot.model_catalog[1].global_enabled = false;
+        snapshot.model_catalog[1].enabled = false;
         let limits = default_limits();
         let today = OffsetDateTime::now_utc().date();
         let periods = default_periods(today);
@@ -1056,10 +1069,42 @@ mod tests {
     }
 
     #[test]
+    fn requested_non_default_model_is_preserved() {
+        // Regression: selecting a non-default model in the same tier must NOT
+        // silently rewrite to the tier default.
+        let snapshot = PolicySnapshot {
+            user_id: Uuid::nil(),
+            policy_version: 1,
+            model_catalog: vec![
+                make_model("std-default", ModelTier::Standard, true, true),
+                make_model("std-other", ModelTier::Standard, true, false),
+            ],
+            kill_switches: KillSwitches::default(),
+        };
+        let limits = default_limits();
+        let today = OffsetDateTime::now_utc().date();
+        let periods = default_periods(today);
+        let ctx = CascadeContext {
+            snapshot: &snapshot,
+            user_limits: &limits,
+            usage_rows: &[],
+            reserve_credits_micro: 1_000,
+            periods: &periods,
+        };
+        match QuotaService::<crate::infra::db::repo::quota_usage_repo::QuotaUsageRepository>::resolve_effective_model("std-other", &ctx) {
+            CascadeDecision::Allow { effective_model, tier } => {
+                assert_eq!(effective_model, "std-other", "must preserve explicitly requested model");
+                assert_eq!(tier, ModelTier::Standard);
+            }
+            other => panic!("expected Allow with std-other, got {:?}", cascade_debug(&other)),
+        }
+    }
+
+    #[test]
     fn all_models_disabled_returns_reject() {
         let mut snapshot = default_snapshot();
         for m in &mut snapshot.model_catalog {
-            m.global_enabled = false;
+            m.enabled = false;
         }
         let limits = default_limits();
         let today = OffsetDateTime::now_utc().date();

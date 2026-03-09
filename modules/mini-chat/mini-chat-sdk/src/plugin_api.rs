@@ -17,14 +17,15 @@ pub trait MiniChatModelPolicyPluginClientV1: Send + Sync {
         user_id: Uuid,
     ) -> Result<PolicyVersionInfo, MiniChatModelPolicyPluginError>;
 
-    /// Get the policy snapshot for a given version.
+    /// Get the full policy snapshot for a given version, including
+    /// model catalog and kill switches.
     async fn get_policy_snapshot(
         &self,
         user_id: Uuid,
         policy_version: u64,
     ) -> Result<PolicySnapshot, MiniChatModelPolicyPluginError>;
 
-    /// Get per-user credit allocations for a specific policy version.
+    /// Get per-user credit limits for a specific policy version.
     async fn get_user_limits(
         &self,
         user_id: Uuid,
