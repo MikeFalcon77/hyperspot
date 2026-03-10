@@ -176,13 +176,16 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
             validate_alias(&alias)?;
             existing.alias = alias;
         } else if let Some(ref user_alias) = req.alias {
-            // No endpoint change — allow alias update only for IP-based endpoints.
-            if compute_derived_alias(&existing.server.endpoints).is_some() {
+            let normalized = normalize_alias(user_alias);
+            // No endpoint change — allow alias update only for IP-based endpoints,
+            // or when the provided alias exactly matches the derived value (no-op).
+            if let Some(derived) = compute_derived_alias(&existing.server.endpoints)
+                && normalized != derived
+            {
                 return Err(DomainError::validation(
                     "alias cannot be overridden for hostname-based endpoints",
                 ));
             }
-            let normalized = normalize_alias(user_alias);
             validate_alias(&normalized)?;
             existing.alias = normalized;
         }
