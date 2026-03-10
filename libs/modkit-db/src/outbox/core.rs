@@ -205,7 +205,7 @@ impl Outbox {
     /// Returns an error on validation failure or database error.
     pub async fn enqueue(
         &self,
-        db: &(impl crate::secure::DBRunner + Sync),
+        db: &(impl crate::secure::DBRunner + Sync + ?Sized),
         queue: &str,
         partition: u32,
         payload: Vec<u8>,
@@ -230,7 +230,7 @@ impl Outbox {
     /// Returns an error on validation failure or database error.
     pub async fn enqueue_batch(
         &self,
-        db: &(impl crate::secure::DBRunner + Sync),
+        db: &(impl crate::secure::DBRunner + Sync + ?Sized),
         queue: &str,
         items: &[EnqueueMessage<'_>],
     ) -> Result<Vec<OutboxMessageId>, OutboxError> {

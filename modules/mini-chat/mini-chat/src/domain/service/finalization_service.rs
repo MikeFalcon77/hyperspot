@@ -79,7 +79,10 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
 
         match result {
             Ok(outcome) => {
-                // Emit side effects after transaction commit.
+                // Post-commit side effects (outside transaction).
+                if outcome.won_cas {
+                    self.outbox_enqueuer.flush();
+                }
                 if let Some(billing) = outcome.billing_outcome {
                     Self::emit_post_commit_side_effects(&input, billing);
                 }
@@ -107,6 +110,9 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                                 DomainError::internal(format!("unexpected retry failure: {e2}"))
                             }
                         })?;
+                if retry_outcome.won_cas {
+                    self.outbox_enqueuer.flush();
+                }
                 if let Some(billing) = retry_outcome.billing_outcome {
                     Self::emit_post_commit_side_effects(&retry_input, billing);
                 }
@@ -374,10 +380,24 @@ mod tests {
         }
     }
 
-    // ── Noop OutboxEnqueuer ──
+    // ── Noop OutboxEnqueuer (with flush tracking) ──
 
     #[domain_model]
-    struct NoopOutboxEnqueuer;
+    struct NoopOutboxEnqueuer {
+        flush_count: std::sync::atomic::AtomicU32,
+    }
+
+    impl NoopOutboxEnqueuer {
+        fn new() -> Self {
+            Self {
+                flush_count: std::sync::atomic::AtomicU32::new(0),
+            }
+        }
+
+        fn flush_count(&self) -> u32 {
+            self.flush_count.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
 
     #[async_trait::async_trait]
     impl OutboxEnqueuer for NoopOutboxEnqueuer {
@@ -388,10 +408,21 @@ mod tests {
         ) -> Result<(), DomainError> {
             Ok(())
         }
+
+        fn flush(&self) {
+            self.flush_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
-    fn build_finalization_service(db: Arc<DbProvider>) -> FinalizationService<TurnRepo, MsgRepo> {
-        FinalizationService::new(
+    fn build_finalization_service(
+        db: Arc<DbProvider>,
+    ) -> (
+        FinalizationService<TurnRepo, MsgRepo>,
+        Arc<NoopOutboxEnqueuer>,
+    ) {
+        let outbox = Arc::new(NoopOutboxEnqueuer::new());
+        let svc = FinalizationService::new(
             db,
             Arc::new(TurnRepo),
             Arc::new(MsgRepo::new(modkit_db::odata::LimitCfg {
@@ -399,8 +430,9 @@ mod tests {
                 max: 100,
             })),
             Arc::new(MockQuotaSettler),
-            Arc::new(NoopOutboxEnqueuer),
-        )
+            outbox.clone(),
+        );
+        (svc, outbox)
     }
 
     /// Insert a parent chat row (FK constraint).
@@ -511,7 +543,7 @@ mod tests {
     #[tokio::test]
     async fn cas_winner_completes_finalization() {
         let db = mock_db_provider(inmem_db().await);
-        let svc = build_finalization_service(Arc::clone(&db));
+        let (svc, outbox) = build_finalization_service(Arc::clone(&db));
 
         let tenant_id = Uuid::new_v4();
         let chat_id = Uuid::new_v4();
@@ -538,6 +570,11 @@ mod tests {
         assert!(outcome.won_cas, "should be CAS winner");
         assert!(outcome.billing_outcome.is_some());
         assert!(outcome.settlement_outcome.is_some());
+        assert_eq!(
+            outbox.flush_count(),
+            1,
+            "flush should be called once after CAS win"
+        );
 
         // Verify turn is now in completed state
         let conn = db.conn().unwrap();
@@ -556,7 +593,7 @@ mod tests {
     #[tokio::test]
     async fn cas_loser_returns_no_side_effects() {
         let db = mock_db_provider(inmem_db().await);
-        let svc = build_finalization_service(Arc::clone(&db));
+        let (svc, outbox) = build_finalization_service(Arc::clone(&db));
 
         let tenant_id = Uuid::new_v4();
         let chat_id = Uuid::new_v4();
@@ -598,6 +635,12 @@ mod tests {
         assert!(!outcome2.won_cas, "second finalizer should lose CAS");
         assert!(outcome2.billing_outcome.is_none());
         assert!(outcome2.settlement_outcome.is_none());
+        // First call won CAS → 1 flush. Second lost CAS → no additional flush.
+        assert_eq!(
+            outbox.flush_count(),
+            1,
+            "flush should only be called for CAS winner"
+        );
     }
 
     // ── 3.8: Transaction rollback on failure leaves turn in running state ──
@@ -629,7 +672,7 @@ mod tests {
                 max: 100,
             })),
             Arc::new(FailingQuotaSettler),
-            Arc::new(NoopOutboxEnqueuer),
+            Arc::new(NoopOutboxEnqueuer::new()),
         );
 
         let tenant_id = Uuid::new_v4();

@@ -300,9 +300,9 @@ impl OutboxConfig {
         if self.queue_name.trim().is_empty() {
             return Err("outbox queue_name must not be empty".to_owned());
         }
-        if !(1..=64).contains(&self.num_partitions) {
+        if !(1..=64).contains(&self.num_partitions) || !self.num_partitions.is_power_of_two() {
             return Err(format!(
-                "outbox num_partitions must be 1-64, got {}",
+                "outbox num_partitions must be a power of 2 in 1-64, got {}",
                 self.num_partitions
             ));
         }

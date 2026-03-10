@@ -71,9 +71,12 @@ thiserror = { workspace = true }
 
 # Local dependencies
 modkit = { workspace = true }
-modkit-db = { workspace = true, features = ["sqlite", "pg"] }
+modkit-db = { workspace = true, features = ["sqlite", "pg", "preview-outbox"] }
 modkit-db-macros = { workspace = true }
 modkit-security = { workspace = true }
 modkit-macros = { workspace = true }
 modkit-odata = { workspace = true, features = ["with-utoipa"] }
+
+[dev-dependencies]
+chrono = { workspace = true }
 

@@ -13,7 +13,6 @@ use crate::domain::repos::{
 };
 use crate::domain::service::quota_settler::QuotaSettler;
 use crate::infra::llm::provider_resolver::ProviderResolver;
-use crate::infra::outbox::InfraOutboxEnqueuer;
 
 mod attachment_service;
 mod chat_service;
@@ -155,6 +154,7 @@ impl<
         limits_provider: Arc<dyn UserLimitsProvider>,
         estimation_budgets: EstimationBudgets,
         quota_config: QuotaConfig,
+        outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
     ) -> Self {
         let enforcer = PolicyEnforcer::new(authz);
 
@@ -168,8 +168,6 @@ impl<
             estimation_budgets,
             quota_config,
         ));
-
-        let outbox_enqueuer: Arc<dyn OutboxEnqueuer> = Arc::new(InfraOutboxEnqueuer::new());
 
         let finalization = Arc::new(FinalizationService::new(
             Arc::clone(&db),

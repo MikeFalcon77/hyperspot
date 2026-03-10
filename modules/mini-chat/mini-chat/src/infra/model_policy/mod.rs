@@ -32,7 +32,7 @@ impl ModelPolicyGateway {
     }
 
     /// Lazily resolve the policy plugin from `ClientHub`.
-    async fn get_policy_plugin(
+    pub(crate) async fn get_policy_plugin(
         &self,
     ) -> Result<Arc<dyn MiniChatModelPolicyPluginClientV1>, DomainError> {
         let instance_id = self

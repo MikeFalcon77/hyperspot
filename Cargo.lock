@@ -1249,6 +1249,7 @@ dependencies = [
  "cf-modkit-security",
  "cf-oagw-sdk",
  "cf-types-registry-sdk",
+ "chrono",
  "futures",
  "http",
  "inventory",

@@ -1314,6 +1314,8 @@ mod tests {
         ) -> Result<(), crate::domain::error::DomainError> {
             Ok(())
         }
+
+        fn flush(&self) {}
     }
 
     #[test]

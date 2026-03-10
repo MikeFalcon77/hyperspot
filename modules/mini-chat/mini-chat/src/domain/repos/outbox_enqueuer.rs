@@ -26,11 +26,10 @@ use crate::domain::error::DomainError;
 ///
 /// # Implementation note
 ///
-/// The infra implementation (`InfraOutboxEnqueuer`) will hold an
-/// `Arc<modkit_db::outbox::Outbox>` and call `outbox.enqueue(runner, ...)`
+/// The infra implementation (`InfraOutboxEnqueuer`) holds an
+/// `Arc<modkit_db::outbox::Outbox>` and calls `outbox.enqueue(runner, ...)`
 /// within the finalization transaction. The `Outbox::flush()` notification
 /// is sent after the transaction commits (by the finalization service).
-// TODO: implement InfraOutboxEnqueuer backed by modkit_db::outbox::Outbox
 #[async_trait::async_trait]
 pub trait OutboxEnqueuer: Send + Sync {
     /// Enqueue a usage event within the caller's transaction.
@@ -50,4 +49,14 @@ pub trait OutboxEnqueuer: Send + Sync {
         runner: &(dyn DBRunner + Sync),
         event: UsageEvent,
     ) -> Result<(), DomainError>;
+
+    /// Notify the outbox sequencer that new events are available.
+    ///
+    /// Called after the transaction that contains `enqueue_usage_event` commits.
+    /// Multiple flush calls coalesce — calling flush 10 times results in at most
+    /// one sequencer wakeup.
+    ///
+    /// This is outbox-wide: it wakes the sequencer for ALL registered queues,
+    /// so a single flush call suffices regardless of which queue was written to.
+    fn flush(&self);
 }

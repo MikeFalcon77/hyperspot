@@ -1,17 +1,21 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use authz_resolver_sdk::AuthZResolverClient;
 use mini_chat_sdk::{MiniChatAuditPluginSpecV1, MiniChatModelPolicyPluginSpecV1};
 use modkit::api::OpenApiRegistry;
+use modkit::contracts::RunnableCapability;
 use modkit::{DatabaseCapability, Module, ModuleCtx, RestApiCapability};
+use modkit_db::outbox::{Outbox, OutboxHandle, Partitions};
 use oagw_sdk::ServiceGatewayClientV1;
 use sea_orm_migration::MigrationTrait;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use types_registry_sdk::{RegisterResult, TypesRegistryClient};
 
 use crate::api::rest::routes;
 use crate::domain::service::{AppServices as GenericAppServices, Repositories};
+use crate::infra::outbox::{InfraOutboxEnqueuer, UsageEventHandler};
 
 pub(crate) type AppServices = GenericAppServices<
     TurnRepository,
@@ -38,11 +42,12 @@ pub const DEFAULT_URL_PREFIX: &str = "/mini-chat";
 #[modkit::module(
     name = "mini-chat",
     deps = ["types-registry", "authz-resolver", "oagw"],
-    capabilities = [db, rest],
+    capabilities = [db, rest, stateful],
 )]
 pub struct MiniChatModule {
     service: OnceLock<Arc<AppServices>>,
     url_prefix: OnceLock<String>,
+    outbox_handle: Mutex<Option<OutboxHandle>>,
 }
 
 impl Default for MiniChatModule {
@@ -50,6 +55,7 @@ impl Default for MiniChatModule {
         Self {
             service: OnceLock::new(),
             url_prefix: OnceLock::new(),
+            outbox_handle: Mutex::new(None),
         }
     }
 }
@@ -108,7 +114,55 @@ impl Module for MiniChatModule {
             .set(cfg.url_prefix)
             .map_err(|_| anyhow::anyhow!("{} url_prefix already set", Self::MODULE_NAME))?;
 
-        let db = Arc::new(ctx.db_required()?);
+        let db_provider = ctx.db_required()?;
+        let db = Arc::new(db_provider);
+
+        // Create the model-policy gateway early for both outbox handler and services.
+        let model_policy_gw = Arc::new(ModelPolicyGateway::new(ctx.client_hub(), vendor));
+
+        // Start the outbox pipeline eagerly in init() (migrations ran in phase 2, DB is ready).
+        // The framework guarantees stop() is called on init failure, so the pipeline
+        // will be shut down cleanly if any later init step errors.
+        // The handler resolves the plugin lazily on first message delivery,
+        // avoiding a hard dependency on plugin availability during init().
+        let outbox_db = db.db();
+        let num_partitions = cfg.outbox.num_partitions;
+        let queue_name = cfg.outbox.queue_name.clone();
+
+        let outbox_handle =
+            Outbox::builder(outbox_db)
+                .queue(
+                    &queue_name,
+                    Partitions::of(u16::try_from(num_partitions).map_err(|_| {
+                        anyhow::anyhow!("num_partitions {num_partitions} exceeds u16")
+                    })?),
+                )
+                .decoupled(UsageEventHandler {
+                    plugin_provider: model_policy_gw.clone(),
+                })
+                .start()
+                .await
+                .map_err(|e| anyhow::anyhow!("outbox start: {e}"))?;
+
+        let outbox = Arc::clone(outbox_handle.outbox());
+        let outbox_enqueuer =
+            Arc::new(InfraOutboxEnqueuer::new(outbox, queue_name, num_partitions));
+
+        {
+            let mut guard = self
+                .outbox_handle
+                .lock()
+                .map_err(|e| anyhow::anyhow!("outbox_handle lock: {e}"))?;
+            if guard.is_some() {
+                return Err(anyhow::anyhow!(
+                    "{} outbox_handle already set",
+                    Self::MODULE_NAME
+                ));
+            }
+            *guard = Some(outbox_handle);
+        }
+
+        info!("Outbox pipeline started");
 
         let authz = ctx
             .client_hub()
@@ -142,7 +196,6 @@ impl Module for MiniChatModule {
             vector_store: Arc::new(VectorStoreRepository),
         };
 
-        let model_policy_gw = Arc::new(ModelPolicyGateway::new(ctx.client_hub(), vendor));
         let services = Arc::new(AppServices::new(
             &repos,
             db,
@@ -154,6 +207,7 @@ impl Module for MiniChatModule {
             model_policy_gw as Arc<dyn crate::domain::repos::UserLimitsProvider>,
             cfg.estimation_budgets,
             cfg.quota,
+            outbox_enqueuer,
         ));
 
         self.service
@@ -169,7 +223,9 @@ impl DatabaseCapability for MiniChatModule {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
         use sea_orm_migration::MigratorTrait;
         info!("Providing mini-chat database migrations");
-        crate::infra::db::migrations::Migrator::migrations()
+        let mut m = crate::infra::db::migrations::Migrator::migrations();
+        m.extend(modkit_db::outbox::outbox_migrations());
+        m
     }
 }
 
@@ -194,6 +250,34 @@ impl RestApiCapability for MiniChatModule {
         let router = routes::register_routes(router, openapi, Arc::clone(services), prefix);
         info!("Mini-chat REST routes registered successfully");
         Ok(router)
+    }
+}
+
+#[async_trait]
+impl RunnableCapability for MiniChatModule {
+    async fn start(&self, _cancel: CancellationToken) -> anyhow::Result<()> {
+        // Outbox pipeline already started in init().
+        Ok(())
+    }
+
+    async fn stop(&self, cancel: CancellationToken) -> anyhow::Result<()> {
+        let handle = self
+            .outbox_handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("outbox_handle lock: {e}"))?
+            .take();
+        if let Some(handle) = handle {
+            info!("Stopping outbox pipeline");
+            tokio::select! {
+                () = handle.stop() => {
+                    info!("Outbox pipeline stopped");
+                }
+                () = cancel.cancelled() => {
+                    info!("Outbox pipeline stop cancelled by framework deadline");
+                }
+            }
+        }
+        Ok(())
     }
 }
 
