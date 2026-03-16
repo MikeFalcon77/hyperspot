@@ -1,7 +1,6 @@
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures_util::FutureExt as _;
 use tokio::sync::Notify;
@@ -13,6 +12,7 @@ use tracing::Instrument;
 use super::action::{Directive, WorkerAction};
 use super::bulkhead::Bulkhead;
 use super::listener::WorkerListener;
+use super::pacing::PacingConfig;
 use super::poker::poker;
 
 /// Extract a human-readable message from a panic payload.
@@ -44,7 +44,7 @@ pub enum PanicPolicy {
 /// ```text
 /// WorkerBuilder::new(name, cancel)
 ///     .notifier(event_notify)
-///     .with_poker(Duration::from_secs(1))
+///     .pacing(PacingConfig::default())
 ///     .bulkhead(bulkhead)
 ///     .listener(TracingListener::default())
 ///     .build(action)  → WorkerTask<A>
@@ -57,6 +57,7 @@ pub struct WorkerBuilder<P = ()> {
     listeners: Vec<Arc<dyn WorkerListener<P>>>,
     poker_handles: Vec<JoinHandle<()>>,
     panic_policy: PanicPolicy,
+    pacing: Option<PacingConfig>,
 }
 
 impl<P: Send + Sync + 'static> WorkerBuilder<P> {
@@ -70,6 +71,7 @@ impl<P: Send + Sync + 'static> WorkerBuilder<P> {
             listeners: Vec::new(),
             poker_handles: Vec::new(),
             panic_policy: PanicPolicy::default(),
+            pacing: None,
         }
     }
 
@@ -80,12 +82,11 @@ impl<P: Send + Sync + 'static> WorkerBuilder<P> {
         self
     }
 
-    /// Add a periodic timer notifier (poker).
+    /// Set the adaptive pacing configuration for this worker.
+    /// Defaults to `PacingConfig::default()` if not set.
     #[must_use]
-    pub fn with_poker(mut self, interval: Duration) -> Self {
-        let (n, handle) = poker(interval, self.cancel.clone());
-        self.notifiers.push(n);
-        self.poker_handles.push(handle);
+    pub fn pacing(mut self, pacing: impl Into<PacingConfig>) -> Self {
+        self.pacing = Some(pacing.into());
         self
     }
 
@@ -112,7 +113,16 @@ impl<P: Send + Sync + 'static> WorkerBuilder<P> {
 
     /// Build the worker task.
     #[must_use]
-    pub fn build<A: WorkerAction<Payload = P>>(self, action: A) -> WorkerTask<A> {
+    pub fn build<A: WorkerAction<Payload = P>>(mut self, action: A) -> WorkerTask<A> {
+        let pacing = self.pacing.unwrap_or_default();
+
+        // Auto-create a poker from pacing.idle_interval if > ZERO.
+        if !pacing.idle_interval.is_zero() {
+            let (n, handle) = poker(pacing.idle_interval, self.cancel.clone());
+            self.notifiers.push(n);
+            self.poker_handles.push(handle);
+        }
+
         WorkerTask {
             name: self.name,
             action,
@@ -122,6 +132,7 @@ impl<P: Send + Sync + 'static> WorkerBuilder<P> {
             listeners: self.listeners,
             poker_handles: self.poker_handles,
             panic_policy: self.panic_policy,
+            pacing,
         }
     }
 }
@@ -140,21 +151,7 @@ pub struct WorkerTask<A: WorkerAction> {
     listeners: Vec<Arc<dyn WorkerListener<A::Payload>>>,
     poker_handles: Vec<JoinHandle<()>>,
     panic_policy: PanicPolicy,
-}
-
-/// Apply the bulkhead floor to a directive.
-///
-/// `max(directive.interval, floor)` — the floor never reduces a wait,
-/// only raises it.
-fn apply_floor(directive: Directive, floor: Duration) -> Directive {
-    if floor.is_zero() {
-        return directive;
-    }
-    match directive {
-        Directive::Proceed(()) => Directive::sleep(floor),
-        Directive::Idle(()) => Directive::idle(),
-        Directive::Sleep(d, ()) => Directive::sleep(d.max(floor)),
-    }
+    pacing: PacingConfig,
 }
 
 /// Race all notifiers — returns when any one fires.
@@ -208,24 +205,31 @@ impl<A: WorkerAction> WorkerTask<A> {
 
         let mut directive = Directive::idle();
         let mut last_execute = tokio::time::Instant::now();
+        let mut current_pace = self.pacing.active_interval;
         loop {
-            let effective = apply_floor(directive, self.bulkhead.steady_pace());
-            match effective {
+            match directive {
                 Directive::Proceed(()) => {
-                    // Yield to allow other tasks (e.g., cancellation) to progress
-                    tokio::task::yield_now().await;
+                    // More work — sleep at current pace, then ramp down for next.
+                    tokio::select! {
+                        () = self.cancel.cancelled() => break,
+                        () = tokio::time::sleep(current_pace) => {}
+                    }
+                    current_pace = current_pace
+                        .saturating_sub(self.pacing.ramp_step)
+                        .max(self.pacing.min_interval);
                 }
                 Directive::Idle(()) => {
+                    // No work — wait for external signal.
+                    current_pace = self.pacing.active_interval;
                     self.notify_listeners(|l| l.on_idle());
-                    let floor = self.bulkhead.steady_pace();
-                    if !floor.is_zero() {
-                        // Enforce min elapsed time since last execute
+                    // Bulkhead error backoff floor
+                    let error_floor = self.bulkhead.min_interval();
+                    if !error_floor.is_zero() {
                         let elapsed = last_execute.elapsed();
-                        if elapsed < floor {
-                            let remaining = floor.saturating_sub(elapsed);
+                        if elapsed < error_floor {
                             tokio::select! {
                                 () = self.cancel.cancelled() => break,
-                                () = tokio::time::sleep(remaining) => {}
+                                () = tokio::time::sleep(error_floor.saturating_sub(elapsed)) => {}
                             }
                         }
                     }
@@ -235,9 +239,12 @@ impl<A: WorkerAction> WorkerTask<A> {
                     }
                 }
                 Directive::Sleep(d, ()) => {
+                    // Soft sleep — rest for up to d, wake early on notification.
+                    current_pace = self.pacing.active_interval;
                     self.notify_listeners(|l| l.on_sleep(d));
                     tokio::select! {
                         () = self.cancel.cancelled() => break,
+                        () = wait_any(&self.notifiers) => {}
                         () = tokio::time::sleep(d) => {}
                     }
                 }
@@ -272,7 +279,7 @@ impl<A: WorkerAction> WorkerTask<A> {
                     let duration = last_execute.elapsed();
                     self.bulkhead.escalate();
                     let failures = self.bulkhead.consecutive_failures();
-                    let backoff = self.bulkhead.steady_pace();
+                    let backoff = self.bulkhead.min_interval();
                     let error_str = e.to_string();
                     self.notify_listeners(|l| {
                         l.on_error(duration, &error_str, failures, backoff);
@@ -283,7 +290,7 @@ impl<A: WorkerAction> WorkerTask<A> {
                     let duration = last_execute.elapsed();
                     self.bulkhead.escalate();
                     let failures = self.bulkhead.consecutive_failures();
-                    let backoff = self.bulkhead.steady_pace();
+                    let backoff = self.bulkhead.min_interval();
                     let panic_msg = panic_message(&panic_payload);
                     self.notify_listeners(|l| {
                         l.on_error(duration, &panic_msg, failures, backoff);
@@ -300,10 +307,11 @@ impl<A: WorkerAction> WorkerTask<A> {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use tokio::time::Instant;
-
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
+
+    use tokio::time::Instant;
 
     use super::*;
 
@@ -378,10 +386,30 @@ mod tests {
         }
     }
 
-    fn worker_with_poker(action: MockAction, cancel: CancellationToken) -> WorkerTask<MockAction> {
-        WorkerBuilder::new("test", cancel)
-            .with_poker(Duration::from_millis(1))
-            .build(action)
+    /// Zero-pacing config — Proceed is immediate, no auto-poker.
+    fn zero_pacing() -> PacingConfig {
+        PacingConfig {
+            min_interval: Duration::ZERO,
+            active_interval: Duration::ZERO,
+            idle_interval: Duration::ZERO,
+            ramp_step: Duration::ZERO,
+        }
+    }
+
+    /// Build a worker with a stored-permit notifier to break the initial Idle
+    /// and zero adaptive pacing. No poker — Idle blocks until explicit notify
+    /// or cancel.
+    fn worker_with_stored_permit(
+        action: MockAction,
+        cancel: CancellationToken,
+    ) -> (WorkerTask<MockAction>, Arc<Notify>) {
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // stored permit breaks initial Idle
+        let worker = WorkerBuilder::new("test", cancel)
+            .pacing(zero_pacing())
+            .notifier(notify.clone())
+            .build(action);
+        (worker, notify)
     }
 
     fn worker_with_notifier(
@@ -390,6 +418,7 @@ mod tests {
         cancel: CancellationToken,
     ) -> WorkerTask<MockAction> {
         WorkerBuilder::new("test", cancel)
+            .pacing(zero_pacing())
             .notifier(notify)
             .build(action)
     }
@@ -400,7 +429,13 @@ mod tests {
     fn builder_no_notifiers() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![]);
-        let worker = WorkerBuilder::new("test", cancel).build(action);
+        // idle_interval=ZERO suppresses auto-poker
+        let worker = WorkerBuilder::new("test", cancel)
+            .pacing(PacingConfig {
+                idle_interval: Duration::ZERO,
+                ..Default::default()
+            })
+            .build(action);
         assert!(worker.notifiers.is_empty());
     }
 
@@ -410,6 +445,10 @@ mod tests {
         let notify = Arc::new(Notify::new());
         let action = MockAction::new(vec![]);
         let worker = WorkerBuilder::new("test", cancel)
+            .pacing(PacingConfig {
+                idle_interval: Duration::ZERO,
+                ..Default::default()
+            })
             .notifier(notify)
             .build(action);
         assert_eq!(worker.notifiers.len(), 1);
@@ -423,6 +462,10 @@ mod tests {
         let n3 = Arc::new(Notify::new());
         let action = MockAction::new(vec![]);
         let worker = WorkerBuilder::new("test", cancel)
+            .pacing(PacingConfig {
+                idle_interval: Duration::ZERO,
+                ..Default::default()
+            })
             .notifier(n1)
             .notifier(n2)
             .notifier(n3)
@@ -431,23 +474,30 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn builder_with_poker_adds_notifier() {
+    async fn builder_tuning_idle_interval_adds_poker_notifier() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![]);
         let worker = WorkerBuilder::new("test", cancel)
-            .with_poker(Duration::from_secs(1))
+            .pacing(PacingConfig {
+                idle_interval: Duration::from_secs(1),
+                ..Default::default()
+            })
             .build(action);
+        // tuning.idle_interval > ZERO → auto-created poker notifier
         assert_eq!(worker.notifiers.len(), 1);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn builder_notifier_plus_poker() {
+    async fn builder_notifier_plus_tuning_poker() {
         let cancel = CancellationToken::new();
         let notify = Arc::new(Notify::new());
         let action = MockAction::new(vec![]);
         let worker = WorkerBuilder::new("test", cancel)
             .notifier(notify)
-            .with_poker(Duration::from_secs(1))
+            .pacing(PacingConfig {
+                idle_interval: Duration::from_secs(1),
+                ..Default::default()
+            })
             .build(action);
         assert_eq!(worker.notifiers.len(), 2);
     }
@@ -468,11 +518,11 @@ mod tests {
                     multiplier: 2.0,
                     jitter: 0.0,
                 },
-                steady_pace: Duration::ZERO,
             },
         );
         let action = MockAction::new(vec![]);
         let _worker = WorkerBuilder::new("test", cancel)
+            .pacing(zero_pacing())
             .bulkhead(bulkhead)
             .build(action);
     }
@@ -482,6 +532,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn continue_executes_immediately() {
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let action = MockAction::new(vec![
             Ok(Directive::proceed()),
             Ok(Directive::proceed()),
@@ -489,7 +541,11 @@ mod tests {
             Ok(Directive::sleep(Duration::from_secs(60))),
         ]);
         let count = action.call_count();
-        let worker = worker_with_poker(action, cancel.clone());
+        // Zero pacing so Proceed is truly immediate, no poker
+        let worker = WorkerBuilder::new("test", cancel.clone())
+            .pacing(zero_pacing())
+            .notifier(notify)
+            .build(action);
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -509,7 +565,7 @@ mod tests {
             Ok(Directive::sleep(Duration::from_secs(60))),
         ]);
         let count = action.call_count();
-        let worker = worker_with_poker(action, cancel.clone());
+        let (worker, _notify) = worker_with_stored_permit(action, cancel.clone());
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -531,7 +587,7 @@ mod tests {
             Ok(Directive::sleep(Duration::from_secs(60))),
         ]);
         let count = action.call_count();
-        let worker = worker_with_poker(action, cancel.clone());
+        let (worker, _notify) = worker_with_stored_permit(action, cancel.clone());
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -583,7 +639,12 @@ mod tests {
         let action = MockAction::new(vec![]);
         let count = action.call_count();
         // No notifiers at all — Idle blocks forever, only cancel wakes
-        let worker = WorkerBuilder::new("test", cancel.clone()).build(action);
+        let worker = WorkerBuilder::new("test", cancel.clone())
+            .pacing(PacingConfig {
+                idle_interval: Duration::ZERO,
+                ..Default::default()
+            })
+            .build(action);
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -598,7 +659,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn sleep_ignores_notify() {
+    async fn sleep_wakes_early_on_notify() {
         let cancel = CancellationToken::new();
         let notify = Arc::new(Notify::new());
         // Store permit for initial Idle
@@ -610,23 +671,26 @@ mod tests {
         let count = action.call_count();
         let worker = worker_with_notifier(action, notify.clone(), cancel.clone());
 
-        // Send notify during Sleep — should be ignored
+        // Send notify during Sleep — soft sleep wakes early at 20ms
         let notify_c = notify.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
             notify_c.notify_one();
         });
 
+        // Cancel shortly after the early wake — proves sleep ended before 100ms
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
             cancel_c.cancel();
         });
 
         let start = Instant::now();
         worker.run().await;
+        // Second call happened because the 100ms sleep was interrupted at 20ms
         assert_eq!(count.load(Ordering::SeqCst), 2);
-        assert!(start.elapsed() >= Duration::from_millis(100));
+        // Total elapsed: ~50ms (cancel), well under 100ms of original sleep
+        assert!(start.elapsed() < Duration::from_millis(100));
     }
 
     // ---- Multi-Notifier Tests ----
@@ -702,7 +766,12 @@ mod tests {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![]);
         let count = action.call_count();
-        let worker = WorkerBuilder::new("test", cancel.clone()).build(action);
+        let worker = WorkerBuilder::new("test", cancel.clone())
+            .pacing(PacingConfig {
+                idle_interval: Duration::ZERO,
+                ..Default::default()
+            })
+            .build(action);
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -765,7 +834,7 @@ mod tests {
     async fn cancel_during_sleep() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![Ok(Directive::sleep(Duration::from_secs(10)))]);
-        let worker = worker_with_poker(action, cancel.clone());
+        let (worker, _notify) = worker_with_stored_permit(action, cancel.clone());
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -781,11 +850,14 @@ mod tests {
     #[tokio::test]
     async fn cancel_between_continues() {
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
 
         let count = Arc::new(AtomicU32::new(0));
         let count_c = count.clone();
         let worker = WorkerBuilder::new("test", cancel.clone())
-            .with_poker(Duration::from_millis(1))
+            .pacing(zero_pacing())
+            .notifier(notify)
             .build(AlwaysContinue(count_c));
 
         let cancel_c = cancel.clone();
@@ -801,8 +873,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn cancel_visible_in_execute() {
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let worker = WorkerBuilder::new("test", cancel.clone())
-            .with_poker(Duration::from_millis(10))
+            .pacing(PacingConfig {
+                idle_interval: Duration::from_millis(10),
+                ..zero_pacing()
+            })
+            .notifier(notify)
             .build(CheckCancel {
                 saw_cancelled: false,
             });
@@ -822,7 +900,7 @@ mod tests {
         cancel.cancel();
         let action = MockAction::new(vec![]);
         let count = action.call_count();
-        let worker = worker_with_poker(action, cancel);
+        let (worker, _notify) = worker_with_stored_permit(action, cancel);
 
         worker.run().await;
         assert_eq!(count.load(Ordering::SeqCst), 0);
@@ -833,13 +911,25 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn error_triggers_escalation_and_retry() {
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let action = MockAction::new(vec![
             Err("boom".to_owned()),
             Ok(Directive::proceed()),
             Ok(Directive::sleep(Duration::from_secs(60))),
         ]);
         let count = action.call_count();
-        let worker = worker_with_poker(action, cancel.clone());
+        let worker = WorkerBuilder::new("test", cancel.clone())
+            .pacing(zero_pacing())
+            .notifier(notify.clone())
+            .build(action);
+
+        // Fire notify to wake from error-Idle
+        let notify_c = notify.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            notify_c.notify_one();
+        });
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -854,12 +944,24 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn error_on_first_call_retries() {
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let action = MockAction::new(vec![
             Err("fail".to_owned()),
             Ok(Directive::sleep(Duration::from_secs(60))),
         ]);
         let count = action.call_count();
-        let worker = worker_with_poker(action, cancel.clone());
+        let worker = WorkerBuilder::new("test", cancel.clone())
+            .pacing(zero_pacing())
+            .notifier(notify.clone())
+            .build(action);
+
+        // Fire notify to wake from error-Idle
+        let notify_c = notify.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            notify_c.notify_one();
+        });
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -877,6 +979,8 @@ mod tests {
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
         };
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let bulkhead = Bulkhead::new(
             "test",
             BulkheadConfig {
@@ -887,7 +991,6 @@ mod tests {
                     multiplier: 2.0,
                     jitter: 0.0,
                 },
-                steady_pace: Duration::ZERO,
             },
         );
         let action = MockAction::new(vec![
@@ -897,8 +1000,16 @@ mod tests {
         let count = action.call_count();
         let worker = WorkerBuilder::new("test", cancel.clone())
             .bulkhead(bulkhead)
-            .with_poker(Duration::from_millis(1))
+            .pacing(zero_pacing())
+            .notifier(notify.clone())
             .build(action);
+
+        // Fire notify to wake from error-Idle (after backoff floor)
+        let notify_c = notify.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            notify_c.notify_one();
+        });
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -918,6 +1029,8 @@ mod tests {
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
         };
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let bulkhead = Bulkhead::new(
             "test",
             BulkheadConfig {
@@ -928,7 +1041,6 @@ mod tests {
                     multiplier: 2.0,
                     jitter: 0.0,
                 },
-                steady_pace: Duration::ZERO,
             },
         );
         let action = MockAction::new(vec![
@@ -940,8 +1052,18 @@ mod tests {
         let count = action.call_count();
         let worker = WorkerBuilder::new("test", cancel.clone())
             .bulkhead(bulkhead)
-            .with_poker(Duration::from_millis(1))
+            .pacing(zero_pacing())
+            .notifier(notify.clone())
             .build(action);
+
+        // Fire notifies to wake from each error-Idle
+        let notify_c = notify.clone();
+        tokio::spawn(async move {
+            for delay_ms in [20, 50, 100] {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                notify_c.notify_one();
+            }
+        });
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -962,6 +1084,8 @@ mod tests {
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
         };
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let bulkhead = Bulkhead::new(
             "test",
             BulkheadConfig {
@@ -972,7 +1096,6 @@ mod tests {
                     multiplier: 2.0,
                     jitter: 0.0,
                 },
-                steady_pace: Duration::ZERO,
             },
         );
         let action = MockAction::new(vec![
@@ -985,8 +1108,18 @@ mod tests {
         let count = action.call_count();
         let worker = WorkerBuilder::new("test", cancel.clone())
             .bulkhead(bulkhead)
-            .with_poker(Duration::from_millis(1))
+            .pacing(zero_pacing())
+            .notifier(notify.clone())
             .build(action);
+
+        // Fire notifies to wake from each error-Idle (3 errors → 3 notifies)
+        let notify_c = notify.clone();
+        tokio::spawn(async move {
+            for delay_ms in [60, 120, 10] {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                notify_c.notify_one();
+            }
+        });
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -1017,7 +1150,6 @@ mod tests {
                     multiplier: 2.0,
                     jitter: 0.0,
                 },
-                steady_pace: Duration::ZERO,
             },
         );
         let action = MockAction::new(vec![
@@ -1027,6 +1159,7 @@ mod tests {
         let count = action.call_count();
         let worker = WorkerBuilder::new("test", cancel.clone())
             .bulkhead(bulkhead)
+            .pacing(zero_pacing())
             .notifier(notify.clone())
             .build(action);
 
@@ -1049,52 +1182,10 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
-    // ---- Bulkhead Floor Tests ----
+    // ---- Error Backoff Floor Tests ----
 
     #[tokio::test(start_paused = true)]
-    async fn floor_applied_to_continue() {
-        use crate::outbox::taskward::bulkhead::{
-            BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
-        };
-        let cancel = CancellationToken::new();
-        let mut bulkhead = Bulkhead::new(
-            "test",
-            BulkheadConfig {
-                semaphore: ConcurrencyLimit::Unlimited,
-                backoff: BackoffConfig {
-                    initial: Duration::from_millis(100),
-                    max: Duration::from_secs(10),
-                    multiplier: 2.0,
-                    jitter: 0.0,
-                },
-                steady_pace: Duration::ZERO,
-            },
-        );
-        bulkhead.escalate();
-        let action = MockAction::new(vec![
-            Ok(Directive::proceed()),
-            Ok(Directive::sleep(Duration::from_secs(60))),
-        ]);
-        let count = action.call_count();
-        let worker = WorkerBuilder::new("test", cancel.clone())
-            .bulkhead(bulkhead)
-            .with_poker(Duration::from_millis(1))
-            .build(action);
-
-        let cancel_c = cancel.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            cancel_c.cancel();
-        });
-
-        let start = Instant::now();
-        worker.run().await;
-        assert_eq!(count.load(Ordering::SeqCst), 2);
-        assert!(start.elapsed() >= Duration::from_millis(100));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn floor_applied_to_idle() {
+    async fn error_backoff_delays_idle() {
         use crate::outbox::taskward::bulkhead::{
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
         };
@@ -1110,7 +1201,6 @@ mod tests {
                     multiplier: 2.0,
                     jitter: 0.0,
                 },
-                steady_pace: Duration::ZERO,
             },
         );
         bulkhead.escalate();
@@ -1119,19 +1209,20 @@ mod tests {
             Ok(Directive::sleep(Duration::from_secs(60))),
         ]);
         let count = action.call_count();
-        // Use a poker so initial Idle resolves quickly (floor applies to initial
-        // Idle too since last_execute starts at now())
         let worker = WorkerBuilder::new("test", cancel.clone())
             .bulkhead(bulkhead)
             .notifier(notify.clone())
-            .with_poker(Duration::from_millis(1))
+            .pacing(zero_pacing())
             .build(action);
 
-        // Send notify after the floor wait — should wake from Idle
+        // Notify to wake from initial Idle (after error backoff floor)
+        // and from the action-returned Idle.
         let notify_c = notify.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(250)).await;
-            notify_c.notify_one();
+            notify_c.notify_one(); // wake from initial Idle
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            notify_c.notify_one(); // wake from action-returned Idle
         });
 
         let cancel_c = cancel.clone();
@@ -1143,41 +1234,33 @@ mod tests {
         let start = Instant::now();
         worker.run().await;
         assert_eq!(count.load(Ordering::SeqCst), 2);
-        // First execute happens after initial Idle (poker resolves it after
-        // floor wait ~200ms). Action returns Idle. Second Idle floor wait
-        // is ~200ms from last execute, then notify wakes at ~250ms.
-        // Total >= 200ms (first floor) + ~200ms (second floor) ≈ 400ms
+        // Initial Idle waits for error backoff floor (200ms) then notify at 250ms,
+        // execute returns Idle, second Idle waits for notify at 300ms.
         assert!(start.elapsed() >= Duration::from_millis(200));
     }
 
     #[tokio::test(start_paused = true)]
-    async fn floor_applied_to_sleep() {
-        use crate::outbox::taskward::bulkhead::{
-            BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
-        };
+    async fn adaptive_pacing_ramps_down_on_proceed() {
         let cancel = CancellationToken::new();
-        let mut bulkhead = Bulkhead::new(
-            "test",
-            BulkheadConfig {
-                semaphore: ConcurrencyLimit::Unlimited,
-                backoff: BackoffConfig {
-                    initial: Duration::from_millis(200),
-                    max: Duration::from_secs(10),
-                    multiplier: 2.0,
-                    jitter: 0.0,
-                },
-                steady_pace: Duration::ZERO,
-            },
-        );
-        bulkhead.escalate();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let action = MockAction::new(vec![
-            Ok(Directive::sleep(Duration::from_millis(50))),
+            Ok(Directive::proceed()),
+            Ok(Directive::proceed()),
+            Ok(Directive::proceed()),
             Ok(Directive::sleep(Duration::from_secs(60))),
         ]);
         let count = action.call_count();
+        // active_interval=30ms, min_interval=10ms, ramp_step=10ms
+        // Proceed pacing: 30ms → 20ms → 10ms
         let worker = WorkerBuilder::new("test", cancel.clone())
-            .bulkhead(bulkhead)
-            .with_poker(Duration::from_millis(1))
+            .pacing(PacingConfig {
+                active_interval: Duration::from_millis(30),
+                min_interval: Duration::from_millis(10),
+                ramp_step: Duration::from_millis(10),
+                ..zero_pacing()
+            })
+            .notifier(notify)
             .build(action);
 
         let cancel_c = cancel.clone();
@@ -1188,62 +1271,26 @@ mod tests {
 
         let start = Instant::now();
         worker.run().await;
-        assert_eq!(count.load(Ordering::SeqCst), 2);
-        assert!(start.elapsed() >= Duration::from_millis(200));
+        assert_eq!(count.load(Ordering::SeqCst), 4);
+        // Total pacing: 30 + 20 + 10 = 60ms minimum
+        assert!(start.elapsed() >= Duration::from_millis(60));
     }
 
     #[tokio::test(start_paused = true)]
-    async fn floor_does_not_reduce() {
-        use crate::outbox::taskward::bulkhead::{
-            BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
-        };
+    async fn zero_pacing_no_delay() {
         let cancel = CancellationToken::new();
-        let mut bulkhead = Bulkhead::new(
-            "test",
-            BulkheadConfig {
-                semaphore: ConcurrencyLimit::Unlimited,
-                backoff: BackoffConfig {
-                    initial: Duration::from_millis(100),
-                    max: Duration::from_secs(10),
-                    multiplier: 2.0,
-                    jitter: 0.0,
-                },
-                steady_pace: Duration::ZERO,
-            },
-        );
-        bulkhead.escalate();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let action = MockAction::new(vec![
-            Ok(Directive::sleep(Duration::from_millis(500))),
+            Ok(Directive::proceed()),
+            Ok(Directive::proceed()),
             Ok(Directive::sleep(Duration::from_secs(60))),
         ]);
         let count = action.call_count();
         let worker = WorkerBuilder::new("test", cancel.clone())
-            .bulkhead(bulkhead)
-            .with_poker(Duration::from_millis(1))
+            .pacing(zero_pacing())
+            .notifier(notify)
             .build(action);
-
-        let cancel_c = cancel.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            cancel_c.cancel();
-        });
-
-        let start = Instant::now();
-        worker.run().await;
-        assert_eq!(count.load(Ordering::SeqCst), 2);
-        assert!(start.elapsed() >= Duration::from_millis(500));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn zero_floor_no_effect() {
-        let cancel = CancellationToken::new();
-        let action = MockAction::new(vec![
-            Ok(Directive::proceed()),
-            Ok(Directive::proceed()),
-            Ok(Directive::sleep(Duration::from_secs(60))),
-        ]);
-        let count = action.call_count();
-        let worker = worker_with_poker(action, cancel.clone());
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -1265,6 +1312,8 @@ mod tests {
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
         };
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let sem = Arc::new(tokio::sync::Semaphore::new(1));
         let bulkhead = Bulkhead::new(
             "test",
@@ -1276,14 +1325,14 @@ mod tests {
                     multiplier: 2.0,
                     jitter: 0.0,
                 },
-                steady_pace: Duration::ZERO,
             },
         );
         let action = MockAction::new(vec![Ok(Directive::sleep(Duration::from_secs(60)))]);
         let count = action.call_count();
         let worker = WorkerBuilder::new("test", cancel.clone())
             .bulkhead(bulkhead)
-            .with_poker(Duration::from_millis(1))
+            .pacing(zero_pacing())
+            .notifier(notify)
             .build(action);
 
         let cancel_c = cancel.clone();
@@ -1302,6 +1351,8 @@ mod tests {
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
         };
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let sem = Arc::new(tokio::sync::Semaphore::new(1));
         let permit = sem.clone().acquire_owned().await.unwrap();
         let bulkhead = Bulkhead::new(
@@ -1314,14 +1365,14 @@ mod tests {
                     multiplier: 2.0,
                     jitter: 0.0,
                 },
-                steady_pace: Duration::ZERO,
             },
         );
         let action = MockAction::new(vec![Ok(Directive::sleep(Duration::from_secs(60)))]);
         let count = action.call_count();
         let worker = WorkerBuilder::new("test", cancel.clone())
             .bulkhead(bulkhead)
-            .with_poker(Duration::from_millis(1))
+            .pacing(zero_pacing())
+            .notifier(notify)
             .build(action);
 
         tokio::spawn(async move {
@@ -1347,6 +1398,8 @@ mod tests {
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
         };
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let sem = Arc::new(tokio::sync::Semaphore::new(0));
         let bulkhead = Bulkhead::new(
             "test",
@@ -1358,14 +1411,14 @@ mod tests {
                     multiplier: 2.0,
                     jitter: 0.0,
                 },
-                steady_pace: Duration::ZERO,
             },
         );
         let action = MockAction::new(vec![]);
         let count = action.call_count();
         let worker = WorkerBuilder::new("test", cancel.clone())
             .bulkhead(bulkhead)
-            .with_poker(Duration::from_millis(1))
+            .pacing(zero_pacing())
+            .notifier(notify)
             .build(action);
 
         let cancel_c = cancel.clone();
@@ -1487,12 +1540,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn listener_called_on_complete() {
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let listener = RecordingListener::default();
         let events = listener.events();
         let action = MockAction::new(vec![Ok(Directive::sleep(Duration::from_secs(60)))]);
         let worker = WorkerBuilder::new("test", cancel.clone())
             .listener(listener)
-            .with_poker(Duration::from_millis(1))
+            .pacing(zero_pacing())
+            .notifier(notify)
             .build(action);
 
         let cancel_c = cancel.clone();
@@ -1509,6 +1565,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn listener_called_on_error_with_context() {
         let cancel = CancellationToken::new();
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
         let listener = RecordingListener::default();
         let events = listener.events();
         let action = MockAction::new(vec![
@@ -1517,7 +1575,8 @@ mod tests {
         ]);
         let worker = WorkerBuilder::new("test", cancel.clone())
             .listener(listener)
-            .with_poker(Duration::from_millis(1))
+            .pacing(zero_pacing())
+            .notifier(notify.clone())
             .build(action);
 
         let cancel_c = cancel.clone();

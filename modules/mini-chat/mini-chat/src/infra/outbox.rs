@@ -550,7 +550,6 @@ mod tests {
 
         // Start outbox pipeline with the real UsageEventHandler + mock plugin.
         let handle = Outbox::builder(db.clone())
-            .poll_interval(Duration::from_millis(20))
             .queue("test.usage", Partitions::of(1))
             .decoupled(UsageEventHandler {
                 plugin_provider: Arc::new(MockProvider {

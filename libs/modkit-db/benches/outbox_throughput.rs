@@ -34,8 +34,8 @@ use tokio::runtime::Runtime;
 use tokio::sync::Notify;
 
 use modkit_db::outbox::{
-    EnqueueMessage, Handler, HandlerResult, Outbox, OutboxHandle, OutboxMessage, Partitions,
-    outbox_migrations,
+    EnqueueMessage, Handler, HandlerResult, Outbox, OutboxHandle, OutboxMessage, OutboxProfile,
+    Partitions, outbox_migrations,
 };
 use modkit_db::{ConnectOpts, Db, connect_db, migration_runner::run_migrations_for_testing};
 use tokio_util::sync::CancellationToken;
@@ -360,14 +360,13 @@ async fn setup_pipeline(
     expected_total: usize,
     queue_name: &str,
 ) -> (Db, OutboxHandle, Arc<BenchState>) {
-    setup_pipeline_with(db_url, expected_total, queue_name, Duration::from_secs(30)).await
+    setup_pipeline_with(db_url, expected_total, queue_name).await
 }
 
 async fn setup_pipeline_with(
     db_url: &str,
     expected_total: usize,
     queue_name: &str,
-    vacuum_cooldown: Duration,
 ) -> (Db, OutboxHandle, Arc<BenchState>) {
     // Pool budget: producers + processors + sequencers + vacuum + margin.
     // 16 producers + 8 processors + 2 sequencers + 1 vacuum + 5 margin = 32.
@@ -392,14 +391,11 @@ async fn setup_pipeline_with(
     };
 
     let handle = Outbox::builder(db.clone())
-        .poll_interval(Duration::from_secs(60))
-        .steady_pace(Duration::from_millis(10)) // match production default
+        .profile(OutboxProfile::high_throughput())
         .processors(8)
         .maintenance(2, 1)
-        .vacuum_cooldown(vacuum_cooldown)
-        .stats_interval(Duration::from_secs(5))
+        .stats_interval(Duration::from_secs(10))
         .queue(queue_name, Partitions::of(PARTITIONS))
-        .msg_batch_size(50)
         .batch_decoupled(handler)
         .start()
         .await
@@ -429,7 +425,10 @@ async fn cleanup_outbox_tables(db_url: &str) {
     let db = Database::connect(db_url).await.unwrap();
     let backend = db.get_database_backend();
     for table in TABLES {
-        let sql = format!("DELETE FROM {table}");
+        let sql = match backend {
+            sea_orm::DbBackend::Postgres => format!("TRUNCATE TABLE {table} CASCADE"),
+            _ => format!("DELETE FROM {table}"),
+        };
         db.execute(Statement::from_string(backend, sql))
             .await
             .unwrap();
@@ -669,27 +668,10 @@ macro_rules! bench_fn {
             TIMEOUT_STANDARD,
             10,
             15,
-            2,
-            Duration::from_secs(1)
+            2
         )
     };
-    ($c:expr, $group_name:expr, $bench_name:expr, $db_url:expr, $msg_count:expr, $rt:expr, $producer:path, $timeout:expr, $samples:expr, $measure_secs:expr, $warmup_secs:expr) => {
-        bench_fn!(
-            $c,
-            $group_name,
-            $bench_name,
-            $db_url,
-            $msg_count,
-            $rt,
-            $producer,
-            $timeout,
-            $samples,
-            $measure_secs,
-            $warmup_secs,
-            Duration::from_secs(1)
-        )
-    };
-    ($c:expr, $group_name:expr, $bench_name:expr, $db_url:expr, $msg_count:expr, $rt:expr, $producer:path, $timeout:expr, $samples:expr, $measure_secs:expr, $warmup_secs:expr, $vacuum_cooldown:expr) => {{
+    ($c:expr, $group_name:expr, $bench_name:expr, $db_url:expr, $msg_count:expr, $rt:expr, $producer:path, $timeout:expr, $samples:expr, $measure_secs:expr, $warmup_secs:expr) => {{
         let mut group = $c.benchmark_group($group_name);
         group.throughput(Throughput::Elements($msg_count as u64));
         group.sample_size($samples);
@@ -704,8 +686,7 @@ macro_rules! bench_fn {
                         let iter_id = GLOBAL_ITER_COUNTER.fetch_add(1, Ordering::Relaxed);
                         let queue = iter_queue_name(iter_id);
                         let (db, handle, state) =
-                            setup_pipeline_with($db_url, $msg_count, &queue, $vacuum_cooldown)
-                                .await;
+                            setup_pipeline_with($db_url, $msg_count, &queue).await;
 
                         let start = Instant::now();
                         $producer(handle.outbox(), &db, &queue, $msg_count).await;

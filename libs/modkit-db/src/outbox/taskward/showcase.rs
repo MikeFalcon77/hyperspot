@@ -19,6 +19,7 @@ mod tests {
         BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
     };
     use crate::outbox::taskward::listener::TracingListener;
+    use crate::outbox::taskward::pacing::PacingConfig;
     use crate::outbox::taskward::task::{PanicPolicy, WorkerBuilder};
 
     // ---- Scenario: Long-interval worker reschedules immediately when work
@@ -81,7 +82,10 @@ mod tests {
         };
 
         let worker = WorkerBuilder::new("batch-processor", cancel.clone())
-            .with_poker(h * 4) // 4h poker
+            .pacing(PacingConfig {
+                idle_interval: h * 4,
+                ..Default::default()
+            }) // 4h poker
             .build(action);
 
         // Cancel after 16h — enough for 3 calls + some idle.
@@ -149,7 +153,10 @@ mod tests {
         // Poker fires every 5h (safety net) — but notifiers fire much sooner.
         let worker = WorkerBuilder::new("event-worker", cancel.clone())
             .notifier(notify.clone())
-            .with_poker(h * 5)
+            .pacing(PacingConfig {
+                idle_interval: h * 5,
+                ..Default::default()
+            })
             .build(action);
 
         // Stored permit → initial Idle resolves immediately.
@@ -234,15 +241,32 @@ mod tests {
                     multiplier: 2.0,
                     jitter: 0.0,
                 },
-                steady_pace: Duration::ZERO,
             },
         );
+
+        let notify = Arc::new(Notify::new());
+        notify.notify_one(); // break initial Idle
 
         let worker = WorkerBuilder::new("flaky-worker", cancel.clone())
             .bulkhead(bulkhead)
             .listener(TracingListener)
-            .with_poker(Duration::from_millis(1))
+            .pacing(PacingConfig {
+                idle_interval: Duration::ZERO,
+                active_interval: Duration::ZERO,
+                min_interval: Duration::ZERO,
+                ramp_step: Duration::ZERO,
+            })
+            .notifier(notify.clone())
             .build(action);
+
+        // Fire notifies to wake from each error-Idle (4 errors → 4 notifies)
+        let notify_c = notify.clone();
+        tokio::spawn(async move {
+            for _ in 0..4 {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                notify_c.notify_one();
+            }
+        });
 
         let cancel_c = cancel.clone();
         tokio::spawn(async move {
@@ -297,6 +321,12 @@ mod tests {
         source_a.notify_one();
 
         let worker = WorkerBuilder::new("multi-source", cancel.clone())
+            .pacing(PacingConfig {
+                idle_interval: Duration::ZERO,
+                active_interval: Duration::ZERO,
+                min_interval: Duration::ZERO,
+                ramp_step: Duration::ZERO,
+            })
             .notifier(source_a.clone())
             .notifier(source_b.clone())
             .notifier(source_c.clone())
@@ -400,7 +430,6 @@ mod tests {
                         multiplier: 2.0,
                         jitter: 0.0,
                     },
-                    steady_pace: Duration::ZERO,
                 },
             );
 
@@ -473,7 +502,10 @@ mod tests {
         };
 
         let worker = WorkerBuilder::new("vacuum", cancel.clone())
-            .with_poker(Duration::from_secs(600)) // 10min poker to break initial Idle
+            .pacing(PacingConfig {
+                idle_interval: Duration::from_secs(600),
+                ..Default::default()
+            }) // 10min poker to break initial Idle
             .build(action);
 
         let cancel_c = cancel.clone();
@@ -545,7 +577,10 @@ mod tests {
 
         let bad_worker = WorkerBuilder::new("bad", cancel.clone())
             .notifier(notify.clone())
-            .with_poker(Duration::from_secs(1))
+            .pacing(PacingConfig {
+                idle_interval: Duration::from_secs(1),
+                ..Default::default()
+            })
             .on_panic(PanicPolicy::CatchAndRetry)
             .build(bad_action);
 
@@ -585,13 +620,19 @@ mod tests {
 
         let bad_worker = WorkerBuilder::new("bad", cancel.clone())
             .notifier(notify.clone())
-            .with_poker(Duration::from_secs(1))
+            .pacing(PacingConfig {
+                idle_interval: Duration::from_secs(1),
+                ..Default::default()
+            })
             .on_panic(PanicPolicy::CatchAndRetry)
             .build(bad_action);
 
         let good_worker = WorkerBuilder::new("good", cancel.clone())
             .notifier(notify.clone())
-            .with_poker(Duration::from_secs(1))
+            .pacing(PacingConfig {
+                idle_interval: Duration::from_secs(1),
+                ..Default::default()
+            })
             .build(good_action);
 
         let mut task_set = crate::outbox::taskward::task_set::TaskSet::new(cancel.clone());
