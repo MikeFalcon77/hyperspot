@@ -69,6 +69,7 @@ pub async fn replay_turn<MR: MessageRepository>(
         quota_decision: reconstruct_quota_decision(turn, selected_model),
         downgrade_from: reconstruct_downgrade_from(turn, selected_model),
         downgrade_reason: None,
+        quota_warnings: None,
     }));
 
     Ok(ReplayEvents { delta, done })

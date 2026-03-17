@@ -68,6 +68,11 @@ pub(crate) mod resources {
         name: "gts.cf.core.ai_chat.model.v1~cf.core.mini_chat.model.v1",
         supported_properties: &[pep_properties::OWNER_TENANT_ID],
     };
+
+    pub const USER_QUOTA: ResourceType = ResourceType {
+        name: "gts.cf.core.ai_chat.user_quota.v1~cf.core.mini_chat.user_quota.v1",
+        supported_properties: &[pep_properties::OWNER_TENANT_ID, pep_properties::OWNER_ID],
+    };
 }
 
 #[allow(dead_code)]

@@ -19,6 +19,7 @@ use modkit_db::secure::DBRunner;
 use modkit_macros::domain_model;
 use modkit_security::AccessScope;
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::config::{EstimationBudgets, QuotaConfig};
 use crate::domain::error::DomainError;
@@ -66,6 +67,149 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
     pub(crate) fn web_search_max_calls_per_message(&self) -> u32 {
         self.quota_config.web_search_max_calls_per_message
     }
+
+    /// Compute per-tier, per-period quota warnings for the SSE `done` event.
+    /// Delegates to `get_quota_status` and flattens the result.
+    pub(crate) async fn compute_quota_warnings(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Vec<crate::domain::stream_events::QuotaWarning>, DomainError> {
+        use crate::domain::stream_events::QuotaWarning;
+
+        let status = self.get_quota_status(scope, tenant_id, user_id).await?;
+        Ok(status
+            .tiers
+            .into_iter()
+            .flat_map(|t| {
+                let tier = t.tier;
+                t.periods.into_iter().map(move |p| QuotaWarning {
+                    tier,
+                    period: p.period,
+                    remaining_percentage: p.remaining_percentage,
+                    warning: p.warning,
+                    exhausted: p.exhausted,
+                })
+            })
+            .collect())
+    }
+
+    /// Full quota status for the REST endpoint.
+    pub(crate) async fn get_quota_status(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<crate::domain::model::quota::QuotaStatusResult, DomainError> {
+        use crate::domain::model::quota::{PeriodResult, QuotaStatusResult, TierResult};
+        use crate::domain::stream_events::{QuotaPeriod, QuotaTier};
+
+        let conn = self.db.conn()?;
+
+        let version = self.policy_provider.get_current_version(user_id).await?;
+        let limits = self.limits_provider.get_limits(user_id, version).await?;
+
+        let today = time::OffsetDateTime::now_utc().date();
+        let month_start = today
+            .replace_day(1)
+            .map_err(|e| DomainError::internal(e.to_string()))?;
+
+        let rows = self
+            .repo
+            .find_bucket_rows(&conn, scope, tenant_id, user_id)
+            .await?;
+
+        let threshold = self.quota_config.warning_threshold_pct;
+        let mut tiers = Vec::new();
+
+        for (bucket, tier_enum, tier_limits) in [
+            ("tier:premium", QuotaTier::Premium, &limits.premium),
+            ("total", QuotaTier::Total, &limits.standard),
+        ] {
+            let mut periods = Vec::new();
+            for (period_type, period_start, limit, period_enum, next_reset) in [
+                (
+                    PeriodType::Daily,
+                    today,
+                    tier_limits.limit_daily_credits_micro,
+                    QuotaPeriod::Daily,
+                    next_daily_reset(today),
+                ),
+                (
+                    PeriodType::Monthly,
+                    month_start,
+                    tier_limits.limit_monthly_credits_micro,
+                    QuotaPeriod::Monthly,
+                    next_monthly_reset(today)?,
+                ),
+            ] {
+                if limit <= 0 {
+                    continue;
+                }
+
+                let used = rows
+                    .iter()
+                    .find(|r| {
+                        r.bucket == bucket
+                            && r.period_type == period_type
+                            && r.period_start == period_start
+                    })
+                    .map_or(0, |r| r.spent_credits_micro + r.reserved_credits_micro);
+
+                let remaining = (limit - used).max(0);
+                let remaining_pct = remaining_percentage(remaining, limit);
+
+                periods.push(PeriodResult {
+                    period: period_enum,
+                    limit_credits_micro: limit,
+                    used_credits_micro: used,
+                    remaining_credits_micro: remaining,
+                    remaining_percentage: remaining_pct,
+                    next_reset,
+                    warning: remaining_pct <= (100 - threshold),
+                    exhausted: remaining_pct == 0,
+                });
+            }
+            tiers.push(TierResult {
+                tier: tier_enum,
+                periods,
+            });
+        }
+
+        Ok(QuotaStatusResult {
+            tiers,
+            warning_threshold_pct: threshold,
+        })
+    }
+}
+
+/// Integer percentage of `remaining` relative to `limit` (0..=100).
+///
+/// Precondition: `limit > 0` and `remaining ∈ [0, limit]`.
+#[allow(clippy::integer_division)] // intentional: integer percentage
+fn remaining_percentage(remaining: i64, limit: i64) -> u8 {
+    debug_assert!(limit > 0, "limit must be positive");
+    debug_assert!(remaining >= 0 && remaining <= limit);
+    // u128 avoids overflow for large credit values.
+    u8::try_from(remaining as u128 * 100 / limit as u128).unwrap_or(100)
+}
+
+fn next_daily_reset(today: time::Date) -> time::OffsetDateTime {
+    let tomorrow = today + time::Duration::days(1);
+    tomorrow.midnight().assume_utc()
+}
+
+fn next_monthly_reset(today: time::Date) -> Result<time::OffsetDateTime, DomainError> {
+    let next_month = if today.month() == time::Month::December {
+        time::Date::from_calendar_date(today.year() + 1, time::Month::January, 1)
+    } else {
+        time::Date::from_calendar_date(today.year(), today.month().next(), 1)
+    };
+    Ok(next_month
+        .map_err(|e| DomainError::internal(e.to_string()))?
+        .midnight()
+        .assume_utc())
 }
 
 // ── Cascade types ──

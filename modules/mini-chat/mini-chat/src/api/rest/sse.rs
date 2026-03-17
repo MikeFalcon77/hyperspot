@@ -239,6 +239,7 @@ mod tests {
             quota_decision: "allow".into(),
             downgrade_from: None,
             downgrade_reason: None,
+            quota_warnings: None,
         };
         let json = serde_json::to_string(&data).unwrap();
         assert!(json.contains("\"effective_model\":\"gpt-4o\""));
@@ -259,6 +260,7 @@ mod tests {
             quota_decision: "downgrade".into(),
             downgrade_from: Some("gpt-4o".into()),
             downgrade_reason: Some("premium_quota_exhausted".into()),
+            quota_warnings: None,
         };
         let json = serde_json::to_string(&data).unwrap();
         assert!(json.contains("\"downgrade_reason\":\"premium_quota_exhausted\""));
@@ -276,10 +278,57 @@ mod tests {
                 quota_decision: "allow".into(),
                 downgrade_from: None,
                 downgrade_reason: None,
+                quota_warnings: None,
             }))
             .into_sse_event()
             .is_ok()
         );
+    }
+
+    #[test]
+    fn done_serializes_with_quota_warnings() {
+        use crate::domain::stream_events::QuotaWarning;
+        let data = DoneData {
+            message_id: Some("msg-456".into()),
+            usage: Some(Usage {
+                input_tokens: 50,
+                output_tokens: 20,
+            }),
+            effective_model: "gpt-5.2".into(),
+            selected_model: "gpt-5.2".into(),
+            quota_decision: "allow".into(),
+            downgrade_from: None,
+            downgrade_reason: None,
+            quota_warnings: Some(vec![QuotaWarning {
+                tier: crate::domain::stream_events::QuotaTier::Premium,
+                period: crate::domain::stream_events::QuotaPeriod::Daily,
+                remaining_percentage: 20,
+                warning: true,
+                exhausted: false,
+            }]),
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"quota_warnings\""));
+        assert!(json.contains("\"remaining_percentage\":20"));
+        assert!(json.contains("\"warning\":true"));
+        assert!(json.contains("\"exhausted\":false"));
+        assert!(json.contains("\"tier\":\"premium\""));
+    }
+
+    #[test]
+    fn done_omits_quota_warnings_when_none() {
+        let data = DoneData {
+            message_id: None,
+            usage: None,
+            effective_model: "gpt-4o".into(),
+            selected_model: "gpt-4o".into(),
+            quota_decision: "allow".into(),
+            downgrade_from: None,
+            downgrade_reason: None,
+            quota_warnings: None,
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(!json.contains("quota_warnings"));
     }
 
     #[test]
