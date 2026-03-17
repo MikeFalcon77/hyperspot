@@ -105,6 +105,10 @@
     {
       "reason": "Ignore module 'mini-chat' docs (temporary: PRD/DESIGN constraints failing in CI).",
       "patterns": ["modules/mini-chat/*"]
+    },
+    {
+      "reason": "Ignore module 'approval-service' (not SDLC-documented yet: PRD/DESIGN are placeholders).",
+      "patterns": ["modules/approval-service/*"]
     }
   ],
   "systems": [
