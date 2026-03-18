@@ -645,9 +645,10 @@ dependencies = [
  "cf-modkit-errors",
  "cf-modkit-errors-macro",
  "chrono",
+ "chrono-tz",
  "hex",
  "http",
- "odata-params",
+ "peg",
  "serde",
  "serde_json",
  "sha2",
@@ -722,10 +723,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fac4744fb15ae8337dc853fee7fb3f4e48c0fbaa23d0afe49c447b4fab126118"
 dependencies = [
  "iana-time-zone",
- "js-sys",
  "num-traits",
  "serde",
- "wasm-bindgen",
  "windows-link",
 ]
 
@@ -2648,20 +2647,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "odata-params"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d32ae3978a6fc4114aec5b7907038efa81452336845a98a1e2ec957c8f32ade6"
-dependencies = [
- "bigdecimal",
- "chrono",
- "chrono-tz",
- "peg",
- "thiserror 1.0.69",
- "uuid",
 ]
 
 [[package]]

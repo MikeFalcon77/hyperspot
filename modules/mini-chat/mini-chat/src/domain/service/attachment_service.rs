@@ -432,7 +432,46 @@ impl<
                 // Loser path: another upload already inserted the row.
                 self.poll_vector_store(scope, chat_id).await
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                self.handle_vector_store_insert_race(&conn, scope, chat_id, e)
+                    .await
+            }
+        }
+    }
+
+    /// Defensive fallback for vector-store insert failures that may be
+    /// unrecognised unique-constraint violations (race with a concurrent upload).
+    /// If a row now exists, treat as a loser path; otherwise propagate the error.
+    async fn handle_vector_store_insert_race(
+        &self,
+        conn: &modkit_db::DbConn<'_>,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        original_err: DomainError,
+    ) -> Result<String, DomainError> {
+        match self
+            .vector_store_repo
+            .find_by_chat(conn, scope, chat_id)
+            .await
+        {
+            Ok(Some(row)) if row.vector_store_id.is_some() => {
+                tracing::warn!(
+                    chat_id = %chat_id,
+                    error = %original_err,
+                    "vector store insert failed but row exists (concurrent insert); using existing"
+                );
+                #[allow(clippy::unwrap_used)]
+                Ok(row.vector_store_id.unwrap())
+            }
+            Ok(Some(_)) => {
+                tracing::warn!(
+                    chat_id = %chat_id,
+                    error = %original_err,
+                    "vector store insert failed but placeholder exists (concurrent insert); polling"
+                );
+                self.poll_vector_store(scope, chat_id).await
+            }
+            _ => Err(original_err),
         }
     }
 
