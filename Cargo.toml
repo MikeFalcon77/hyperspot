@@ -240,7 +240,7 @@ oagw-sdk = { package = "cf-oagw-sdk", version = "0.2.7", path = "modules/system/
 credstore-sdk = { package = "cf-credstore-sdk", version = "0.1.12", path = "modules/credstore/credstore-sdk" }
 
 # mini-chat
-mini-chat-sdk = { package = "cf-mini-chat-sdk", version = "0.6.1", path = "modules/mini-chat/mini-chat-sdk" }
+mini-chat-sdk = { package = "cf-mini-chat-sdk", version = "0.7.0", path = "modules/mini-chat/mini-chat-sdk" }
 
 # system modules
 grpc_hub = { package = "cf-grpc-hub", version = "0.1.15", path = "modules/system/grpc-hub" }
