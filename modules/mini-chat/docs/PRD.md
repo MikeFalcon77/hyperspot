@@ -273,6 +273,8 @@ The system MUST support the `code_interpreter` LLM tool for data analysis of upl
 
 **Tool assembly**: When a chat contains ready `code_interpreter` attachments, the `disable_code_interpreter` kill switch is `false`, and the effective model supports code interpreter (`tool_support.code_interpreter = true`), the backend includes the `code_interpreter` tool in the Responses API request with the corresponding provider file IDs (via `tools[].container.file_ids`). The provider decides whether to invoke the tool.
 
+**Usage tracking and rate limits**: Code interpreter tool call counts are persisted in `quota_usage.code_interpreter_calls` and included in the `UsageEvent` outbox payload for downstream billing/analytics. The system MUST enforce a per-user daily rate limit via `code_interpreter_daily_quota` (default: 50 calls per day). When the daily code interpreter quota is exhausted, the system MUST reject with `quota_exceeded` and `quota_scope = "code_interpreter"` at preflight (before any provider call).
+
 **Rationale**: Users need to analyze spreadsheet data (pivot tables, charts, statistical analysis) through conversational interaction with the AI assistant.
 **Actors**: `cpt-cf-mini-chat-actor-chat-user`
 
@@ -410,7 +412,7 @@ Reactions are persisted in backend storage (`message_reactions` table) and acces
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-fr-quota-enforcement`
 
-The system MUST enforce per-user credit-based rate limits across multiple time periods (daily, monthly). Credits are computed from provider-reported token usage using the model credit multipliers from the active policy snapshot. Rate limits apply per user and track model usage in real-time per tier. Premium models have stricter limits; standard-tier models have separate, higher limits. Tracked metrics: input tokens, output tokens, credits, file search calls, web search calls, per-tier model calls (premium, standard), image inputs, image upload bytes.
+The system MUST enforce per-user credit-based rate limits across multiple time periods (daily, monthly). Credits are computed from provider-reported token usage using the model credit multipliers from the active policy snapshot. Rate limits apply per user and track model usage in real-time per tier. Premium models have stricter limits; standard-tier models have separate, higher limits. Tracked metrics: input tokens, output tokens, credits, file search calls, web search calls, code interpreter calls, per-tier model calls (premium, standard), image inputs, image upload bytes.
 
 **Tier availability rule**: a tier is considered available only if it has remaining quota in **all** configured periods (daily, monthly) for that tier. If any single period is exhausted, the entire tier is treated as exhausted and the system MUST auto-downgrade to the next tier in the cascade (premium → standard). When all tier quotas are exhausted across all periods, the system MUST reject with `quota_exceeded` (HTTP 429).
 
@@ -486,7 +488,7 @@ Audit payload retention and deletion semantics are owned by platform `audit_serv
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-fr-cost-metrics`
 
-The system MUST log the following metrics for every LLM request: model, input tokens, output tokens, file search call count, time to first token, total latency. Tenant and user attribution MUST be available via audit events and internal usage records; Prometheus labels MUST NOT include `tenant_id` or `user_id`.
+The system MUST log the following metrics for every LLM request: model, input tokens, output tokens, file search call count, web search call count, code interpreter call count, time to first token, total latency. Tenant and user attribution MUST be available via audit events and internal usage records; Prometheus labels MUST NOT include `tenant_id` or `user_id`.
 
 **Rationale**: Enables cost monitoring, budget alerts, and billing attribution per tenant/user.
 **Actors**: `cpt-cf-mini-chat-actor-chat-user`
@@ -681,8 +683,8 @@ Prometheus labels MUST NOT include high-cardinality identifiers such as `tenant_
 
 ##### Tools and retrieval
 
-- `mini_chat_tool_calls_total{tool,phase}` (`tool`: `file_search|web_search`)
-- `mini_chat_tool_call_limited_total{tool}` (`tool`: `file_search|web_search`)
+- `mini_chat_tool_calls_total{tool,phase}` (`tool`: `file_search|web_search|code_interpreter`)
+- `mini_chat_tool_call_limited_total{tool}` (`tool`: `file_search|web_search|code_interpreter`)
 - `mini_chat_file_search_latency_ms{provider,model}`
 - `mini_chat_web_search_latency_ms{provider,model}`
 - `mini_chat_web_search_disabled_total`

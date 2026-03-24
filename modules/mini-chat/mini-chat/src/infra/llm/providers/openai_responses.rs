@@ -901,7 +901,7 @@ impl crate::infra::llm::LlmProvider for OpenAiResponsesProvider {
 mod tests {
     use super::*;
     use crate::domain::llm::WebSearchContextSize;
-    use crate::infra::llm::request::{Feature, RequestMetadata, RequestType};
+    use crate::infra::llm::request::{FeatureFlag, RequestMetadata, RequestType};
     use crate::infra::llm::{LlmMessage, LlmProvider, LlmTool, llm_request};
 
     use std::sync::Mutex;
@@ -1122,7 +1122,7 @@ mod tests {
                 user_id: "def".into(),
                 chat_id: "ghi".into(),
                 request_type: RequestType::Chat,
-                feature: Feature::None,
+                features: vec![],
             })
             .build_streaming();
 
@@ -1288,7 +1288,7 @@ mod tests {
                 user_id: "u1".into(),
                 chat_id: "c1".into(),
                 request_type: RequestType::Chat,
-                feature: Feature::FileSearchAndWebSearch,
+                features: vec![FeatureFlag::FileSearch, FeatureFlag::WebSearch],
             })
             .build_streaming();
 
@@ -1298,6 +1298,52 @@ mod tests {
         assert_eq!(body["tools"][0]["type"], "file_search");
         assert_eq!(body["tools"][1]["type"], "web_search");
         assert_eq!(body["metadata"]["feature"], "file_search+web_search");
+    }
+
+    #[test]
+    fn builder_code_interpreter_feature() {
+        let request = llm_request("gpt-4o")
+            .tools(vec![LlmTool::CodeInterpreter {
+                file_ids: vec!["file-1".into()],
+            }])
+            .metadata(RequestMetadata {
+                tenant_id: "t1".into(),
+                user_id: "u1".into(),
+                chat_id: "c1".into(),
+                request_type: RequestType::Chat,
+                features: vec![FeatureFlag::CodeInterpreter],
+            })
+            .build_streaming();
+
+        let body = build_request_body(&request, true);
+        assert_eq!(body["metadata"]["feature"], "code_interpreter");
+    }
+
+    #[test]
+    fn builder_file_search_and_code_interpreter_feature() {
+        let request = llm_request("gpt-4o")
+            .tools(vec![
+                LlmTool::FileSearch {
+                    vector_store_ids: vec!["vs-123".into()],
+                    filters: None,
+                    max_num_results: None,
+                },
+                LlmTool::CodeInterpreter {
+                    file_ids: vec!["file-1".into()],
+                },
+            ])
+            .metadata(RequestMetadata {
+                tenant_id: "t1".into(),
+                user_id: "u1".into(),
+                chat_id: "c1".into(),
+                request_type: RequestType::Chat,
+                features: vec![FeatureFlag::FileSearch, FeatureFlag::CodeInterpreter],
+            })
+            .build_streaming();
+
+        let body = build_request_body(&request, true);
+        assert_eq!(body["tools"].as_array().unwrap().len(), 2);
+        assert_eq!(body["metadata"]["feature"], "file_search+code_interpreter");
     }
 
     #[test]
@@ -2274,7 +2320,7 @@ mod tests {
                 user_id: "u1".into(),
                 chat_id: "c1".into(),
                 request_type: RequestType::Chat,
-                feature: Feature::FileSearchAndWebSearch,
+                features: vec![FeatureFlag::FileSearch, FeatureFlag::WebSearch],
             })
             .build_streaming();
 

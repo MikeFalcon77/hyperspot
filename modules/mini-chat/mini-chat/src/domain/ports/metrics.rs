@@ -143,6 +143,11 @@ pub trait MiniChatMetricsPort: Send + Sync {
 
     /// `{prefix}_image_inputs_per_turn` — histogram
     fn record_image_inputs_per_turn(&self, count: u32);
+
+    // ── P2: Tool Call Counters (1 metric) ────────────────────────────
+
+    /// `{prefix}_code_interpreter_calls` — counter
+    fn record_code_interpreter_calls(&self, model: &str, count: u32);
 }
 
 /// No-op implementation for use in tests or when metrics are disabled.
@@ -180,4 +185,5 @@ impl MiniChatMetricsPort for NoopMetrics {
     fn increment_attachments_pending(&self) {}
     fn decrement_attachments_pending(&self) {}
     fn record_image_inputs_per_turn(&self, _: u32) {}
+    fn record_code_interpreter_calls(&self, _: &str, _: u32) {}
 }

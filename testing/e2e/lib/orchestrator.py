@@ -59,7 +59,7 @@ class ModuleTestEnv:
     sidecars: list[Any] = field(default_factory=list)  # list[SidecarProtocol]
 
     # Logging — default uses port to avoid collisions between parallel runs.
-    log_file: Path | None = None  # None = /tmp/hyperspot-e2e-{port}.log
+    log_suffix: str | None = None  # e.g. "mini-chat" → hyperspot-e2e-8087-mini-chat.log
 
 
 # ── RunningTestEnv ────────────────────────────────────────────────────────
@@ -151,9 +151,10 @@ def _prepare_config(env: ModuleTestEnv) -> Path:
 
 def _log_path(env: ModuleTestEnv) -> Path:
     """Derive log file path — uses port to avoid collisions between parallel runs."""
-    if env.log_file is not None:
-        return env.log_file
-    return Path(f"/tmp/hyperspot-e2e-{env.port}.log")
+    logs_dir = PROJECT_ROOT / "testing" / "e2e" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    suffix = f"-{env.log_suffix}" if env.log_suffix else ""
+    return logs_dir / f"hyperspot-e2e-{env.port}{suffix}.log"
 
 
 def _start_server(binary: Path, config: Path, env: ModuleTestEnv) -> subprocess.Popen:

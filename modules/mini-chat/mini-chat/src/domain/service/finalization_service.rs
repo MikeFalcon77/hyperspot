@@ -254,6 +254,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                         settlement_path,
                         period_starts: input.period_starts.clone(),
                         web_search_calls: input.web_search_calls,
+                        code_interpreter_calls: input.code_interpreter_calls,
                     };
                     let settlement_outcome = quota_settler
                         .settle_in_tx(tx, &scope, settlement_input)
@@ -379,6 +380,13 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                         metrics.record_quota_overshoot(period::MONTHLY);
                     }
                 }
+
+                if input.code_interpreter_calls > 0 {
+                    metrics.record_code_interpreter_calls(
+                        &input.effective_model,
+                        input.code_interpreter_calls,
+                    );
+                }
             }
             SettlementMethod::Estimated | SettlementMethod::Released => {
                 // No overshoot metric here: overshoot measures actual > reserved,
@@ -501,6 +509,8 @@ fn build_usage_event(
         actual_credits_micro: settlement.actual_credits_micro,
         settlement_method: settlement_method.to_owned(),
         policy_version_applied: input.policy_version_applied,
+        web_search_calls: input.web_search_calls,
+        code_interpreter_calls: input.code_interpreter_calls,
         timestamp: time::OffsetDateTime::now_utc(),
     }
 }
@@ -751,6 +761,7 @@ mod tests {
                 (PeriodType::Monthly, month_start),
             ],
             web_search_calls: 3,
+            code_interpreter_calls: 0,
             ttft_ms: None,
             total_ms: None,
         }
@@ -988,6 +999,48 @@ mod tests {
             metrics.quota_actual_tokens.load(Ordering::Relaxed),
             1,
             "should record quota_actual_tokens"
+        );
+    }
+
+    #[tokio::test]
+    async fn cas_winner_emits_code_interpreter_calls_metric() {
+        use crate::domain::service::test_helpers::TestMetrics;
+        use std::sync::atomic::Ordering;
+
+        let db = mock_db_provider(inmem_db().await);
+        let metrics = Arc::new(TestMetrics::new());
+        let (svc, _outbox) =
+            build_finalization_service_with_metrics(Arc::clone(&db), Arc::clone(&metrics) as _);
+
+        let tenant_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+
+        insert_test_chat(&db, tenant_id, chat_id, user_id).await;
+        insert_running_turn(&db, tenant_id, chat_id, turn_id, request_id).await;
+
+        let mut input = make_input(
+            tenant_id,
+            chat_id,
+            turn_id,
+            request_id,
+            user_id,
+            TurnState::Completed,
+        );
+        input.code_interpreter_calls = 5;
+
+        let outcome = svc
+            .finalize_turn_cas(input)
+            .await
+            .expect("finalization should succeed");
+        assert!(outcome.won_cas);
+
+        assert_eq!(
+            metrics.code_interpreter_calls.load(Ordering::Relaxed),
+            1,
+            "should record code_interpreter_calls metric"
         );
     }
 

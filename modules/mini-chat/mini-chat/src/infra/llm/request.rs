@@ -35,7 +35,24 @@ pub struct RequestMetadata {
     pub user_id: String,
     pub chat_id: String,
     pub request_type: RequestType,
-    pub feature: Feature,
+    #[serde(rename = "feature", serialize_with = "serialize_feature")]
+    pub features: Vec<FeatureFlag>,
+}
+
+fn serialize_feature<S: serde::Serializer>(
+    features: &[FeatureFlag],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    if features.is_empty() {
+        return serializer.serialize_str("none");
+    }
+    let s: String = features
+        .iter()
+        .copied()
+        .map(FeatureFlag::as_str)
+        .collect::<Vec<_>>()
+        .join("+");
+    serializer.serialize_str(&s)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -46,18 +63,22 @@ pub enum RequestType {
     DocSummary,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub enum Feature {
-    #[serde(rename = "file_search")]
+/// Individual feature flag for observability metadata sent to the provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureFlag {
     FileSearch,
-    #[serde(rename = "web_search")]
     WebSearch,
-    #[serde(rename = "file_search+web_search")]
-    FileSearchAndWebSearch,
-    #[serde(rename = "code_interpreter")]
     CodeInterpreter,
-    #[serde(rename = "none")]
-    None,
+}
+
+impl FeatureFlag {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::FileSearch => "file_search",
+            Self::WebSearch => "web_search",
+            Self::CodeInterpreter => "code_interpreter",
+        }
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════

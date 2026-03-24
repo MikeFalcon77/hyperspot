@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 // Re-export commonly used request types.
 pub use request::{
-    Feature, LlmMessage, LlmRequest, LlmRequestBuilder, LlmTool, RequestMetadata, RequestType,
+    FeatureFlag, LlmMessage, LlmRequest, LlmRequestBuilder, LlmTool, RequestMetadata, RequestType,
     Role, UserIdentity,
 };
 

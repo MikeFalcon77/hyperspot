@@ -75,7 +75,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
           path: |
-            ${{ github.workspace }}/tmp/e2e-logs/**
+            ${{ github.workspace }}/testing/e2e/logs/**
             ${{ runner.home }}/.hyperspot/logs/**
 
       - name: Create or update issue on nightly failure

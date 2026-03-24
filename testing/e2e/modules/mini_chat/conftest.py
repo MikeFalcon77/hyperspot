@@ -421,7 +421,7 @@ def module_test_env(request):
         health_timeout=90,
         env={"RUST_LOG": rust_log},
         sidecars=[mock],
-        log_file=Path("/tmp/hyperspot-mini-chat.log"),
+        log_suffix="mini-chat",
     )
 
 

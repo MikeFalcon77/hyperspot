@@ -1090,6 +1090,7 @@ pub struct TestMetrics {
     pub attachment_upload: AtomicU64,
     pub attachment_upload_bytes: AtomicU64,
     pub attachments_pending: AtomicI64,
+    pub code_interpreter_calls: AtomicU64,
 }
 
 impl TestMetrics {
@@ -1106,6 +1107,7 @@ impl TestMetrics {
             attachment_upload: AtomicU64::new(0),
             attachment_upload_bytes: AtomicU64::new(0),
             attachments_pending: AtomicI64::new(0),
+            code_interpreter_calls: AtomicU64::new(0),
         }
     }
 }
@@ -1165,6 +1167,9 @@ impl crate::domain::ports::MiniChatMetricsPort for TestMetrics {
         self.attachments_pending.fetch_add(-1, Ordering::Relaxed);
     }
     fn record_image_inputs_per_turn(&self, _count: u32) {}
+    fn record_code_interpreter_calls(&self, _: &str, _: u32) {
+        self.code_interpreter_calls.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 // ── Mock User Limits Provider ──

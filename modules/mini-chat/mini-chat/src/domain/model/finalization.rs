@@ -48,9 +48,11 @@ pub struct FinalizationInput {
     pub downgrade_reason: Option<String>,
     pub period_starts: Vec<(PeriodType, time::Date)>,
 
-    // ── Web search telemetry ──
+    // ── Tool call telemetry ──
     /// Number of completed web search calls during this turn.
     pub web_search_calls: u32,
+    /// Number of completed code interpreter calls during this turn.
+    pub code_interpreter_calls: u32,
 
     /// Time-to-first-token in milliseconds (captured in `stream_service`).
     pub ttft_ms: Option<u64>,

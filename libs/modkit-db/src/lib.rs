@@ -76,7 +76,7 @@ pub use sea_orm_migration;
 // Core modules
 pub mod advisory_locks;
 pub mod config;
-pub mod deadlock;
+pub mod contention;
 pub mod manager;
 pub mod migration_runner;
 pub mod odata;

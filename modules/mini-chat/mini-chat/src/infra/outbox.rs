@@ -450,6 +450,8 @@ mod tests {
             actual_credits_micro: 500,
             settlement_method: "quota".to_owned(),
             policy_version_applied: 1,
+            web_search_calls: 0,
+            code_interpreter_calls: 0,
             timestamp: OffsetDateTime::now_utc(),
         }
     }

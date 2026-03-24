@@ -54,3 +54,4 @@ CLAUDE.local.md
 testing/e2e/.env.e2e
 testing/e2e/.env.e2e.*
 testing/e2e/.venv/
+testing/e2e/logs/

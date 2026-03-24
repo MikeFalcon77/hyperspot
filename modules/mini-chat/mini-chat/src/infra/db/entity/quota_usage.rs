@@ -26,6 +26,7 @@ pub struct Model {
     pub output_tokens: i64,
     pub file_search_calls: i32,
     pub web_search_calls: i32,
+    pub code_interpreter_calls: i32,
     pub rag_retrieval_calls: i32,
     pub image_inputs: i32,
     pub image_upload_bytes: i64,

@@ -58,6 +58,9 @@ pub struct MiniChatMetricsMeter {
     attachment_upload_bytes: Histogram<f64>,
     attachments_pending: UpDownCounter<i64>,
 
+    // ── P1: Tool call counters ──────────────────────────────────────────
+    code_interpreter_calls: Counter<u64>,
+
     // ════════════════════════════════════════════════════════════════════
     // DEFERRED INSTRUMENTS — declared but not wired to the domain port.
     // ════════════════════════════════════════════════════════════════════
@@ -328,6 +331,12 @@ impl MiniChatMetricsMeter {
             attachments_pending: meter
                 .i64_up_down_counter(format!("{prefix}_attachments_pending"))
                 .with_description("Attachments currently being processed")
+                .build(),
+
+            // ── P1: Tool call counters ─────────────────────────────────
+            code_interpreter_calls: meter
+                .u64_counter(format!("{prefix}_code_interpreter_calls"))
+                .with_description("Code interpreter call completions")
                 .build(),
 
             // ════════════════════════════════════════════════════════════
@@ -795,6 +804,13 @@ impl MiniChatMetricsPort for MiniChatMetricsMeter {
     fn record_image_inputs_per_turn(&self, count: u32) {
         self.image_inputs_per_turn.record(f64::from(count), &[]);
     }
+
+    fn record_code_interpreter_calls(&self, model: &str, count: u32) {
+        self.code_interpreter_calls.add(
+            u64::from(count),
+            &[KeyValue::new(key::MODEL, model.to_owned())],
+        );
+    }
 }
 
 #[cfg(test)]
@@ -912,6 +928,21 @@ mod tests {
         assert_eq!(
             extract_counter_value(&exporter, "mini_chat_quota_overshoot"),
             1
+        );
+    }
+
+    #[test]
+    fn code_interpreter_counter_increments() {
+        let (provider, exporter) = local_provider();
+        let m = super::MiniChatMetricsMeter::new(&provider.meter("mini-chat"), "mini_chat");
+
+        m.record_code_interpreter_calls("gpt-5.2", 3);
+
+        provider.force_flush().unwrap();
+
+        assert_eq!(
+            extract_counter_value(&exporter, "mini_chat_code_interpreter_calls"),
+            3
         );
     }
 

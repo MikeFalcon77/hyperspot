@@ -490,6 +490,12 @@ fn default_web_search_max_calls() -> u32 {
 fn default_web_search_daily_quota() -> u32 {
     75
 }
+fn default_ci_max_calls() -> u32 {
+    10
+}
+fn default_ci_daily_quota() -> u32 {
+    50
+}
 fn default_warning_threshold_pct() -> u8 {
     80
 }
@@ -504,6 +510,10 @@ pub struct QuotaConfig {
     pub web_search_max_calls_per_message: u32,
     #[serde(default = "default_web_search_daily_quota")]
     pub web_search_daily_quota: u32,
+    #[serde(default = "default_ci_max_calls")]
+    pub code_interpreter_max_calls_per_message: u32,
+    #[serde(default = "default_ci_daily_quota")]
+    pub code_interpreter_daily_quota: u32,
     #[serde(default = "default_warning_threshold_pct")]
     pub warning_threshold_pct: u8,
 }
@@ -514,6 +524,8 @@ impl Default for QuotaConfig {
             overshoot_tolerance_factor: default_overshoot_tolerance(),
             web_search_max_calls_per_message: default_web_search_max_calls(),
             web_search_daily_quota: default_web_search_daily_quota(),
+            code_interpreter_max_calls_per_message: default_ci_max_calls(),
+            code_interpreter_daily_quota: default_ci_daily_quota(),
             warning_threshold_pct: default_warning_threshold_pct(),
         }
     }
@@ -532,6 +544,12 @@ impl QuotaConfig {
         }
         if self.web_search_daily_quota == 0 {
             return Err("web_search_daily_quota must be > 0".to_owned());
+        }
+        if self.code_interpreter_max_calls_per_message == 0 {
+            return Err("code_interpreter_max_calls_per_message must be > 0".to_owned());
+        }
+        if self.code_interpreter_daily_quota == 0 {
+            return Err("code_interpreter_daily_quota must be > 0".to_owned());
         }
         if self.warning_threshold_pct == 0 || self.warning_threshold_pct >= 100 {
             return Err(format!(
@@ -842,6 +860,22 @@ mod tests {
         assert!(
             (QuotaConfig {
                 web_search_daily_quota: 0,
+                ..QuotaConfig::default()
+            })
+            .validate()
+            .is_err()
+        );
+        assert!(
+            (QuotaConfig {
+                code_interpreter_max_calls_per_message: 0,
+                ..QuotaConfig::default()
+            })
+            .validate()
+            .is_err()
+        );
+        assert!(
+            (QuotaConfig {
+                code_interpreter_daily_quota: 0,
                 ..QuotaConfig::default()
             })
             .validate()

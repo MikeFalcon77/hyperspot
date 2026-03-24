@@ -10,7 +10,7 @@ use super::super::prioritizer::SharedPrioritizer;
 use super::super::taskward::{Directive, WorkerAction};
 use super::super::types::{OutboxError, SequencerConfig};
 use crate::Db;
-use crate::deadlock::is_deadlock;
+use crate::contention::is_retryable_contention;
 
 /// Report emitted by a sequencer execution cycle.
 #[derive(Debug, Clone)]
@@ -223,14 +223,13 @@ impl WorkerAction for Sequencer {
                 }))
             }
             Err(PartitionError::Db(e)) => {
-                if matches!(&e, OutboxError::Database(db_err) if is_deadlock(db_err)) {
-                    // MySQL InnoDB deadlock — safe to retry immediately.
-                    // "Always be prepared to re-issue a transaction if it
-                    // fails due to deadlock. Deadlocks are not dangerous.
-                    // Just try again." — MySQL 8.0 Reference Manual
+                let backend = self.db.sea_internal().get_database_backend();
+                if matches!(&e, OutboxError::Database(db_err) if is_retryable_contention(backend, db_err))
+                {
+                    // Transient lock contention — safe to retry immediately.
                     tracing::debug!(
                         partition_id = pid,
-                        "sequencer: InnoDB deadlock, retrying partition"
+                        "sequencer: lock contention, retrying partition"
                     );
                     guard.skipped();
                     self.shared_prioritizer.push_dirty(pid);

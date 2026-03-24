@@ -137,6 +137,8 @@ pub struct SettlementInput {
     pub period_starts: Vec<(PeriodType, time::Date)>,
     /// Completed web search calls to settle.
     pub web_search_calls: u32,
+    /// Completed code interpreter calls to settle.
+    pub code_interpreter_calls: u32,
 }
 
 /// Classification of the settlement path to take.

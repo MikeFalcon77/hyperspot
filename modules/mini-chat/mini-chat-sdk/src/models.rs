@@ -308,6 +308,10 @@ pub struct UsageEvent {
     pub actual_credits_micro: i64,
     pub settlement_method: String,
     pub policy_version_applied: i64,
+    #[serde(default)]
+    pub web_search_calls: u32,
+    #[serde(default)]
+    pub code_interpreter_calls: u32,
     #[serde(with = "time::serde::rfc3339")]
     pub timestamp: OffsetDateTime,
 }

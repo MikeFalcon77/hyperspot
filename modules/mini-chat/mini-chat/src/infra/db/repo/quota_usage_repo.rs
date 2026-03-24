@@ -41,6 +41,7 @@ impl crate::domain::repos::QuotaUsageRepository for QuotaUsageRepository {
             output_tokens: Set(0),
             file_search_calls: Set(0),
             web_search_calls: Set(0),
+            code_interpreter_calls: Set(0),
             rag_retrieval_calls: Set(0),
             image_inputs: Set(0),
             image_upload_bytes: Set(0),
@@ -91,6 +92,11 @@ impl crate::domain::repos::QuotaUsageRepository for QuotaUsageRepository {
             (0, 0)
         };
         let web_search_delta = if is_total { params.web_search_calls } else { 0 };
+        let ci_delta = if is_total {
+            params.code_interpreter_calls
+        } else {
+            0
+        };
 
         let mut update = QuotaUsageEntity::update_many()
             .col_expr(
@@ -120,6 +126,12 @@ impl crate::domain::repos::QuotaUsageRepository for QuotaUsageRepository {
             update = update.col_expr(
                 Column::WebSearchCalls,
                 Expr::col(Column::WebSearchCalls).add(Expr::value(web_search_delta.cast_signed())),
+            );
+        }
+        if ci_delta > 0 {
+            update = update.col_expr(
+                Column::CodeInterpreterCalls,
+                Expr::col(Column::CodeInterpreterCalls).add(Expr::value(ci_delta.cast_signed())),
             );
         }
 
@@ -222,6 +234,43 @@ impl crate::domain::repos::QuotaUsageRepository for QuotaUsageRepository {
                 0
             } else {
                 r.web_search_calls.cast_unsigned()
+            }
+        }))
+    }
+
+    async fn get_daily_code_interpreter_calls<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        period_start: time::Date,
+    ) -> Result<u32, DomainError> {
+        let row = QuotaUsageEntity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::TenantId.eq(tenant_id))
+                    .add(Column::UserId.eq(user_id))
+                    .add(Column::PeriodType.eq(PeriodType::Daily.into_value()))
+                    .add(Column::PeriodStart.eq(period_start))
+                    .add(Column::Bucket.eq("total")),
+            )
+            .secure()
+            .scope_with(scope)
+            .one(runner)
+            .await?;
+
+        Ok(row.map_or(0, |r| {
+            if r.code_interpreter_calls < 0 {
+                tracing::warn!(
+                    tenant_id = %tenant_id,
+                    user_id = %user_id,
+                    code_interpreter_calls = r.code_interpreter_calls,
+                    "negative code_interpreter_calls detected, clamping to 0"
+                );
+                0
+            } else {
+                r.code_interpreter_calls.cast_unsigned()
             }
         }))
     }

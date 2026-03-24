@@ -25,8 +25,8 @@ use crate::domain::repos::{
 use crate::domain::stream_events::{DoneData, ErrorData, StreamEvent, StreamStartedData};
 use crate::infra::db::entity::chat_turn::{Model as TurnModel, TurnState};
 use crate::infra::llm::{
-    ClientSseEvent, Feature, LlmMessage, LlmProvider, LlmProviderError, LlmRequestBuilder, LlmTool,
-    RequestMetadata, RequestType, TerminalOutcome, provider_resolver::ProviderResolver,
+    ClientSseEvent, FeatureFlag, LlmMessage, LlmProvider, LlmProviderError, LlmRequestBuilder,
+    LlmTool, RequestMetadata, RequestType, TerminalOutcome, provider_resolver::ProviderResolver,
 };
 
 use super::{DbProvider, actions, resources};
@@ -59,23 +59,26 @@ fn attachment_err(message: impl Into<String>) -> modkit_db::DbError {
     }))
 }
 
-/// Determines the [`Feature`] variant from the set of tools attached to a
-/// request, used to populate [`RequestMetadata`] for observability.
-fn determine_feature(tools: &[LlmTool]) -> Feature {
-    let has_file_search = tools
+/// Collects [`FeatureFlag`]s from the tools attached to a request, used to
+/// populate [`RequestMetadata`] for observability.
+fn determine_features(tools: &[LlmTool]) -> Vec<FeatureFlag> {
+    let mut flags = Vec::new();
+    if tools
         .iter()
-        .any(|t| matches!(t, LlmTool::FileSearch { .. }));
-    let has_web_search = tools.iter().any(|t| matches!(t, LlmTool::WebSearch { .. }));
-    let has_ci = tools
-        .iter()
-        .any(|t| matches!(t, LlmTool::CodeInterpreter { .. }));
-    match (has_file_search, has_web_search, has_ci) {
-        (true, true, _) => Feature::FileSearchAndWebSearch,
-        (true, false, _) => Feature::FileSearch,
-        (false, true, _) => Feature::WebSearch,
-        (false, false, true) => Feature::CodeInterpreter,
-        _ => Feature::None,
+        .any(|t| matches!(t, LlmTool::FileSearch { .. }))
+    {
+        flags.push(FeatureFlag::FileSearch);
     }
+    if tools.iter().any(|t| matches!(t, LlmTool::WebSearch { .. })) {
+        flags.push(FeatureFlag::WebSearch);
+    }
+    if tools
+        .iter()
+        .any(|t| matches!(t, LlmTool::CodeInterpreter { .. }))
+    {
+        flags.push(FeatureFlag::CodeInterpreter);
+    }
+    flags
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -240,6 +243,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
         error_detail: Option<String>,
         provider_response_id: Option<String>,
         web_search_calls: u32,
+        code_interpreter_calls: u32,
         ttft_ms: Option<u64>,
         total_ms: Option<u64>,
     ) -> crate::domain::model::finalization::FinalizationInput {
@@ -270,6 +274,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
             downgrade_reason: self.downgrade_reason.clone(),
             period_starts: self.period_starts.clone(),
             web_search_calls,
+            code_interpreter_calls,
             ttft_ms,
             total_ms,
         }
@@ -932,6 +937,7 @@ impl<
             pf.max_output_tokens_applied.cast_unsigned(),
             pf.max_tool_calls,
             self.quota.web_search_max_calls_per_message(),
+            self.quota.code_interpreter_max_calls_per_message(),
             cancel,
             tx,
             Some(finalization_ctx),
@@ -1539,6 +1545,7 @@ impl<
             pf.max_output_tokens_applied.cast_unsigned(),
             pf.max_tool_calls,
             self.quota.web_search_max_calls_per_message(),
+            self.quota.code_interpreter_max_calls_per_message(),
             cancel,
             tx,
             Some(finalization_ctx),
@@ -1589,6 +1596,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
     max_output_tokens: u32,
     max_tool_calls: u32,
     web_search_max_calls: u32,
+    code_interpreter_max_calls: u32,
     cancel: CancellationToken,
     tx: mpsc::Sender<StreamEvent>,
     fin_ctx: Option<FinalizationCtx<TR, MR>>,
@@ -1629,7 +1637,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
         if let Some(instructions) = system_instructions {
             builder = builder.system_instructions(instructions);
         }
-        let feature = determine_feature(&tools);
+        let features = determine_features(&tools);
         for tool in tools {
             builder = builder.tool(tool);
         }
@@ -1640,7 +1648,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                 .as_ref()
                 .map_or_else(String::new, |f| f.chat_id.to_string()),
             request_type: RequestType::Chat,
-            feature,
+            features,
         };
         builder = builder.metadata(metadata);
         let request = builder.build_streaming();
@@ -1669,6 +1677,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                         Some(code.clone()),
                         None,
                         None,
+                        0,
                         0,
                         None,
                         None,
@@ -1732,6 +1741,8 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
         // daily quota under-counts by one. Acceptable for P1 since OpenAI always
         // pairs searching→completed; revisit if we add providers that don't.
         let mut web_search_completed_count: u32 = 0;
+        let mut code_interpreter_call_count: u32 = 0;
+        let mut code_interpreter_completed_count: u32 = 0;
 
         loop {
             tokio::select! {
@@ -1801,6 +1812,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                                                     None,
                                                     None,
                                                     web_search_completed_count,
+                                                    code_interpreter_completed_count,
                                                     None,
                                                     None,
                                                 );
@@ -1862,6 +1874,92 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                                 }
                             }
 
+                            // Track code interpreter tool calls
+                            if let ClientSseEvent::Tool { ref phase, name, .. } = client_event
+                                && name == "code_interpreter"
+                            {
+                                match phase {
+                                    ToolPhase::Start => {
+                                        code_interpreter_call_count += 1;
+                                        if code_interpreter_call_count > code_interpreter_max_calls {
+                                            warn!(
+                                                code_interpreter_call_count,
+                                                limit = code_interpreter_max_calls,
+                                                "code interpreter per-message limit exceeded"
+                                            );
+                                            let code = "code_interpreter_calls_exceeded".to_owned();
+                                            let message = "Code interpreter calls exceeded for this message".to_owned();
+
+                                            if let Some(ref fctx) = fin_ctx {
+                                                let input = fctx.to_finalization_input(
+                                                    TurnState::Failed,
+                                                    &accumulated_text,
+                                                    None,
+                                                    Some(code.clone()),
+                                                    None,
+                                                    None,
+                                                    web_search_completed_count,
+                                                    code_interpreter_completed_count,
+                                                    None,
+                                                    None,
+                                                );
+                                                match fctx.finalization_svc.finalize_turn_cas(input).await {
+                                                    Ok(outcome) if outcome.won_cas => {
+                                                        let _ = tx.send(StreamEvent::Error(ErrorData {
+                                                            code: code.clone(),
+                                                            message,
+                                                        })).await;
+                                                    }
+                                                    Ok(_) => {}
+                                                    Err(fe) => {
+                                                        warn!(error = %fe, "finalization failed on ci limit exceeded");
+                                                        let _ = tx.send(StreamEvent::Error(ErrorData {
+                                                            code: code.clone(),
+                                                            message,
+                                                        })).await;
+                                                    }
+                                                }
+                                            } else {
+                                                let _ = tx.send(StreamEvent::Error(ErrorData {
+                                                    code: code.clone(),
+                                                    message,
+                                                })).await;
+                                            }
+
+                                            provider_stream.cancel();
+
+                                            if let Some(ref fctx) = fin_ctx {
+                                                let ms = stream_start.elapsed().as_secs_f64() * 1000.0;
+                                                fctx.metrics.record_stream_failed(
+                                                    &fctx.provider_id,
+                                                    &fctx.effective_model,
+                                                    &code,
+                                                );
+                                                fctx.metrics.record_stream_total_latency_ms(
+                                                    &fctx.provider_id,
+                                                    &fctx.effective_model,
+                                                    ms,
+                                                );
+                                            }
+
+                                            let has_partial = !accumulated_text.is_empty();
+                                            return StreamOutcome {
+                                                terminal: StreamTerminal::Failed,
+                                                accumulated_text,
+                                                usage: None,
+                                                effective_model: model,
+                                                error_code: Some(code),
+                                                provider_response_id: None,
+                                                provider_partial_usage: has_partial,
+                                            };
+                                        }
+                                    }
+                                    ToolPhase::Done => {
+                                        code_interpreter_completed_count += 1;
+                                    }
+                                }
+                            }
+
                             let stream_event = StreamEvent::from(client_event);
                             if tx.send(stream_event).await.is_err() {
                                 // Receiver dropped (client disconnect handled by relay)
@@ -1899,6 +1997,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                                     None,
                                     None,
                                     web_search_completed_count,
+                                    code_interpreter_completed_count,
                                     first_token_time.map(|d| d.as_millis() as u64),
                                     Some(mid_elapsed.as_millis() as u64),
                                 );
@@ -1977,6 +2076,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                     None,
                     None,
                     web_search_completed_count,
+                    code_interpreter_completed_count,
                     first_token_time.map(|d| d.as_millis() as u64),
                     Some(elapsed.as_millis() as u64),
                 );
@@ -2032,6 +2132,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                         None,
                         Some(response_id.clone()),
                         web_search_completed_count,
+                        code_interpreter_completed_count,
                         first_token_time.map(|d| d.as_millis() as u64),
                         Some(elapsed.as_millis() as u64),
                     );
@@ -2156,6 +2257,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                         None,
                         None,
                         web_search_completed_count,
+                        code_interpreter_completed_count,
                         first_token_time.map(|d| d.as_millis() as u64),
                         Some(elapsed.as_millis() as u64),
                     );
@@ -2254,6 +2356,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                         None,
                         None,
                         web_search_completed_count,
+                        code_interpreter_completed_count,
                         first_token_time.map(|d| d.as_millis() as u64),
                         Some(elapsed.as_millis() as u64),
                     );
@@ -2561,6 +2664,11 @@ mod tests {
             }
         }
 
+        /// Provider that emits N `code_interpreter` start/done pairs, then completes.
+        fn with_code_interpreter_calls(count: usize) -> Self {
+            Self::with_tool_calls(&[("code_interpreter", count)])
+        }
+
         /// Provider that emits tool start/done pairs for arbitrary tool names, then completes.
         fn with_tool_calls(calls: &[(&'static str, usize)]) -> Self {
             let mut events: Vec<Result<TranslatedEvent, StreamingError>> = Vec::new();
@@ -2652,6 +2760,7 @@ mod tests {
             4096,
             2, // max_tool_calls
             2, // web_search_max_calls
+            2, // code_interpreter_max_calls
             cancel,
             tx,
             None,
@@ -2703,6 +2812,7 @@ mod tests {
             4096,
             2, // max_tool_calls
             2, // web_search_max_calls
+            2, // code_interpreter_max_calls
             cancel,
             tx,
             None,
@@ -2747,6 +2857,7 @@ mod tests {
             4096,
             2, // max_tool_calls
             2, // web_search_max_calls
+            2, // code_interpreter_max_calls
             cancel,
             tx,
             None,
@@ -2840,6 +2951,7 @@ mod tests {
             4096,
             2, // max_tool_calls
             2, // web_search_max_calls
+            2, // code_interpreter_max_calls
             cancel.clone(),
             tx,
             None,
@@ -3839,6 +3951,7 @@ mod tests {
             4096,
             2, // max_tool_calls
             2, // web_search_max_calls
+            2, // code_interpreter_max_calls
             cancel,
             tx,
             Some(fctx),
@@ -4592,6 +4705,7 @@ mod tests {
             4096,
             2, // max_tool_calls
             2, // web_search_max_calls
+            2, // code_interpreter_max_calls
             cancel,
             tx,
             None,
@@ -4637,6 +4751,7 @@ mod tests {
             4096,
             2, // max_tool_calls
             2, // web_search_max_calls
+            2, // code_interpreter_max_calls
             cancel,
             tx,
             None,
@@ -4692,6 +4807,7 @@ mod tests {
             4096,
             2, // max_tool_calls
             2, // web_search_max_calls
+            2, // code_interpreter_max_calls
             cancel,
             tx,
             None,
@@ -4710,6 +4826,149 @@ mod tests {
         let outcome = handle.await.expect("task should not panic");
         assert_eq!(outcome.terminal, StreamTerminal::Completed);
         // No error events
+        assert!(!events.iter().any(|e| matches!(e, StreamEvent::Error(_))));
+    }
+
+    // ── Per-message code interpreter call limit tests ──
+
+    /// 6.8: Code interpreter calls within limit — stream completes normally.
+    #[tokio::test]
+    async fn test_ci_per_message_limit_not_exceeded() {
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::with_code_interpreter_calls(2)); // 2 calls, limit is 2
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(32);
+        let cancel = CancellationToken::new();
+
+        let handle = spawn_provider_task::<TurnRepo, MsgRepo>(
+            provider,
+            "test-alias".to_owned(),
+            mock_ctx(),
+            vec![LlmMessage::user("hi")],
+            None,
+            vec![],
+            "test-model".into(),
+            "test-model".into(),
+            4096,
+            2, // max_tool_calls
+            2, // web_search_max_calls
+            2, // code_interpreter_max_calls
+            cancel,
+            tx,
+            None,
+            std::collections::HashMap::new(),
+        );
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let is_term = ev.is_terminal();
+            events.push(ev);
+            if is_term {
+                break;
+            }
+        }
+
+        let outcome = handle.await.expect("task should not panic");
+        assert_eq!(outcome.terminal, StreamTerminal::Completed);
+
+        // Expect: 1 delta + 2*(start+done) tool events + 1 done = 6 events
+        assert_eq!(events.len(), 6);
+        assert!(matches!(events.last(), Some(StreamEvent::Done(_))));
+        assert!(!events.iter().any(|e| matches!(e, StreamEvent::Error(_))));
+    }
+
+    /// 6.9: Code interpreter calls exceed limit — stream terminates with error.
+    #[tokio::test]
+    async fn test_ci_per_message_limit_exceeded() {
+        // 3 code_interpreter calls but limit is 2 — the 3rd start should trigger error
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::with_code_interpreter_calls(3));
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(32);
+        let cancel = CancellationToken::new();
+
+        let handle = spawn_provider_task::<TurnRepo, MsgRepo>(
+            provider,
+            "test-alias".to_owned(),
+            mock_ctx(),
+            vec![LlmMessage::user("hi")],
+            None,
+            vec![],
+            "test-model".into(),
+            "test-model".into(),
+            4096,
+            2, // max_tool_calls
+            2, // web_search_max_calls
+            2, // code_interpreter_max_calls
+            cancel,
+            tx,
+            None,
+            std::collections::HashMap::new(),
+        );
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let is_term = ev.is_terminal();
+            events.push(ev);
+            if is_term {
+                break;
+            }
+        }
+
+        let outcome = handle.await.expect("task should not panic");
+        assert_eq!(outcome.terminal, StreamTerminal::Failed);
+        assert_eq!(
+            outcome.error_code.as_deref(),
+            Some("code_interpreter_calls_exceeded")
+        );
+
+        // Last event should be an error
+        let last = events.last().expect("should have events");
+        match last {
+            StreamEvent::Error(data) => {
+                assert_eq!(data.code, "code_interpreter_calls_exceeded");
+            }
+            other => panic!("expected Error event, got: {other:?}"),
+        }
+    }
+
+    /// 6.10: Other tool calls don't count toward code interpreter limit.
+    #[tokio::test]
+    async fn test_ci_per_message_counter_ignores_other_tools() {
+        // 5 file_search calls + 1 code_interpreter call, limit is 2 — should complete
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::with_tool_calls(&[
+            ("file_search", 5),
+            ("code_interpreter", 1),
+        ]));
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(32);
+        let cancel = CancellationToken::new();
+
+        let handle = spawn_provider_task::<TurnRepo, MsgRepo>(
+            provider,
+            "test-alias".to_owned(),
+            mock_ctx(),
+            vec![LlmMessage::user("hi")],
+            None,
+            vec![],
+            "test-model".into(),
+            "test-model".into(),
+            4096,
+            2, // max_tool_calls
+            2, // web_search_max_calls
+            2, // code_interpreter_max_calls
+            cancel,
+            tx,
+            None,
+            std::collections::HashMap::new(),
+        );
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let is_term = ev.is_terminal();
+            events.push(ev);
+            if is_term {
+                break;
+            }
+        }
+
+        let outcome = handle.await.expect("task should not panic");
+        assert_eq!(outcome.terminal, StreamTerminal::Completed);
         assert!(!events.iter().any(|e| matches!(e, StreamEvent::Error(_))));
     }
 
@@ -5734,6 +5993,7 @@ mod tests {
         fn increment_attachments_pending(&self) {}
         fn decrement_attachments_pending(&self) {}
         fn record_image_inputs_per_turn(&self, _: u32) {}
+        fn record_code_interpreter_calls(&self, _: &str, _: u32) {}
     }
 
     // ── Metric emission tests ────────────────────────────────────────────
