@@ -58,6 +58,7 @@ pub async fn replay_turn<MR: MessageRepository>(
         request_id: turn.request_id,
         message_id: assistant_msg_id,
         is_new_turn: false,
+        thread_summary_applied: None,
     });
 
     let delta = StreamEvent::Delta(DeltaData {
@@ -260,6 +261,46 @@ mod tests {
             _: Option<crate::domain::repos::SnapshotBoundary>,
         ) -> Result<Vec<MessageModel>, DomainError> {
             unimplemented!()
+        }
+
+        async fn last_assistant_token_counts<C: DBRunner>(
+            &self,
+            _: &C,
+            _: &AccessScope,
+            _: Uuid,
+        ) -> Result<Option<(i64, i64)>, DomainError> {
+            Ok(None)
+        }
+
+        async fn find_latest_message<C: DBRunner>(
+            &self,
+            _: &C,
+            _: &AccessScope,
+            _: Uuid,
+        ) -> Result<Option<crate::domain::repos::SummaryFrontier>, DomainError> {
+            Ok(None)
+        }
+
+        async fn fetch_messages_in_range<C: DBRunner>(
+            &self,
+            _: &C,
+            _: &AccessScope,
+            _: Uuid,
+            _: Option<&crate::domain::repos::SummaryFrontier>,
+            _: &crate::domain::repos::SummaryFrontier,
+        ) -> Result<Vec<MessageModel>, DomainError> {
+            Ok(vec![])
+        }
+
+        async fn mark_messages_compressed<C: DBRunner>(
+            &self,
+            _: &C,
+            _: &AccessScope,
+            _: Uuid,
+            _: Option<&crate::domain::repos::SummaryFrontier>,
+            _: &crate::domain::repos::SummaryFrontier,
+        ) -> Result<u64, DomainError> {
+            Ok(0)
         }
     }
 

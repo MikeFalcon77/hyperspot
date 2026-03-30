@@ -46,7 +46,9 @@
     "/v1/chats": {
       "post": {
         "operationId": "createChat",
-        "tags": ["chats"],
+        "tags": [
+          "chats"
+        ],
         "summary": "Create a new chat",
         "description": "Creates a chat for the authenticated user. The optional `model` field selects a model from the deployment model catalog; if omitted, the default model is resolved: the is_default premium model, or the first enabled premium model, or the first enabled standard model. The model is locked for the chat lifetime.",
         "requestBody": {
@@ -112,7 +114,9 @@
       },
       "get": {
         "operationId": "listChats",
-        "tags": ["chats"],
+        "tags": [
+          "chats"
+        ],
         "summary": "List chats for the current user",
         "description": "Returns chats for the authenticated user ordered by most recent activity (`updated_at` DESC, `id` DESC tiebreaker). Supports cursor-based pagination via `limit` and `cursor` parameters.\n\n**OData support**:\n- `$filter`: `title` — string functions `contains(title, '...')`, `startswith(title, '...')`, `endswith(title, '...')`; comparison operators `eq`, `ne`. Also supports `updated_at` (eq, ne, gt, ge, lt, le) and `id` (eq, ne).",
         "parameters": [
@@ -174,7 +178,9 @@
       ],
       "get": {
         "operationId": "getChat",
-        "tags": ["chats"],
+        "tags": [
+          "chats"
+        ],
         "summary": "Get chat metadata",
         "description": "Returns chat metadata (including selected model) and message_count. Does NOT embed messages; use `GET /v1/chats/{id}/messages` to load conversation history with cursor pagination.",
         "responses": {
@@ -230,7 +236,9 @@
       },
       "delete": {
         "operationId": "deleteChat",
-        "tags": ["chats"],
+        "tags": [
+          "chats"
+        ],
         "summary": "Delete a chat",
         "description": "Soft-deletes the chat and marks attachments for asynchronous cleanup. External provider resources (files, chat vector stores) are removed by a background cleanup worker with idempotent retries.",
         "responses": {
@@ -260,7 +268,9 @@
       },
       "patch": {
         "operationId": "updateChatTitle",
-        "tags": ["chats"],
+        "tags": [
+          "chats"
+        ],
         "summary": "Update chat title",
         "description": "Partial update — P1 allows updating only the `title` field. The title is trimmed; strings consisting entirely of whitespace are rejected. On success, `updated_at` is set to the current time. Does not affect messages, attachments, model, or is_temporary.",
         "requestBody": {
@@ -336,7 +346,9 @@
       ],
       "post": {
         "operationId": "sendMessage",
-        "tags": ["messages"],
+        "tags": [
+          "messages"
+        ],
         "summary": "Send message and receive streamed AI response",
         "description": "Sends a user message and opens an SSE stream for the assistant response. If `request_id` matches an active generation, returns 409 Conflict (JSON, no SSE). If `request_id` matches a completed generation, replays the response as SSE (side-effect-free: no new quota reserve, no billing events).\n\nThe optional `web_search` parameter enables web search for this turn (disabled by default, backward compatible).\n\n**Attachment fields**: `attachment_ids` identifies attachments explicitly attached to this message (persisted into `message_attachments`, returned in message `attachments[]`; images included in multimodal input for the current turn). In P1, retrieval always covers all documents in the chat vector store — `attachment_ids` does not scope or filter retrieval. `file_search` is only included when the chat has at least one ready document attachment.\n\n**SSE event ordering**: `stream_started ping* (delta | tool)* citations? (done | error)`. `delta` and `tool` may interleave; at most one `citations` event, emitted after all `delta` events and before the terminal event.\n\nExactly one terminal event (`done` or `error`) ends the stream.\n\n**SSE event types and payloads**:\n- `event: stream_started` — first event, carries `request_id`, assistant `message_id`, and `is_new_turn` flag. Payload: `SseStreamStartedEvent`.\n- `event: ping` — keepalive, payload: `{}`. Clients MUST ignore.\n- `event: delta` — incremental text. Payload: `SseDeltaEvent`.\n- `event: tool` — tool activity (file_search, web_search at P1). Payload: `SseToolEvent`.\n- `event: citations` — source references (file and web). Payload: `SseCitationsEvent`.\n- `event: done` — terminal success with usage and quota_decision. Emitted for both full completions and truncated-but-successful completions (provider `response.incomplete`). Payload: `SseDoneEvent`.\n- `event: error` — terminal failure. Payload: `SseErrorEvent`.\n\nSee component schemas for payload definitions.\n\n**Pre-stream errors**: If validation, authorization, or quota preflight fails before streaming, a JSON error response with the appropriate HTTP status is returned and no SSE stream is opened.\n\n**Cancellation**: If the client disconnects mid-stream, the server cancels the in-flight provider request and applies a bounded best-effort debit for quota. No SSE error event is emitted (the stream is already broken). The Turn Status API is authoritative for final state after disconnect.",
         "requestBody": {
@@ -377,12 +389,24 @@
                 "schema": {
                   "description": "Server-Sent Events stream. Each line is `event: <type>\\ndata: <JSON>\\n\\n`. Event ordering: `stream_started ping* (delta | tool)* citations? (done | error)`. Exactly one terminal event ends the stream.",
                   "oneOf": [
-                    { "$ref": "#/components/schemas/SseStreamStartedEvent" },
-                    { "$ref": "#/components/schemas/SseDeltaEvent" },
-                    { "$ref": "#/components/schemas/SseToolEvent" },
-                    { "$ref": "#/components/schemas/SseCitationsEvent" },
-                    { "$ref": "#/components/schemas/SseDoneEvent" },
-                    { "$ref": "#/components/schemas/SseErrorEvent" }
+                    {
+                      "$ref": "#/components/schemas/SseStreamStartedEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseDeltaEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseToolEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseCitationsEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseDoneEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseErrorEvent"
+                    }
                   ]
                 }
               }
@@ -512,7 +536,9 @@
       ],
       "post": {
         "operationId": "uploadAttachment",
-        "tags": ["attachments"],
+        "tags": [
+          "attachments"
+        ],
         "summary": "Upload a document or image to a chat",
         "description": "Uploads a file as an attachment. MIME type determines `kind`: `image/png`, `image/jpeg`, `image/webp` produce `image` attachments; all other supported types produce `document` attachments. Documents are indexed in the chat's dedicated vector store and optionally summarized. Images are stored via the provider Files API but NOT indexed in vector stores. Returns immediately with `status: pending`; transitions to `ready` or `failed` asynchronously.\n\n**MIME inference**: When the browser sends `application/octet-stream` (common for `.md` and other text files), the server infers the actual MIME type from the file extension. Supported extensions include `.pdf`, `.md`, `.txt`, `.html`, `.docx`, `.pptx`, `.json`, `.csv`, and others.\n\n**CSV support**: `text/csv` files are accepted and internally remapped to `text/plain` for indexing compatibility. This behavior is controlled by server configuration (`allow_csv_upload`, default: true).",
         "requestBody": {
@@ -521,7 +547,9 @@
             "multipart/form-data": {
               "schema": {
                 "type": "object",
-                "required": ["file"],
+                "required": [
+                  "file"
+                ],
                 "properties": {
                   "file": {
                     "type": "string",
@@ -635,7 +663,9 @@
       ],
       "get": {
         "operationId": "listMessages",
-        "tags": ["messages"],
+        "tags": [
+          "messages"
+        ],
         "summary": "List messages with cursor pagination",
         "description": "Returns paginated messages for a chat using cursor-based pagination with OData query support. Default ordering is `created_at asc` (chronological). Use `$orderby` and `$filter` for advanced queries.\n\n**OData support**:\n- `$orderby`: `created_at asc|desc`, `id asc|desc`\n- `$filter`: `created_at` (eq, ne, gt, ge, lt, le), `role` (eq, ne, in), `id` (eq, ne, in)",
         "parameters": [
@@ -653,15 +683,36 @@
           }
         ],
         "x-odata-orderby": {
-          "supported_fields": ["created_at", "id"],
-          "supported_directions": ["asc", "desc"],
+          "supported_fields": [
+            "created_at",
+            "id"
+          ],
+          "supported_directions": [
+            "asc",
+            "desc"
+          ],
           "default": "created_at asc"
         },
         "x-odata-filter": {
           "supported_fields": {
-            "created_at": ["eq", "ne", "gt", "ge", "lt", "le"],
-            "role": ["eq", "ne", "in"],
-            "id": ["eq", "ne", "in"]
+            "created_at": [
+              "eq",
+              "ne",
+              "gt",
+              "ge",
+              "lt",
+              "le"
+            ],
+            "role": [
+              "eq",
+              "ne",
+              "in"
+            ],
+            "id": [
+              "eq",
+              "ne",
+              "in"
+            ]
           }
         },
         "responses": {
@@ -759,7 +810,9 @@
       ],
       "get": {
         "operationId": "getAttachment",
-        "tags": ["attachments"],
+        "tags": [
+          "attachments"
+        ],
         "summary": "Get attachment status and metadata",
         "description": "Returns the current status and metadata of an attachment. Use this endpoint to poll for processing completion after upload (status transitions: `pending` -> `ready` or `pending` -> `failed`). The `doc_summary` field is populated asynchronously by a server background task and is null until processing completes (always null for images).",
         "responses": {
@@ -835,7 +888,9 @@
       },
       "delete": {
         "operationId": "deleteAttachment",
-        "tags": ["attachments"],
+        "tags": [
+          "attachments"
+        ],
         "summary": "Delete an attachment from the chat",
         "description": "Deletes an attachment if it is not referenced by any submitted message. If the attachment is referenced by a submitted message, the operation is rejected with 409 Conflict (attachment_locked). For eligible attachments, the attachment is soft-deleted locally and immediately removed from future retrieval and chat metadata. Provider-side file deletion and vector-store cleanup are performed asynchronously via background workers and are not required to complete before the API returns 204 No Content. Re-deleting an already-deleted attachment is idempotent and returns 204.",
         "responses": {
@@ -885,7 +940,9 @@
       ],
       "get": {
         "operationId": "getTurnStatus",
-        "tags": ["turns"],
+        "tags": [
+          "turns"
+        ],
         "summary": "Get authoritative turn status",
         "description": "Returns the authoritative server-side turn state for a given request_id. Used by the UI for disconnect recovery. Internal states map to API states: running->running, completed->done, failed->error, cancelled->cancelled. Includes error_code (when state is 'error') and assistant_message_id (when state is 'done') so clients can resolve lifecycle uncertainty after disconnect without listing or scanning message history. Retrieving the assistant message content itself may require one follow-up request. Billing outcome and provider internals are not exposed.",
         "responses": {
@@ -929,7 +986,9 @@
       },
       "patch": {
         "operationId": "editTurn",
-        "tags": ["turns"],
+        "tags": [
+          "turns"
+        ],
         "summary": "Edit the last user turn and regenerate response",
         "description": "Replaces the content of the last user message and generates a new assistant response via SSE. The previous turn is soft-deleted with `replaced_by_request_id` set. The server generates a new `request_id` for the new turn; the old `request_id` becomes replay-only (a completed `request_id` always returns the previously stored result). Original attachment associations from `attachment_ids` are preserved (copied to the new user message via `message_attachments`). Retrieval for the edited turn operates over the entire chat vector store (P1). Only the most recent non-deleted turn in a terminal state may be edited.",
         "requestBody": {
@@ -953,12 +1012,24 @@
                 "schema": {
                   "description": "Server-Sent Events stream. Each line is `event: <type>\\ndata: <JSON>\\n\\n`. Event ordering: `stream_started ping* (delta | tool)* citations? (done | error)`. Exactly one terminal event ends the stream.",
                   "oneOf": [
-                    { "$ref": "#/components/schemas/SseStreamStartedEvent" },
-                    { "$ref": "#/components/schemas/SseDeltaEvent" },
-                    { "$ref": "#/components/schemas/SseToolEvent" },
-                    { "$ref": "#/components/schemas/SseCitationsEvent" },
-                    { "$ref": "#/components/schemas/SseDoneEvent" },
-                    { "$ref": "#/components/schemas/SseErrorEvent" }
+                    {
+                      "$ref": "#/components/schemas/SseStreamStartedEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseDeltaEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseToolEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseCitationsEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseDoneEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseErrorEvent"
+                    }
                   ]
                 }
               }
@@ -1027,7 +1098,9 @@
       },
       "delete": {
         "operationId": "deleteTurn",
-        "tags": ["turns"],
+        "tags": [
+          "turns"
+        ],
         "summary": "Delete the last turn",
         "description": "Soft-deletes the most recent turn (user message + assistant response). Only the latest non-deleted turn in a terminal state may be deleted. No replacement turn is created.",
         "responses": {
@@ -1087,7 +1160,9 @@
       ],
       "post": {
         "operationId": "retryTurn",
-        "tags": ["turns"],
+        "tags": [
+          "turns"
+        ],
         "summary": "Retry the last turn",
         "description": "Soft-deletes the previous turn and re-submits the original user message (including any attachment associations from `attachment_ids`, copied to the new user message via `message_attachments`) for a new assistant response via SSE. The server generates a new `request_id` for the new turn; the old `request_id` becomes replay-only (a completed `request_id` always returns the previously stored result). Retrieval for the retried turn operates over the entire chat vector store (P1). Only the most recent non-deleted turn in a terminal state may be retried. No request body is required; the original user message content and attachment associations are reused automatically.",
         "requestBody": {
@@ -1102,12 +1177,24 @@
                 "schema": {
                   "description": "Server-Sent Events stream. Each line is `event: <type>\\ndata: <JSON>\\n\\n`. Event ordering: `stream_started ping* (delta | tool)* citations? (done | error)`. Exactly one terminal event ends the stream.",
                   "oneOf": [
-                    { "$ref": "#/components/schemas/SseStreamStartedEvent" },
-                    { "$ref": "#/components/schemas/SseDeltaEvent" },
-                    { "$ref": "#/components/schemas/SseToolEvent" },
-                    { "$ref": "#/components/schemas/SseCitationsEvent" },
-                    { "$ref": "#/components/schemas/SseDoneEvent" },
-                    { "$ref": "#/components/schemas/SseErrorEvent" }
+                    {
+                      "$ref": "#/components/schemas/SseStreamStartedEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseDeltaEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseToolEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseCitationsEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseDoneEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseErrorEvent"
+                    }
                   ]
                 }
               }
@@ -1186,7 +1273,9 @@
       ],
       "put": {
         "operationId": "setReaction",
-        "tags": ["reactions"],
+        "tags": [
+          "reactions"
+        ],
         "summary": "Set like/dislike on an assistant message",
         "description": "Upserts a binary reaction on an assistant message. Only assistant messages may receive reactions. Idempotent: replaces any existing reaction for this user on this message.",
         "requestBody": {
@@ -1258,7 +1347,9 @@
       },
       "delete": {
         "operationId": "removeReaction",
-        "tags": ["reactions"],
+        "tags": [
+          "reactions"
+        ],
         "summary": "Remove reaction from an assistant message",
         "description": "Removes the current user's reaction from an assistant message. Idempotent: returns 204 whether or not a reaction existed.",
         "responses": {
@@ -1297,7 +1388,9 @@
     "/v1/models": {
       "get": {
         "operationId": "listModels",
-        "tags": ["models"],
+        "tags": [
+          "models"
+        ],
         "summary": "List models visible to the current user",
         "description": "Returns all models that are globally enabled in the policy catalog AND user-enabled for this user (allow-by-default semantics). Disabled models are never returned. The catalog is sourced from `minichat-policy-plugin` and cached in memory.",
         "responses": {
@@ -1333,7 +1426,9 @@
     "/v1/models/{model_id}": {
       "get": {
         "operationId": "getModel",
-        "tags": ["models"],
+        "tags": [
+          "models"
+        ],
         "summary": "Get a single model by ID",
         "description": "Returns the model only if it is visible to the current user (globally enabled AND user-enabled). Returns 404 if the model is globally disabled, user-disabled, or does not exist — to avoid leaking catalog details.",
         "parameters": [
@@ -1377,7 +1472,9 @@
     "/v1/quota/status": {
       "get": {
         "operationId": "getQuotaStatus",
-        "tags": ["quota"],
+        "tags": [
+          "quota"
+        ],
         "summary": "Get quota status for the authenticated user",
         "description": "Returns per-tier, per-period quota usage, remaining credits, warning flags, and the configured warning threshold. Useful for at-rest quota queries outside of a streaming turn.",
         "responses": {
@@ -1610,8 +1707,15 @@
     "schemas": {
       "ErrorResponse": {
         "type": "object",
-        "required": ["type", "title", "status", "detail", "instance", "code"],
-        "description": "Problem Details error envelope returned by mini-chat JSON errors and SSE terminal error events. Matches the runtime `Problem` serialization. In current handlers, the stable application error token is often carried in `title`; `code` may be an empty string unless explicitly populated. Error text MUST NOT contain provider-scoped identifiers (provider_file_id, vector_store_id, deployment names, upstream error bodies).",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "instance",
+          "code"
+        ],
+        "description": "Problem Details error envelope (RFC 9457). Returned by all JSON error responses and SSE terminal `error` events.\n\n**Error codes** (in `code` field):\n\n| Code | HTTP | Description |\n|------|------|-------------|\n| `invalid_request` | 400 | Validation error (empty content, bad model, etc.) |\n| `web_search_disabled` | 400 | Web search disabled via kill switch |\n| `web_search_calls_exceeded` | 400 | Per-turn web search call limit reached |\n| `document_limit_exceeded` | 400 | Per-chat document count limit reached |\n| `storage_limit_exceeded` | 400 | Per-chat storage size limit reached |\n| `model_not_found` | 404 | Requested model not in catalog |\n| `unsupported_file_type` | 415 | Upload MIME type not allowed |\n| `file_too_large` | 413 | Upload exceeds size limit |\n| `quota_exhausted` | 429 | All quota tiers exhausted |\n| `generation_in_progress` | 409 | Another turn is already running in this chat |\n| `not_latest_turn` | 409 | Retry/edit/delete only allowed on the latest turn |\n| `invalid_turn_state` | 400 | Turn in wrong state for requested mutation |\n| `input_too_long` | 400 | User message exceeds model's max_input_tokens |\n| `rate_limited` | 429 | Provider rate limit (SSE error event) |\n| `provider_timeout` | 504 | Provider request timed out (SSE error event) |\n| `provider_error` | 502 | Provider returned an error (SSE error event) |\n| `provider_unavailable` | 502 | Provider unreachable (SSE error event) |\n| `service_unavailable` | 503 | Internal service unavailable |\n\nError text MUST NOT contain provider-scoped identifiers (provider_file_id, vector_store_id, response_id).",
         "properties": {
           "type": {
             "type": "string",
@@ -1638,11 +1742,17 @@
             "description": "Machine-readable application code. Always present in the payload; may be an empty string when the handler does not populate it explicitly."
           },
           "trace_id": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Trace identifier useful for correlating server logs."
           },
           "errors": {
-            "type": ["array", "null"],
+            "type": [
+              "array",
+              "null"
+            ],
             "description": "Optional list of validation violations for validation-style errors.",
             "items": {
               "$ref": "#/components/schemas/ValidationViolation"
@@ -1652,7 +1762,10 @@
       },
       "ValidationViolation": {
         "type": "object",
-        "required": ["field", "message"],
+        "required": [
+          "field",
+          "message"
+        ],
         "description": "Single validation violation entry included in `ErrorResponse.errors` when field-level validation details are available.",
         "properties": {
           "field": {
@@ -1664,14 +1777,23 @@
             "description": "Human-readable message describing the validation error."
           },
           "code": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Optional machine-readable validation code for this violation."
           }
         }
       },
       "Chat": {
         "type": "object",
-        "required": ["id", "model", "is_temporary", "created_at", "updated_at"],
+        "required": [
+          "id",
+          "model",
+          "is_temporary",
+          "created_at",
+          "updated_at"
+        ],
         "description": "Chat metadata. Returned by create, list, and as part of chat detail.",
         "properties": {
           "id": {
@@ -1683,7 +1805,10 @@
             "description": "Model identifier from the deployment model catalog. Locked at creation for the chat lifetime."
           },
           "title": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "maxLength": 255
           },
           "is_temporary": {
@@ -1709,7 +1834,9 @@
           },
           {
             "type": "object",
-            "required": ["message_count"],
+            "required": [
+              "message_count"
+            ],
             "properties": {
               "message_count": {
                 "type": "integer",
@@ -1722,7 +1849,15 @@
       },
       "Message": {
         "type": "object",
-        "required": ["id", "request_id", "role", "content", "attachments", "my_reaction", "created_at"],
+        "required": [
+          "id",
+          "request_id",
+          "role",
+          "content",
+          "attachments",
+          "my_reaction",
+          "created_at"
+        ],
         "description": "A single message in a chat (user, assistant, or system).",
         "properties": {
           "id": {
@@ -1736,21 +1871,34 @@
           },
           "role": {
             "type": "string",
-            "enum": ["user", "assistant", "system"]
+            "enum": [
+              "user",
+              "assistant",
+              "system"
+            ]
           },
           "content": {
             "type": "string"
           },
           "model": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Effective model used. Present on assistant messages; null on user/system messages."
           },
           "input_tokens": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "description": "Actual input tokens. Present on assistant messages."
           },
           "output_tokens": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "description": "Actual output tokens. Present on assistant messages."
           },
           "attachments": {
@@ -1761,8 +1909,15 @@
             "description": "Always-present list of attachment summaries associated with this message. Contains lightweight metadata sufficient for UI rendering (kind, filename, status, thumbnail). Empty array when no attachments. Full attachment details (doc_summary, size_bytes, content_type, error_code) are available via GET /v1/chats/{id}/attachments/{attachment_id}."
           },
           "my_reaction": {
-            "type": ["string", "null"],
-            "enum": ["like", "dislike", null],
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "like",
+              "dislike",
+              null
+            ],
             "description": "The requesting user's reaction on this message. Null when no reaction exists or when the message role is not assistant (only assistant messages support reactions)."
           },
           "created_at": {
@@ -1773,7 +1928,15 @@
       },
       "Attachment": {
         "type": "object",
-        "required": ["id", "status", "kind", "filename", "content_type", "size_bytes", "created_at"],
+        "required": [
+          "id",
+          "status",
+          "kind",
+          "filename",
+          "content_type",
+          "size_bytes",
+          "created_at"
+        ],
         "description": "File attachment (document or image) on a chat.",
         "properties": {
           "id": {
@@ -1783,12 +1946,19 @@
           },
           "status": {
             "type": "string",
-            "enum": ["pending", "ready", "failed"],
+            "enum": [
+              "pending",
+              "ready",
+              "failed"
+            ],
             "description": "Processing status. Transitions: pending -> ready or pending -> failed."
           },
           "kind": {
             "type": "string",
-            "enum": ["document", "image"],
+            "enum": [
+              "document",
+              "image"
+            ],
             "description": "Derived from MIME type. image/png, image/jpeg, image/webp -> image; all other supported types -> document."
           },
           "filename": {
@@ -1804,22 +1974,35 @@
             "format": "int64"
           },
           "doc_summary": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Server-generated document summary (asynchronous background task). Null until processing completes; always null for images. Never provided by the client."
           },
           "img_thumbnail": {
             "oneOf": [
-              { "$ref": "#/components/schemas/ImgThumbnail" },
-              { "type": "null" }
+              {
+                "$ref": "#/components/schemas/ImgThumbnail"
+              },
+              {
+                "type": "null"
+              }
             ],
             "description": "Server-generated preview thumbnail for image attachments. Null when kind is 'document', when kind is 'image' but thumbnail generation failed or was skipped, or when status is not 'ready'. Maximum decoded size (raw bytes before base64): 128 KiB by default (configurable via `thumbnail_max_bytes`). Stored internally in Mini Chat database only; never uploaded to provider. No provider identifiers. Never provided by the client."
           },
           "error_code": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Stable internal error code when status is 'failed' (e.g. 'index_failed', 'provider_upload_failed'). Null when status is 'pending' or 'ready'. No provider identifiers in this field."
           },
           "summary_updated_at": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "date-time",
             "description": "Timestamp of summary generation."
           },
@@ -1831,7 +2014,11 @@
       },
       "TurnStatus": {
         "type": "object",
-        "required": ["request_id", "state", "updated_at"],
+        "required": [
+          "request_id",
+          "state",
+          "updated_at"
+        ],
         "description": "Authoritative server-side turn state for lifecycle resolution and disconnect recovery. Internal-to-API state mapping: running->running, completed->done, failed->error, cancelled->cancelled. Terminal states (done, error, cancelled) are immutable — once reached, the state never changes. Exactly one terminal outcome exists per (chat_id, request_id) pair. All terminal states indicate that quota settlement has been finalized atomically with the state transition. A state of 'done' guarantees that the full assistant message content is durably persisted and available for idempotent replay. Optional fields (error_code, assistant_message_id) provide actionable context so clients can resolve lifecycle uncertainty after disconnect without listing or scanning message history; retrieving the assistant message content may require one follow-up request. Billing outcome and provider internals are not exposed. chat_id is not included in the response body because it is already present in the URL path.",
         "properties": {
           "request_id": {
@@ -1840,7 +2027,12 @@
           },
           "state": {
             "type": "string",
-            "enum": ["running", "done", "error", "cancelled"],
+            "enum": [
+              "running",
+              "done",
+              "error",
+              "cancelled"
+            ],
             "description": "Turn state. 'done', 'error', 'cancelled' are terminal and immutable. 'error' indicates the turn failed — check error_code to determine if it was a provider failure (provider_error, provider_timeout) or a system timeout (orphan_timeout). 'cancelled' indicates client disconnect or internal abort — no SSE error event was emitted. Use this endpoint to resolve state after disconnect. IMPORTANT: error_code='orphan_timeout' means stream ended without provider terminal event (system timeout, NOT provider error); display 'Request timed out' to users, NOT 'Provider error'."
           },
           "error_code": {
@@ -1862,7 +2054,11 @@
       },
       "ReactionResponse": {
         "type": "object",
-        "required": ["message_id", "reaction", "created_at"],
+        "required": [
+          "message_id",
+          "reaction",
+          "created_at"
+        ],
         "properties": {
           "message_id": {
             "type": "string",
@@ -1870,7 +2066,10 @@
           },
           "reaction": {
             "type": "string",
-            "enum": ["like", "dislike"]
+            "enum": [
+              "like",
+              "dislike"
+            ]
           },
           "created_at": {
             "type": "string",
@@ -1895,7 +2094,9 @@
       },
       "UpdateChatTitleRequest": {
         "type": "object",
-        "required": ["title"],
+        "required": [
+          "title"
+        ],
         "description": "Request body for updating a chat title. Only `title` is updatable in P1.",
         "properties": {
           "title": {
@@ -1908,7 +2109,9 @@
       },
       "SendMessageRequest": {
         "type": "object",
-        "required": ["content"],
+        "required": [
+          "content"
+        ],
         "description": "Request body for sending a message. Opens an SSE stream on success. `attachment_ids` identifies attachments explicitly attached to this message (persisted, returned in message attachments array). In P1, retrieval always covers all documents in the chat vector store — `attachment_ids` does not scope or filter retrieval.",
         "properties": {
           "content": {
@@ -1937,7 +2140,9 @@
       },
       "EditTurnRequest": {
         "type": "object",
-        "required": ["content"],
+        "required": [
+          "content"
+        ],
         "description": "Request body for editing the last user turn. Original attachment associations from `attachment_ids` are preserved automatically (copied via message_attachments). Retrieval for the edited turn operates over the entire chat vector store (P1).",
         "properties": {
           "content": {
@@ -1948,17 +2153,26 @@
       },
       "SetReactionRequest": {
         "type": "object",
-        "required": ["reaction"],
+        "required": [
+          "reaction"
+        ],
         "properties": {
           "reaction": {
             "type": "string",
-            "enum": ["like", "dislike"]
+            "enum": [
+              "like",
+              "dislike"
+            ]
           }
         }
       },
       "SseStreamStartedEvent": {
         "type": "object",
-        "required": ["request_id", "message_id", "is_new_turn"],
+        "required": [
+          "request_id",
+          "message_id",
+          "is_new_turn"
+        ],
         "description": "SSE `event: stream_started` payload. First event in every SSE stream (both new generations and replays). Carries the server-assigned request_id, assistant message_id, and is_new_turn flag.",
         "properties": {
           "request_id": {
@@ -1974,18 +2188,27 @@
           "is_new_turn": {
             "type": "boolean",
             "description": "true for a live generation (new turn); false when the stream replays an already-completed turn (idempotent replay)."
+          },
+          "thread_summary_applied": {
+            "$ref": "#/components/schemas/ThreadSummaryInfo",
+            "description": "Present when a thread summary is included in the context window. Absent (not serialized) when no summary exists. UI can display an informational indicator (e.g. 'Conversation summarized')."
           }
         }
       },
       "SseDeltaEvent": {
         "type": "object",
-        "required": ["type", "content"],
+        "required": [
+          "type",
+          "content"
+        ],
         "description": "SSE `event: delta` payload. Streams incremental assistant text output.",
         "properties": {
           "type": {
             "type": "string",
             "description": "Content type. P1: always \"text\". Reserved for future: \"markdown\", \"structured\".",
-            "enum": ["text"]
+            "enum": [
+              "text"
+            ]
           },
           "content": {
             "type": "string",
@@ -1995,12 +2218,19 @@
       },
       "SseToolEvent": {
         "type": "object",
-        "required": ["phase", "name"],
+        "required": [
+          "phase",
+          "name"
+        ],
         "description": "SSE `event: tool` payload. Reports tool call activity (P1: file_search, web_search).",
         "properties": {
           "phase": {
             "type": "string",
-            "enum": ["start", "progress", "done"]
+            "enum": [
+              "start",
+              "progress",
+              "done"
+            ]
           },
           "name": {
             "type": "string",
@@ -2021,7 +2251,9 @@
       },
       "SseCitationsEvent": {
         "type": "object",
-        "required": ["items"],
+        "required": [
+          "items"
+        ],
         "description": "SSE `event: citations` payload. Delivers source references used in the answer. MAY include items from file_search (source=file) and/or web_search (source=web). Image inputs do not produce citations. Emitted at most once near stream completion before the terminal event (P1).",
         "properties": {
           "items": {
@@ -2034,12 +2266,19 @@
       },
       "CitationItem": {
         "type": "object",
-        "required": ["source", "title", "snippet"],
+        "required": [
+          "source",
+          "title",
+          "snippet"
+        ],
         "description": "A single citation reference. When source=\"file\", attachment_id is required. When source=\"web\", url is required.",
         "properties": {
           "source": {
             "type": "string",
-            "enum": ["file", "web"],
+            "enum": [
+              "file",
+              "web"
+            ],
             "description": "Citation source type. P1: \"file\" and \"web\" (when web search is enabled)."
           },
           "title": {
@@ -2060,8 +2299,12 @@
             "type": "object",
             "description": "Reserved for mapping citations to character positions in final assistant text.",
             "properties": {
-              "start": { "type": "integer" },
-              "end": { "type": "integer" }
+              "start": {
+                "type": "integer"
+              },
+              "end": {
+                "type": "integer"
+              }
             }
           },
           "snippet": {
@@ -2076,24 +2319,41 @@
           }
         },
         "if": {
-          "properties": { "source": { "const": "file" } }
+          "properties": {
+            "source": {
+              "const": "file"
+            }
+          }
         },
         "then": {
-          "required": ["attachment_id"]
+          "required": [
+            "attachment_id"
+          ]
         },
         "else": {
-          "required": ["url"]
+          "required": [
+            "url"
+          ]
         }
       },
       "SseDoneEvent": {
         "type": "object",
-        "required": ["usage", "effective_model", "selected_model", "quota_decision"],
+        "required": [
+          "usage",
+          "effective_model",
+          "selected_model",
+          "quota_decision"
+        ],
         "description": "SSE `event: done` payload. Terminal event finalizing the stream with usage and model selection metadata. Used for both full completions and truncated-but-successful completions (provider `response.incomplete`). The assistant message_id is provided in the preceding `stream_started` event.",
         "properties": {
           "usage": {
             "nullable": true,
             "description": "Token usage for this turn. Null when usage is unavailable (e.g. provider error before any tokens were consumed).",
-            "allOf": [{ "$ref": "#/components/schemas/SseUsage" }]
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SseUsage"
+              }
+            ]
           },
           "effective_model": {
             "type": "string",
@@ -2105,7 +2365,10 @@
           },
           "quota_decision": {
             "type": "string",
-            "enum": ["allow", "downgrade"],
+            "enum": [
+              "allow",
+              "downgrade"
+            ],
             "description": "Indicates whether the selected model was used as-is (allow) or a quota-driven downgrade occurred (downgrade). Always present."
           },
           "downgrade_from": {
@@ -2114,7 +2377,12 @@
           },
           "downgrade_reason": {
             "type": "string",
-            "enum": ["premium_quota_exhausted", "force_standard_tier", "disable_premium_tier", "model_disabled"],
+            "enum": [
+              "premium_quota_exhausted",
+              "force_standard_tier",
+              "disable_premium_tier",
+              "model_disabled"
+            ],
             "description": "Why downgrade occurred. Present only when quota_decision=\"downgrade\". Values: premium_quota_exhausted (user quota exhausted); force_standard_tier (operator kill switch: premium tier forcibly disabled for this tenant); disable_premium_tier (operator kill switch: premium tier globally disabled); model_disabled (operator kill switch: selected model global_enabled=false)."
           },
           "quota_warnings": {
@@ -2134,31 +2402,49 @@
             ]
           },
           "completion_signal": {
-            "type": ["object", "null"],
+            "type": [
+              "object",
+              "null"
+            ],
             "description": "Non-fatal completion signal. Null for normal completion. For truncated responses (provider `response.incomplete`) contains the truncation reason. Not an error indicator — the turn outcome is still `completed`.",
             "properties": {
               "kind": {
                 "type": "string",
-                "enum": ["incomplete"]
+                "enum": [
+                  "incomplete"
+                ]
               },
               "reason": {
                 "type": "string",
                 "description": "Truncation reason from the canonical CompletionSignalReason enum (e.g. \"max_tokens\", \"content_filter\")."
               }
             },
-            "required": ["kind"]
+            "required": [
+              "kind"
+            ]
           }
         },
         "if": {
-          "properties": { "quota_decision": { "const": "downgrade" } }
+          "properties": {
+            "quota_decision": {
+              "const": "downgrade"
+            }
+          }
         },
         "then": {
-          "required": ["downgrade_from", "downgrade_reason"]
+          "required": [
+            "downgrade_from",
+            "downgrade_reason"
+          ]
         }
       },
       "SseUsage": {
         "type": "object",
-        "required": ["input_tokens", "output_tokens", "model"],
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "model"
+        ],
         "description": "Token usage reported in the terminal done event.",
         "properties": {
           "input_tokens": {
@@ -2192,7 +2478,9 @@
       },
       "PageInfo": {
         "type": "object",
-        "required": ["limit"],
+        "required": [
+          "limit"
+        ],
         "description": "Cursor-based pagination metadata following the platform OData-style convention.",
         "properties": {
           "limit": {
@@ -2200,18 +2488,27 @@
             "description": "The limit that was applied for this page."
           },
           "next_cursor": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Opaque cursor for fetching the next page. Null when there are no more results."
           },
           "prev_cursor": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Opaque cursor for fetching the previous page. Null on the first page."
           }
         }
       },
       "ChatsPage": {
         "type": "object",
-        "required": ["items", "page_info"],
+        "required": [
+          "items",
+          "page_info"
+        ],
         "description": "Paginated list of chats following the platform Page + PageInfo convention. Default ordering: `updated_at desc`, `id desc` (tiebreaker).",
         "properties": {
           "items": {
@@ -2227,7 +2524,10 @@
       },
       "MessagesPage": {
         "type": "object",
-        "required": ["items", "page_info"],
+        "required": [
+          "items",
+          "page_info"
+        ],
         "description": "Paginated list of messages following the platform Page + PageInfo convention.",
         "properties": {
           "items": {
@@ -2243,7 +2543,12 @@
       },
       "AttachmentSummary": {
         "type": "object",
-        "required": ["attachment_id", "kind", "filename", "status"],
+        "required": [
+          "attachment_id",
+          "kind",
+          "filename",
+          "status"
+        ],
         "description": "Lightweight attachment metadata embedded in Message objects. Contains only the fields needed for UI rendering of message history. Full details (doc_summary, size_bytes, content_type, error_code, etc.) are available via GET /v1/chats/{id}/attachments/{attachment_id}.",
         "properties": {
           "attachment_id": {
@@ -2252,7 +2557,10 @@
           },
           "kind": {
             "type": "string",
-            "enum": ["document", "image"],
+            "enum": [
+              "document",
+              "image"
+            ],
             "description": "Attachment type. Derived from MIME type on upload."
           },
           "filename": {
@@ -2262,13 +2570,21 @@
           },
           "status": {
             "type": "string",
-            "enum": ["pending", "ready", "failed"],
+            "enum": [
+              "pending",
+              "ready",
+              "failed"
+            ],
             "description": "Processing status."
           },
           "img_thumbnail": {
             "oneOf": [
-              { "$ref": "#/components/schemas/ImgThumbnail" },
-              { "type": "null" }
+              {
+                "$ref": "#/components/schemas/ImgThumbnail"
+              },
+              {
+                "type": "null"
+              }
             ],
             "description": "Server-generated preview thumbnail. Present only when kind=image and status=ready. Null for documents and when thumbnail generation failed or was skipped."
           }
@@ -2276,12 +2592,19 @@
       },
       "ImgThumbnail": {
         "type": "object",
-        "required": ["content_type", "width", "height", "data_base64"],
+        "required": [
+          "content_type",
+          "width",
+          "height",
+          "data_base64"
+        ],
         "description": "Server-generated preview thumbnail for an image attachment. Produced during image upload processing using the Rust `image` crate. The thumbnail fits inside configured WxH dimensions (aspect ratio preserved, no cropping). Maximum decoded size (raw bytes before base64): 128 KiB by default (configurable via `thumbnail_max_bytes`). Stored internally in Mini Chat database only; never uploaded to provider Files API or external storage. No provider identifiers.",
         "properties": {
           "content_type": {
             "type": "string",
-            "enum": ["image/webp"],
+            "enum": [
+              "image/webp"
+            ],
             "description": "MIME type of the thumbnail image. P1: always image/webp."
           },
           "width": {
@@ -2304,7 +2627,10 @@
       },
       "QuotaDecision": {
         "type": "string",
-        "enum": ["allow", "downgrade"],
+        "enum": [
+          "allow",
+          "downgrade"
+        ],
         "description": "Deprecated as standalone schema — fields are now inlined on SseDoneEvent. Retained for backward reference only."
       },
       "MultimodalCapability": {
@@ -2313,7 +2639,14 @@
       },
       "Model": {
         "type": "object",
-        "required": ["model_id", "display_name", "tier", "multiplier_display", "multimodal_capabilities", "context_window"],
+        "required": [
+          "model_id",
+          "display_name",
+          "tier",
+          "multiplier_display",
+          "multimodal_capabilities",
+          "context_window"
+        ],
         "description": "A model visible to the current user. Does NOT expose provider, provider deployment IDs, credit multipliers, policy_version, max_output, or is_default.",
         "properties": {
           "model_id": {
@@ -2326,7 +2659,10 @@
           },
           "tier": {
             "type": "string",
-            "enum": ["standard", "premium"],
+            "enum": [
+              "standard",
+              "premium"
+            ],
             "description": "Rate-limit tier."
           },
           "multiplier_display": {
@@ -2352,7 +2688,9 @@
       },
       "ModelList": {
         "type": "object",
-        "required": ["items"],
+        "required": [
+          "items"
+        ],
         "description": "List of models visible to the current user.",
         "properties": {
           "items": {
@@ -2365,7 +2703,10 @@
       },
       "QuotaStatusResponse": {
         "type": "object",
-        "required": ["tiers", "warning_threshold_pct"],
+        "required": [
+          "tiers",
+          "warning_threshold_pct"
+        ],
         "description": "Full quota status for the authenticated user, broken down by tier and period.",
         "properties": {
           "tiers": {
@@ -2386,7 +2727,10 @@
       },
       "QuotaTierStatus": {
         "type": "object",
-        "required": ["tier", "periods"],
+        "required": [
+          "tier",
+          "periods"
+        ],
         "description": "Quota status for a single tier.",
         "properties": {
           "tier": {
@@ -2403,7 +2747,16 @@
       },
       "QuotaPeriodStatus": {
         "type": "object",
-        "required": ["period", "limit_credits_micro", "used_credits_micro", "remaining_credits_micro", "remaining_percentage", "next_reset", "warning", "exhausted"],
+        "required": [
+          "period",
+          "limit_credits_micro",
+          "used_credits_micro",
+          "remaining_credits_micro",
+          "remaining_percentage",
+          "next_reset",
+          "warning",
+          "exhausted"
+        ],
         "description": "Quota details for a single period within a tier.",
         "properties": {
           "period": {
@@ -2448,17 +2801,29 @@
       },
       "QuotaTier": {
         "type": "string",
-        "enum": ["premium", "total"],
+        "enum": [
+          "premium",
+          "total"
+        ],
         "description": "Quota tier classification."
       },
       "QuotaPeriod": {
         "type": "string",
-        "enum": ["daily", "monthly"],
+        "enum": [
+          "daily",
+          "monthly"
+        ],
         "description": "Quota period classification."
       },
       "QuotaWarning": {
         "type": "object",
-        "required": ["tier", "period", "remaining_percentage", "warning", "exhausted"],
+        "required": [
+          "tier",
+          "period",
+          "remaining_percentage",
+          "warning",
+          "exhausted"
+        ],
         "description": "Per-tier, per-period quota warning entry included in the SSE done event.",
         "properties": {
           "tier": {
@@ -2481,6 +2846,14 @@
           "exhausted": {
             "type": "boolean",
             "description": "True when remaining_percentage is 0."
+          },
+          "next_reset": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "RFC 3339 timestamp of the next quota period reset. Null when not applicable."
           }
         },
         "example": {
@@ -2489,6 +2862,21 @@
           "remaining_percentage": 8,
           "warning": true,
           "exhausted": false
+        }
+      },
+      "ThreadSummaryInfo": {
+        "type": "object",
+        "description": "Metadata about a thread summary applied to the current turn's context. Present in `stream_started` when the conversation has an active thread summary from a previous compression cycle.",
+        "required": [
+          "token_estimate"
+        ],
+        "properties": {
+          "token_estimate": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0,
+            "description": "Estimated token cost of the summary in the context window."
+          }
         }
       }
     }

@@ -109,6 +109,7 @@ pub async fn run<TR: TurnRepository + 'static, MR: MessageRepository + 'static>(
 /// - `Ok(false)` — scan completed normally
 /// - `Ok(true)` — shutdown requested mid-scan
 /// - `Err(())` — scan failed (already logged)
+#[tracing::instrument(name = "worker", skip_all, fields(worker = "orphan_watchdog"))]
 async fn scan_and_finalize<TR: TurnRepository + 'static, MR: MessageRepository + 'static>(
     deps: &OrphanWatchdogDeps<TR, MR>,
     config: &OrphanWatchdogConfig,
@@ -264,6 +265,7 @@ mod tests {
                 as Arc<dyn crate::domain::service::quota_settler::QuotaSettler>,
             Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
             Arc::new(NoopMetrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         ));
 
         OrphanWatchdogDeps {
@@ -323,6 +325,13 @@ mod tests {
             &self,
             _runner: &(dyn modkit_db::secure::DBRunner + Sync),
             _event: crate::domain::model::audit_envelope::AuditEnvelope,
+        ) -> Result<(), crate::domain::error::DomainError> {
+            Ok(())
+        }
+        async fn enqueue_thread_summary(
+            &self,
+            _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+            _payload: crate::domain::repos::ThreadSummaryTaskPayload,
         ) -> Result<(), crate::domain::error::DomainError> {
             Ok(())
         }

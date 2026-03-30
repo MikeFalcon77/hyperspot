@@ -453,8 +453,11 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
             return Err(DomainError::WebSearchDisabled);
         }
 
-        // 2. Estimate tokens
-        let estimation = token_estimator::estimate_tokens(
+        // 2. Estimate tokens — includes prior context (conversation history)
+        //    plus the current message. `prior_context_tokens` is the actual
+        //    input_tokens + output_tokens from the last completed turn, i.e.
+        //    the context that will be re-sent to the LLM on this request.
+        let mut estimation = token_estimator::estimate_tokens(
             &EstimationInput {
                 utf8_bytes: input.utf8_bytes,
                 num_images: input.num_images,
@@ -464,6 +467,9 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
             },
             &self.estimation_budgets,
         );
+        estimation.estimated_input_tokens = estimation
+            .estimated_input_tokens
+            .saturating_add(input.prior_context_tokens);
 
         // 3. Find selected model's multipliers for conservative initial reserve
         let catalog_entry = snapshot
@@ -1831,6 +1837,7 @@ mod tests {
             web_search_enabled: false,
             code_interpreter_enabled: false,
             max_output_tokens_cap: 4096,
+            prior_context_tokens: 0,
         }
     }
 

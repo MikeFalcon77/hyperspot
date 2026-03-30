@@ -80,6 +80,17 @@ pub struct ErrorData {
     pub message: String,
 }
 
+/// Metadata about a thread summary applied to the current turn's context.
+///
+/// Sent in the `stream_started` event when the conversation has an active
+/// thread summary. The UI can use this to show an informational banner.
+#[domain_model]
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ThreadSummaryInfo {
+    /// Estimated token cost of the summary in the context window.
+    pub token_estimate: u32,
+}
+
 /// Stream header event carrying the stream request ID and server-generated
 /// assistant message ID.
 ///
@@ -94,6 +105,10 @@ pub struct StreamStartedData {
     /// `true` for a live generation (new turn); `false` when the stream
     /// replays an already-completed turn (idempotent replay).
     pub is_new_turn: bool,
+    /// Present when a thread summary is included in the context window.
+    /// UI can display an informational indicator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_summary_applied: Option<ThreadSummaryInfo>,
 }
 
 /// Quota tier classification.

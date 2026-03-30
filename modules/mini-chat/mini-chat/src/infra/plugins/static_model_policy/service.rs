@@ -94,7 +94,7 @@ impl MiniChatModelPolicyPluginClientV1 for Service {
 
     async fn publish_usage(&self, payload: UsageEvent) -> Result<(), PublishError> {
         debug!(
-            turn_id = %payload.turn_id,
+            turn_id = ?payload.turn_id,
             tenant_id = %payload.tenant_id,
             billing_outcome = %payload.billing_outcome,
             "static plugin: publish_usage no-op"

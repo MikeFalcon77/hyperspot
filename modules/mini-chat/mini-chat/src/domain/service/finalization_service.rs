@@ -52,6 +52,45 @@ pub struct FinalizationService<TR: TurnRepository + 'static, MR: MessageReposito
     quota_settler: Arc<dyn QuotaSettler>,
     outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
     metrics: Arc<dyn MiniChatMetricsPort>,
+    summary_config: crate::config::background::ThreadSummaryWorkerConfig,
+}
+
+/// Evaluate whether thread summary should be triggered.
+///
+/// Two conditions (OR):
+/// 1. Context assembly already truncated messages (`messages_truncated`) — urgent,
+///    the conversation is losing context right now.
+/// 2. Context fills `>= threshold%` of budget AND no summary exists yet —
+///    proactive trigger before truncation starts.
+///
+/// When a summary already exists and context isn't truncated, we skip —
+/// the existing summary is still effective.
+fn should_trigger_summary(
+    assembled_context_tokens: u64,
+    max_output_tokens_applied: i32,
+    context_window: u32,
+    compression_threshold_pct: u32,
+    messages_truncated: bool,
+    has_existing_summary: bool,
+) -> bool {
+    // Urgent: messages already being dropped
+    if messages_truncated {
+        return true;
+    }
+    // Proactive: context filling up, but only if no summary exists yet.
+    // If a summary already covers older messages, wait until truncation
+    // actually starts before re-summarizing.
+    if has_existing_summary {
+        return false;
+    }
+    let estimated_input = i64::try_from(assembled_context_tokens).unwrap_or(i64::MAX);
+    let effective_budget = i64::from(context_window) - i64::from(max_output_tokens_applied);
+    if effective_budget <= 0 || estimated_input <= 0 {
+        return false;
+    }
+    #[allow(clippy::integer_division)]
+    let threshold = effective_budget * i64::from(compression_threshold_pct) / 100;
+    estimated_input >= threshold
 }
 
 impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> FinalizationService<TR, MR> {
@@ -62,6 +101,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
         quota_settler: Arc<dyn QuotaSettler>,
         outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
         metrics: Arc<dyn MiniChatMetricsPort>,
+        summary_config: crate::config::background::ThreadSummaryWorkerConfig,
     ) -> Self {
         Self {
             db,
@@ -70,6 +110,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
             quota_settler,
             outbox_enqueuer,
             metrics,
+            summary_config,
         }
     }
 
@@ -187,6 +228,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
     }
 
     /// Core finalization logic inside a transaction.
+    #[allow(clippy::too_many_lines)]
     async fn try_finalize(
         &self,
         input: &FinalizationInput,
@@ -196,6 +238,8 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
         let message_repo = Arc::clone(&self.message_repo);
         let quota_settler = Arc::clone(&self.quota_settler);
         let outbox_enqueuer = Arc::clone(&self.outbox_enqueuer);
+        let metrics = Arc::clone(&self.metrics);
+        let summary_config = self.summary_config.clone();
         let input = input.clone();
 
         let tx_result = self
@@ -322,6 +366,98 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                         .enqueue_audit_event(tx, audit_event)
                         .await
                         .map_err(to_db)?;
+
+                    // 7. Evaluate thread summary trigger (completed turns only).
+                    //
+                    // Short-circuit: skip the DB read for get_latest() when
+                    // the trigger clearly cannot fire (neither truncated nor
+                    // above threshold). This avoids an extra SELECT on every
+                    // completed turn.
+                    let ts_repo =
+                        crate::infra::db::repo::thread_summary_repo::ThreadSummaryRepository;
+                    let may_trigger = input.terminal_state == TurnState::Completed
+                        && summary_config.enabled
+                        && (input.messages_truncated
+                            || should_trigger_summary(
+                                input.assembled_context_tokens,
+                                input.max_output_tokens_applied,
+                                input.context_window,
+                                summary_config.compression_threshold_pct,
+                                false, // messages_truncated already checked above
+                                false, // optimistic: assume no summary for threshold check
+                            ));
+
+                    let (current_summary, summary_triggered) = if may_trigger {
+                        let summary = crate::domain::repos::ThreadSummaryRepository::get_latest(
+                            &ts_repo,
+                            tx,
+                            &scope,
+                            input.chat_id,
+                        )
+                        .await
+                        .map_err(to_db)?;
+                        let triggered = should_trigger_summary(
+                            input.assembled_context_tokens,
+                            input.max_output_tokens_applied,
+                            input.context_window,
+                            summary_config.compression_threshold_pct,
+                            input.messages_truncated,
+                            summary.is_some(),
+                        );
+                        (summary, triggered)
+                    } else {
+                        (None, false)
+                    };
+                    tracing::debug!(
+                        terminal_state = ?input.terminal_state,
+                        summary_enabled = summary_config.enabled,
+                        assembled_context_tokens = input.assembled_context_tokens,
+                        messages_truncated = input.messages_truncated,
+                        has_existing_summary = current_summary.is_some(),
+                        context_window = input.context_window,
+                        threshold_pct = summary_config.compression_threshold_pct,
+                        summary_triggered,
+                        "thread summary trigger decision"
+                    );
+                    if summary_triggered {
+                        let base_frontier = current_summary.as_ref().map(|s| &s.frontier);
+
+                        let frozen_target =
+                            crate::domain::repos::MessageRepository::find_latest_message(
+                                message_repo.as_ref(),
+                                tx,
+                                &scope,
+                                input.chat_id,
+                            )
+                            .await
+                            .map_err(to_db)?;
+
+                        if let Some(target) = frozen_target {
+                            let should_enqueue = match base_frontier {
+                                Some(bf) => bf != &target,
+                                None => true,
+                            };
+                            if should_enqueue {
+                                let payload = crate::domain::repos::ThreadSummaryTaskPayload {
+                                    tenant_id: input.tenant_id,
+                                    chat_id: input.chat_id,
+                                    system_request_id: Uuid::new_v4(),
+                                    system_task_type: "thread_summary_update".to_owned(),
+                                    base_frontier_created_at: base_frontier.map(|f| f.created_at),
+                                    base_frontier_message_id: base_frontier.map(|f| f.message_id),
+                                    frozen_target_created_at: target.created_at,
+                                    frozen_target_message_id: target.message_id,
+                                };
+                                outbox_enqueuer
+                                    .enqueue_thread_summary(tx, payload)
+                                    .await
+                                    .map_err(to_db)?;
+                                metrics.record_thread_summary_trigger("scheduled");
+                            } else {
+                                metrics.record_thread_summary_trigger("not_needed");
+                            }
+                        }
+                    }
 
                     Ok(FinalizationOutcome {
                         won_cas: true,
@@ -559,9 +695,9 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
 
                     let usage_event = UsageEvent {
                         tenant_id: input.tenant_id,
-                        user_id,
+                        user_id: input.user_id,
                         chat_id: input.chat_id,
-                        turn_id: input.turn_id,
+                        turn_id: Some(input.turn_id),
                         request_id: input.request_id,
                         effective_model: effective_model_str.clone(),
                         selected_model: effective_model_str.clone(),
@@ -574,6 +710,9 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                         web_search_calls: 0,
                         code_interpreter_calls: 0,
                         timestamp: now,
+                        requester_type: "user".to_owned(),
+                        dedupe_key: None,
+                        system_task_type: None,
                     };
                     outbox_enqueuer
                         .enqueue_usage_event(tx, usage_event)
@@ -721,9 +860,9 @@ fn build_usage_event(
     };
     UsageEvent {
         tenant_id: input.tenant_id,
-        user_id: input.user_id,
+        user_id: Some(input.user_id),
         chat_id: input.chat_id,
-        turn_id: input.turn_id,
+        turn_id: Some(input.turn_id),
         request_id: input.request_id,
         effective_model: input.effective_model.clone(),
         selected_model: input.selected_model.clone(),
@@ -742,6 +881,9 @@ fn build_usage_event(
         web_search_calls: input.web_search_calls,
         code_interpreter_calls: input.code_interpreter_calls,
         timestamp: time::OffsetDateTime::now_utc(),
+        requester_type: "user".to_owned(),
+        dedupe_key: None,
+        system_task_type: None,
     }
 }
 
@@ -754,7 +896,46 @@ enum FinalizationError {
 }
 
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
+mod trigger_tests {
+    use super::should_trigger_summary;
+
+    #[test]
+    fn proactive_fires_above_threshold_no_summary() {
+        // 2000 tokens, budget=3072 (4096-1024), 60% threshold=1843
+        assert!(should_trigger_summary(2000, 1024, 4096, 60, false, false));
+    }
+
+    #[test]
+    fn proactive_skipped_below_threshold() {
+        // 1000 tokens < 1843 threshold
+        assert!(!should_trigger_summary(1000, 1024, 4096, 60, false, false));
+    }
+
+    #[test]
+    fn proactive_suppressed_when_summary_exists() {
+        // Above threshold but summary already exists — skip
+        assert!(!should_trigger_summary(2000, 1024, 4096, 60, false, true));
+    }
+
+    #[test]
+    fn urgent_fires_when_truncated_even_with_summary() {
+        // messages_truncated=true overrides everything
+        assert!(should_trigger_summary(500, 1024, 4096, 60, true, true));
+    }
+
+    #[test]
+    fn non_positive_budget_returns_false() {
+        // max_output >= context_window → effective_budget <= 0
+        assert!(!should_trigger_summary(1000, 5000, 4096, 60, false, false));
+    }
+
+    #[test]
+    fn zero_tokens_returns_false() {
+        assert!(!should_trigger_summary(0, 1024, 4096, 60, false, false));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::llm::Usage;
@@ -848,6 +1029,14 @@ mod tests {
             Ok(())
         }
 
+        async fn enqueue_thread_summary(
+            &self,
+            _: &(dyn modkit_db::secure::DBRunner + Sync),
+            _: crate::domain::repos::ThreadSummaryTaskPayload,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
         fn flush(&self) {
             self.flush_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -871,6 +1060,7 @@ mod tests {
             Arc::new(MockQuotaSettler),
             outbox.clone(),
             Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         );
         (svc, outbox)
     }
@@ -893,6 +1083,7 @@ mod tests {
             Arc::new(MockQuotaSettler),
             outbox.clone(),
             metrics,
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         );
         (svc, outbox)
     }
@@ -1004,6 +1195,9 @@ mod tests {
             ],
             web_search_calls: 3,
             code_interpreter_calls: 0,
+            context_window: 128_000,
+            assembled_context_tokens: 0,
+            messages_truncated: false,
             ttft_ms: None,
             total_ms: None,
         }
@@ -1164,6 +1358,7 @@ mod tests {
             Arc::new(FailingQuotaSettler),
             Arc::new(RecordingOutboxEnqueuer::new()),
             Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         );
 
         let tenant_id = Uuid::new_v4();

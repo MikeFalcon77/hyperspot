@@ -23,7 +23,7 @@ use crate::domain::repos::{
     InsertUserMessageParams, MessageAttachmentRepository, MessageRepository, QuotaUsageRepository,
     SnapshotBoundary, ThreadSummaryRepository, TurnRepository, VectorStoreRepository,
 };
-use crate::domain::stream_events::{StreamEvent, StreamStartedData};
+use crate::domain::stream_events::{StreamEvent, StreamStartedData, ThreadSummaryInfo};
 use crate::infra::db::entity::chat_turn::TurnState;
 use crate::infra::llm::provider_resolver::ProviderResolver;
 
@@ -263,6 +263,20 @@ impl<
             .await
             .map_err(|e| StreamError::TurnCreationFailed { source: e })?;
 
+        // ── Prior context size (for accurate quota reserve) ──
+        // Fetch the last assistant message's actual token counts so preflight
+        // can estimate the full context size, not just the current message.
+        let prior_context_tokens = self
+            .message_repo
+            .last_assistant_token_counts(&conn, &scope, chat_id)
+            .await
+            .map_err(|e| StreamError::TurnCreationFailed { source: e })?
+            .map_or(0u64, |(inp, out)| {
+                u64::try_from(inp.max(0))
+                    .unwrap_or(0)
+                    .saturating_add(u64::try_from(out.max(0)).unwrap_or(0))
+            });
+
         // ── Pre-preflight attachment queries (for surcharge estimation) ──
         let pre_ready_doc_count = self
             .attachment_repo
@@ -322,6 +336,7 @@ impl<
                 web_search_enabled,
                 code_interpreter_enabled: !pre_ci_file_ids.is_empty(),
                 max_output_tokens_cap: self.streaming_config.max_output_tokens,
+                prior_context_tokens,
             })
             .await
             .map_err(|e| match e {
@@ -452,7 +467,7 @@ impl<
         // Pre-generate assistant message ID (sent in StreamStartedData and used in CAS)
         let message_id = Uuid::new_v4();
 
-        let finalization_ctx = FinalizationCtx {
+        let mut finalization_ctx = FinalizationCtx {
             finalization_svc: Arc::clone(&self.finalization),
             db: Arc::clone(&self.db),
             turn_repo: Arc::clone(&self.turn_repo),
@@ -475,6 +490,9 @@ impl<
             downgrade_from: pf.downgrade_from,
             downgrade_reason: pf.downgrade_reason,
             period_starts,
+            context_window: pf.context_window,
+            assembled_context_tokens: 0, // updated after context assembly
+            messages_truncated: false,   // updated after context assembly
             provider_id: provider_id.clone(),
             metrics: Arc::clone(&self.metrics),
             quota_warnings_provider: Arc::clone(&self.quota)
@@ -490,7 +508,7 @@ impl<
             web_search_enabled,
             code_interpreter_enabled,
         });
-        let assembled = self
+        let (assembled, summary_info) = self
             .gather_context(
                 tenant_id,
                 chat_id,
@@ -508,6 +526,9 @@ impl<
                 &image_file_ids,
             )
             .await?;
+
+        finalization_ctx.assembled_context_tokens = assembled.estimated_context_tokens;
+        finalization_ctx.messages_truncated = assembled.messages_truncated;
 
         // Record image metrics
         if num_images > 0 {
@@ -528,7 +549,7 @@ impl<
             .replace("{model}", &effective_provider_model_id);
         let proxy_path = format!("{}{api_path}", resolved_provider.upstream_alias);
 
-        emit_stream_started(&tx, request_id, message_id).await;
+        emit_stream_started(&tx, request_id, message_id, summary_info).await;
 
         Ok(provider_task::spawn_provider_task(
             ctx,
@@ -789,7 +810,13 @@ impl<
         code_interpreter_file_ids: Vec<String>,
         token_budget: Option<super::context_assembly::TokenBudget>,
         image_file_ids: &[String],
-    ) -> Result<super::context_assembly::AssembledContext, StreamError> {
+    ) -> Result<
+        (
+            super::context_assembly::AssembledContext,
+            Option<ThreadSummaryInfo>,
+        ),
+        StreamError,
+    > {
         let conn = self
             .db
             .conn()
@@ -804,6 +831,10 @@ impl<
             .await
             .map_err(|e| StreamError::TurnCreationFailed { source: e })?;
 
+        let summary_info = thread_summary.as_ref().map(|ts| ThreadSummaryInfo {
+            token_estimate: u32::try_from(ts.token_estimate).unwrap_or(0),
+        });
+
         let recent_messages = match &thread_summary {
             Some(ts) => {
                 self.message_repo
@@ -811,8 +842,8 @@ impl<
                         &conn,
                         &scope,
                         chat_id,
-                        ts.boundary_created_at,
-                        ts.boundary_message_id,
+                        ts.frontier.created_at,
+                        ts.frontier.message_id,
                         self.context_config.recent_messages_limit,
                         snapshot_boundary,
                     )
@@ -851,37 +882,40 @@ impl<
             })
             .collect();
 
-        super::context_assembly::assemble_context(&super::context_assembly::ContextInput {
-            system_prompt,
-            web_search_guard: &self.context_config.web_search_guard,
-            file_search_guard: &self.context_config.file_search_guard,
-            thread_summary: thread_summary.as_ref().map(|ts| ts.content.as_str()),
-            recent_messages: &context_messages,
-            user_message,
-            web_search_enabled,
-            file_search_enabled,
-            vector_store_ids,
-            file_search_filters,
-            web_search_context_size,
-            file_search_max_num_results,
-            code_interpreter_file_ids,
-            token_budget,
-            image_file_ids,
-        })
-        .map_err(|e| StreamError::ContextBudgetExceeded {
-            required_tokens: match &e {
-                super::context_assembly::ContextAssemblyError::BudgetExceeded {
-                    required_tokens,
-                    ..
-                } => *required_tokens,
-            },
-            available_tokens: match &e {
-                super::context_assembly::ContextAssemblyError::BudgetExceeded {
-                    available_tokens,
-                    ..
-                } => *available_tokens,
-            },
-        })
+        let assembled =
+            super::context_assembly::assemble_context(&super::context_assembly::ContextInput {
+                system_prompt,
+                web_search_guard: &self.context_config.web_search_guard,
+                file_search_guard: &self.context_config.file_search_guard,
+                thread_summary: thread_summary.as_ref().map(|ts| ts.content.as_str()),
+                recent_messages: &context_messages,
+                user_message,
+                web_search_enabled,
+                file_search_enabled,
+                vector_store_ids,
+                file_search_filters,
+                web_search_context_size,
+                file_search_max_num_results,
+                code_interpreter_file_ids,
+                token_budget,
+                image_file_ids,
+            })
+            .map_err(|e| StreamError::ContextBudgetExceeded {
+                required_tokens: match &e {
+                    super::context_assembly::ContextAssemblyError::BudgetExceeded {
+                        required_tokens,
+                        ..
+                    } => *required_tokens,
+                },
+                available_tokens: match &e {
+                    super::context_assembly::ContextAssemblyError::BudgetExceeded {
+                        available_tokens,
+                        ..
+                    } => *available_tokens,
+                },
+            })?;
+
+        Ok((assembled, summary_info))
     }
 
     /// Run streaming for an already-created turn (used by retry/edit mutations).
@@ -933,6 +967,17 @@ impl<
             .await
             .map_err(|e| StreamError::TurnCreationFailed { source: e })?;
 
+        let prior_context_tokens = self
+            .message_repo
+            .last_assistant_token_counts(&conn, &scope, chat_id)
+            .await
+            .map_err(|e| StreamError::TurnCreationFailed { source: e })?
+            .map_or(0u64, |(inp, out)| {
+                u64::try_from(inp.max(0))
+                    .unwrap_or(0)
+                    .saturating_add(u64::try_from(out.max(0)).unwrap_or(0))
+            });
+
         // ── Preflight quota evaluate ────────────────────────────────────
         let selected_model = model;
         let computed = self
@@ -947,6 +992,7 @@ impl<
                 web_search_enabled,
                 code_interpreter_enabled: !pre_ci_file_ids.is_empty(),
                 max_output_tokens_cap: self.streaming_config.max_output_tokens,
+                prior_context_tokens,
             })
             .await
             .map_err(|e| match e {
@@ -1137,7 +1183,7 @@ impl<
         // ── Build finalization context + resolve provider + spawn ────────
         let message_id = Uuid::new_v4();
 
-        let finalization_ctx = FinalizationCtx {
+        let mut finalization_ctx = FinalizationCtx {
             finalization_svc: Arc::clone(&self.finalization),
             db: Arc::clone(&self.db),
             turn_repo: Arc::clone(&self.turn_repo),
@@ -1160,6 +1206,9 @@ impl<
             downgrade_from: pf.downgrade_from,
             downgrade_reason: pf.downgrade_reason,
             period_starts,
+            context_window: pf.context_window,
+            assembled_context_tokens: 0, // updated after context assembly
+            messages_truncated: false,   // updated after context assembly
             provider_id: provider_id.clone(),
             metrics: Arc::clone(&self.metrics),
             quota_warnings_provider: Arc::clone(&self.quota)
@@ -1175,7 +1224,7 @@ impl<
             web_search_enabled,
             code_interpreter_enabled,
         });
-        let assembled = self
+        let (assembled, summary_info) = self
             .gather_context(
                 tenant_id,
                 chat_id,
@@ -1194,6 +1243,9 @@ impl<
             )
             .await?;
 
+        finalization_ctx.assembled_context_tokens = assembled.estimated_context_tokens;
+        finalization_ctx.messages_truncated = assembled.messages_truncated;
+
         let tenant_id_str = tenant_id.to_string();
         let resolved_provider = self
             .provider_resolver
@@ -1207,7 +1259,7 @@ impl<
             .replace("{model}", &effective_provider_model_id);
         let proxy_path = format!("{}{api_path}", resolved_provider.upstream_alias);
 
-        emit_stream_started(&tx, request_id, message_id).await;
+        emit_stream_started(&tx, request_id, message_id, summary_info).await;
 
         Ok(provider_task::spawn_provider_task(
             ctx,
@@ -1234,12 +1286,18 @@ impl<
 }
 
 /// Emit `stream_started` before handing `tx` to the provider task (D3).
-async fn emit_stream_started(tx: &mpsc::Sender<StreamEvent>, request_id: Uuid, message_id: Uuid) {
+async fn emit_stream_started(
+    tx: &mpsc::Sender<StreamEvent>,
+    request_id: Uuid,
+    message_id: Uuid,
+    thread_summary_applied: Option<ThreadSummaryInfo>,
+) {
     if tx
         .send(StreamEvent::StreamStarted(StreamStartedData {
             request_id,
             message_id,
             is_new_turn: true,
+            thread_summary_applied,
         }))
         .await
         .is_err()
@@ -1321,6 +1379,14 @@ mod tests {
             &self,
             _runner: &(dyn modkit_db::secure::DBRunner + Sync),
             _event: crate::domain::model::audit_envelope::AuditEnvelope,
+        ) -> Result<(), crate::domain::error::DomainError> {
+            Ok(())
+        }
+
+        async fn enqueue_thread_summary(
+            &self,
+            _: &(dyn modkit_db::secure::DBRunner + Sync),
+            _: crate::domain::repos::ThreadSummaryTaskPayload,
         ) -> Result<(), crate::domain::error::DomainError> {
             Ok(())
         }
@@ -1634,6 +1700,7 @@ mod tests {
                     presence_penalty: 0.0,
                     stop: vec![],
                     extra_body: None,
+                    reasoning_effort: None,
                 },
                 provider_file_id_map: std::collections::HashMap::new(),
             },
@@ -1696,6 +1763,7 @@ mod tests {
                     presence_penalty: 0.0,
                     stop: vec![],
                     extra_body: None,
+                    reasoning_effort: None,
                 },
                 provider_file_id_map: std::collections::HashMap::new(),
             },
@@ -1751,6 +1819,7 @@ mod tests {
                     presence_penalty: 0.0,
                     stop: vec![],
                     extra_body: None,
+                    reasoning_effort: None,
                 },
                 provider_file_id_map: std::collections::HashMap::new(),
             },
@@ -1855,6 +1924,7 @@ mod tests {
                     presence_penalty: 0.0,
                     stop: vec![],
                     extra_body: None,
+                    reasoning_effort: None,
                 },
                 provider_file_id_map: std::collections::HashMap::new(),
             },
@@ -1961,6 +2031,7 @@ mod tests {
             Arc::new(MockQuotaSettler) as Arc<dyn QuotaSettler>,
             Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
             Arc::clone(&metrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         ));
 
         // QuotaService with permissive defaults — model catalog includes
@@ -2080,6 +2151,8 @@ mod tests {
                 computer_use: false,
                 mcp: false,
             },
+            thread_summary_prompt: String::new(),
+            max_output_tokens: 16_384,
         }
     }
 
@@ -2544,6 +2617,7 @@ mod tests {
                 presence_penalty: 0.0,
                 stop: vec![],
                 extra_body: None,
+                reasoning_effort: None,
             },
         };
 
@@ -2589,6 +2663,7 @@ mod tests {
                 presence_penalty: 0.0,
                 stop: vec![],
                 extra_body: None,
+                reasoning_effort: None,
             },
         };
 
@@ -2657,6 +2732,7 @@ mod tests {
             Arc::new(MockQuotaSettler) as Arc<dyn QuotaSettler>,
             Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
             Arc::clone(&metrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         ));
 
         // Keep max_output_tokens well below context_window so preflight maths
@@ -3098,6 +3174,7 @@ mod tests {
             Arc::new(NoopSettler) as Arc<dyn QuotaSettler>,
             Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
             Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         ));
 
         let fctx = FinalizationCtx {
@@ -3123,6 +3200,9 @@ mod tests {
             downgrade_from: Some("gpt-4o".to_owned()),
             downgrade_reason: Some("premium_exhausted".to_owned()),
             period_starts: Vec::new(),
+            context_window: 128_000,
+            assembled_context_tokens: 0,
+            messages_truncated: false,
             provider_id: "openai".to_owned(),
             metrics: Arc::new(crate::domain::ports::metrics::NoopMetrics),
             quota_warnings_provider: Arc::new(NoopQuotaWarningsProvider),
@@ -3153,6 +3233,7 @@ mod tests {
                     presence_penalty: 0.0,
                     stop: vec![],
                     extra_body: None,
+                    reasoning_effort: None,
                 },
                 provider_file_id_map: std::collections::HashMap::new(),
             },
@@ -3273,6 +3354,7 @@ mod tests {
             Arc::new(MockQuotaSettler) as Arc<dyn QuotaSettler>,
             Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
             Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         ));
 
         let quota_svc = Arc::new(crate::domain::service::QuotaService::new(
@@ -3535,6 +3617,8 @@ mod tests {
                         computer_use: false,
                         mcp: false,
                     },
+                    thread_summary_prompt: String::new(),
+                    max_output_tokens: 16_384,
                 },
                 false,
                 Vec::new(),
@@ -3698,6 +3782,8 @@ mod tests {
                         computer_use: false,
                         mcp: false,
                     },
+                    thread_summary_prompt: String::new(),
+                    max_output_tokens: 16_384,
                 },
                 false,
                 Vec::new(),
@@ -3917,6 +4003,7 @@ mod tests {
                     presence_penalty: 0.0,
                     stop: vec![],
                     extra_body: None,
+                    reasoning_effort: None,
                 },
                 provider_file_id_map: std::collections::HashMap::new(),
             },
@@ -3973,6 +4060,7 @@ mod tests {
                     presence_penalty: 0.0,
                     stop: vec![],
                     extra_body: None,
+                    reasoning_effort: None,
                 },
                 provider_file_id_map: std::collections::HashMap::new(),
             },
@@ -4039,6 +4127,7 @@ mod tests {
                     presence_penalty: 0.0,
                     stop: vec![],
                     extra_body: None,
+                    reasoning_effort: None,
                 },
                 provider_file_id_map: std::collections::HashMap::new(),
             },
@@ -4092,6 +4181,7 @@ mod tests {
                     presence_penalty: 0.0,
                     stop: vec![],
                     extra_body: None,
+                    reasoning_effort: None,
                 },
                 provider_file_id_map: std::collections::HashMap::new(),
             },
@@ -4147,6 +4237,7 @@ mod tests {
                     presence_penalty: 0.0,
                     stop: vec![],
                     extra_body: None,
+                    reasoning_effort: None,
                 },
                 provider_file_id_map: std::collections::HashMap::new(),
             },
@@ -4213,6 +4304,7 @@ mod tests {
                     presence_penalty: 0.0,
                     stop: vec![],
                     extra_body: None,
+                    reasoning_effort: None,
                 },
                 provider_file_id_map: std::collections::HashMap::new(),
             },
@@ -4894,6 +4986,7 @@ mod tests {
             Arc::new(MockQuotaSettler) as Arc<dyn QuotaSettler>,
             Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
             Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         ));
 
         let quota_svc = Arc::new(crate::domain::service::QuotaService::new(
@@ -5267,6 +5360,10 @@ mod tests {
         fn record_cleanup_retry(&self, _: &str, _: &str) {}
         fn record_cleanup_backlog(&self, _: &str, _: &str, _: i64) {}
         fn record_cleanup_vs_with_failed_attachments(&self) {}
+        fn record_thread_summary_trigger(&self, _: &str) {}
+        fn record_thread_summary_execution(&self, _: &str) {}
+        fn record_thread_summary_cas_conflict(&self) {}
+        fn record_summary_fallback(&self) {}
     }
 
     // ── Metric emission tests ────────────────────────────────────────────

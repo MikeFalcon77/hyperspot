@@ -158,11 +158,9 @@ def _patch_mini_chat_config(config_text: str, env) -> str:
     # home_dir
     config_text = re.sub(r"(home_dir\s*:\s*).*", rf'\1"{_TEMP_HOME}"', config_text, count=1)
 
-    # Log level
+    # Log level — mini_chat logging is already in base.yaml; only inject oagw
     mini_chat_log = os.environ.get("MINI_CHAT_LOG", "debug")
     log_inject = (
-        f"  mini_chat:\n"
-        f"    console_level: {mini_chat_log}\n"
         f"  oagw:\n"
         f"    console_level: {mini_chat_log}\n"
     )

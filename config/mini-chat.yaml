@@ -44,7 +44,7 @@ modules:
     config:
       bind_addr: "127.0.0.1:8087"
       enable_docs: true
-      cors_enabled: false
+      cors_enabled: true
       openapi:
         title: "Mini-Chat Dev API"
         version: "0.1.0"
@@ -115,6 +115,9 @@ modules:
       server: "sqlite_mini_chat"
       file: "mini_chat.db"
     config:
+      orphan_watchdog:
+        scan_interval_secs: 10
+        timeout_secs: 90
       # S2S credentials for obtaining SecurityContext
       # that will be used for communication with other modules.
       client_credentials:
@@ -122,6 +125,11 @@ modules:
         client_secret: "mini-chat-dev-secret"
       # Provider registry. Key = provider_id (matches ModelCatalogEntry.provider_id).
       # `upstream_alias` is optional — defaults to `host` when omitted.
+      thread_summary_worker:
+        enabled: true
+        summary_model_id: "gpt-4.1-mini"
+        compression_threshold_pct: 80
+        summary_system_prompt: "You are a conversation summarizer. Given a conversation (and optionally an existing summary), produce a detailed structured summary. Respond with an <analysis> block (your reasoning) followed by a <summary> block (the final summary). Only the <summary> content will be stored. Do not invent information not present in the conversation."
       providers:
         azure_openai:
           kind: openai_responses
@@ -197,11 +205,8 @@ modules:
           icon: ""
           tier: Premium
           enabled: true
-          # System prompt sent as `instructions` in every LLM request for this model.
-          # Omit or leave empty for no system instructions.
           system_prompt: "You are a helpful, concise assistant. Answer clearly and directly."
-          # Prompt template for thread summary generation (future use).
-          # thread_summary_prompt: "Summarize the key points of this conversation."
+          thread_summary_prompt: ""
           multimodal_capabilities: ["VISION_INPUT"]
           context_window: 1047576
           max_output_tokens: 32768
@@ -289,6 +294,7 @@ modules:
           tier: Standard
           enabled: true
           system_prompt: "You are a helpful, concise assistant. Answer clearly and directly."
+          thread_summary_prompt: ""
           multimodal_capabilities: ["VISION_INPUT"]
           context_window: 1047576
           max_output_tokens: 32768
@@ -363,6 +369,96 @@ modules:
           preference:
             is_default: false
             sort_order: 1
+
+        # ── GPT-4.1 Mini with tiny context (E2E thread summary testing) ──
+        # Same provider model as gpt-4.1-mini but with context_window=4096
+        # so the 80% compression threshold (~3200 tokens) is reachable in ~3 turns.
+        - model_id: "gpt-4.1-mini-tiny-ctx"
+          provider_model_id: "gpt-4.1-mini"
+          display_name: "GPT-4.1 Mini (Tiny Context - E2E)"
+          description: "E2E testing model with small context for thread summary trigger"
+          version: "4.1"
+          provider_id: "azure_openai"
+          provider_display_name: "Azure OpenAI"
+          icon: ""
+          tier: Standard
+          enabled: true
+          system_prompt: "You are a helpful assistant. Be verbose - write detailed, long responses with explanations."
+          thread_summary_prompt: ""
+          multimodal_capabilities: ["VISION_INPUT"]
+          context_window: 4096
+          max_output_tokens: 1024
+          max_input_tokens: 3072
+          input_tokens_credit_multiplier_micro: 1000000
+          output_tokens_credit_multiplier_micro: 3000000
+          multiplier_display: "1x"
+          estimation_budgets:
+            bytes_per_token_conservative: 4
+            fixed_overhead_tokens: 100
+            safety_margin_pct: 10
+            image_token_budget: 1000
+            tool_surcharge_tokens: 500
+            web_search_surcharge_tokens: 500
+            code_interpreter_surcharge_tokens: 1000
+            minimal_generation_floor: 50
+          max_retrieved_chunks_per_turn: 5
+          max_tool_calls: 10
+          general_config:
+            type: ""
+            tier: "standard"
+            available_from: "1970-01-01T00:00:00Z"
+            max_file_size_mb: 25
+            api_params:
+              temperature: 0.7
+              top_p: 1.0
+              frequency_penalty: 0.0
+              presence_penalty: 0.0
+              stop: []
+            features:
+              streaming: true
+              function_calling: true
+              structured_output: true
+              fine_tuning: false
+              distillation: false
+              fim_completion: false
+              chat_prefix_completion: false
+            input_type:
+              text: true
+              image: true
+              audio: false
+              video: false
+            tool_support:
+              web_search: false
+              file_search: false
+              image_generation: false
+              code_interpreter: false
+              computer_use: false
+              mcp: false
+            supported_endpoints:
+              chat_completions: true
+              responses: true
+              realtime: false
+              assistants: false
+              batch_api: false
+              fine_tuning: false
+              embeddings: false
+              videos: false
+              image_generation: false
+              image_edit: false
+              audio_speech_generation: false
+              audio_transcription: false
+              audio_translation: false
+              moderations: false
+              completions: false
+            token_policy:
+              input_tokens_credit_multiplier: 1.0
+              output_tokens_credit_multiplier: 3.0
+            performance:
+              response_latency_ms: 400
+              speed_tokens_per_second: 150
+          preference:
+            is_default: false
+            sort_order: 99
 
   oagw:
     config:

@@ -146,7 +146,7 @@ impl OutboxEnqueuer for InfraOutboxEnqueuer {
             queue = %self.usage_queue_name,
             partition,
             tenant_id = %event.tenant_id,
-            turn_id = %event.turn_id,
+            turn_id = ?event.turn_id,
             "usage event enqueued"
         );
 
@@ -252,6 +252,38 @@ impl OutboxEnqueuer for InfraOutboxEnqueuer {
         Ok(())
     }
 
+    async fn enqueue_thread_summary(
+        &self,
+        runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        payload: crate::domain::repos::ThreadSummaryTaskPayload,
+    ) -> Result<(), DomainError> {
+        let partition = Self::compute_partition(payload.chat_id, self.num_partitions);
+        let serialized = serde_json::to_vec(&payload).map_err(|e| {
+            DomainError::internal(format!("serialize ThreadSummaryTaskPayload: {e}"))
+        })?;
+
+        self.outbox()
+            .enqueue(
+                runner,
+                &self.thread_summary_queue_name,
+                partition,
+                serialized,
+                "application/json",
+            )
+            .await
+            .map_err(|e| DomainError::internal(format!("outbox enqueue: {e}")))?;
+
+        info!(
+            queue = %self.thread_summary_queue_name,
+            partition,
+            chat_id = %payload.chat_id,
+            system_request_id = %payload.system_request_id,
+            "thread summary task enqueued"
+        );
+
+        Ok(())
+    }
+
     fn flush(&self) {
         // flush is a no-op if outbox isn't set yet (before start).
         if let Some(outbox) = self.outbox.get() {
@@ -302,6 +334,7 @@ pub struct UsageEventHandler {
 
 #[async_trait]
 impl modkit_db::outbox::LeasedMessageHandler for UsageEventHandler {
+    #[tracing::instrument(name = "worker", skip_all, fields(worker = "usage_event"))]
     async fn handle(
         &self,
         msg: &modkit_db::outbox::OutboxMessage,
@@ -323,8 +356,8 @@ impl modkit_db::outbox::LeasedMessageHandler for UsageEventHandler {
 
         info!(
             tenant_id = %event.tenant_id,
-            user_id = %event.user_id,
-            turn_id = %event.turn_id,
+            user_id = ?event.user_id,
+            turn_id = ?event.turn_id,
             request_id = %event.request_id,
             effective_model = %event.effective_model,
             billing_outcome = ?event.billing_outcome,
@@ -390,6 +423,7 @@ pub struct AuditEventHandler {
 
 #[async_trait]
 impl modkit_db::outbox::LeasedMessageHandler for AuditEventHandler {
+    #[tracing::instrument(name = "worker", skip_all, fields(worker = "audit_event"))]
     async fn handle(
         &self,
         msg: &modkit_db::outbox::OutboxMessage,
@@ -495,9 +529,9 @@ mod tests {
     fn make_usage_event() -> UsageEvent {
         UsageEvent {
             tenant_id: Uuid::new_v4(),
-            user_id: Uuid::new_v4(),
+            user_id: Some(Uuid::new_v4()),
             chat_id: Uuid::new_v4(),
-            turn_id: Uuid::new_v4(),
+            turn_id: Some(Uuid::new_v4()),
             request_id: Uuid::new_v4(),
             effective_model: "gpt-4o".to_owned(),
             selected_model: "gpt-4o".to_owned(),
@@ -510,6 +544,9 @@ mod tests {
             web_search_calls: 0,
             code_interpreter_calls: 0,
             timestamp: OffsetDateTime::now_utc(),
+            requester_type: "user".to_owned(),
+            dedupe_key: None,
+            system_task_type: None,
         }
     }
 

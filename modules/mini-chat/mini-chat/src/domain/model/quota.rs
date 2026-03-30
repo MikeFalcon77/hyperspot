@@ -124,6 +124,10 @@ pub struct PreflightInput {
     pub web_search_enabled: bool,
     pub code_interpreter_enabled: bool,
     pub max_output_tokens_cap: u32,
+    /// Accumulated context tokens from prior turns: `last_input_tokens + last_output_tokens`.
+    /// This represents the conversation history that will be sent again to the LLM.
+    /// `0` for the first message in a chat.
+    pub prior_context_tokens: u64,
 }
 
 /// Input to `settle()`.

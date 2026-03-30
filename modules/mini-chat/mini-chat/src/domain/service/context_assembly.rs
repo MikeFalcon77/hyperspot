@@ -6,6 +6,12 @@
 use modkit_macros::domain_model;
 
 use crate::config::EstimationBudgets;
+
+/// Preamble injected before the thread summary text in the LLM context.
+const SUMMARY_PREAMBLE: &str = "This conversation has earlier messages that have been summarized. \
+The summary below covers the earlier portion of the conversation. \
+Recent messages follow after.\n\n";
+
 use crate::domain::llm::{
     ContentPart, ContextMessage, FileSearchFilter, LlmMessage, LlmTool, Role,
 };
@@ -78,6 +84,16 @@ pub struct AssembledContext {
     pub messages: Vec<LlmMessage>,
     /// Tool definitions to include in the request.
     pub tools: Vec<LlmTool>,
+    /// Estimated input tokens consumed by assembled content items
+    /// (system instructions + thread summary + history messages + current message + images).
+    /// Tool surcharges are deducted from the budget separately.
+    /// Used by the thread summary trigger. `0` when no token budget was provided.
+    pub estimated_context_tokens: u64,
+    /// `true` when context assembly had to drop older messages because they
+    /// exceeded the available token budget. This is the primary signal for
+    /// the thread summary trigger — when messages are being truncated, the
+    /// conversation needs compression.
+    pub messages_truncated: bool,
 }
 
 /// Error during context assembly.
@@ -245,7 +261,7 @@ pub fn assemble_context(
         // P3: Thread summary (droppable)
         let keep_summary = if let Some(summary) = input.thread_summary {
             let cost =
-                estimate_item_tokens((summary.len() + "[Thread Summary]\n".len()) as u64, budgets);
+                estimate_item_tokens((summary.len() + SUMMARY_PREAMBLE.len()) as u64, budgets);
             if cost <= remaining {
                 remaining -= cost;
                 true
@@ -275,7 +291,7 @@ pub fn assemble_context(
         let mut messages = Vec::new();
 
         if keep_summary && let Some(summary) = input.thread_summary {
-            messages.push(LlmMessage::user(format!("[Thread Summary]\n{summary}")));
+            messages.push(LlmMessage::user(format!("{SUMMARY_PREAMBLE}{summary}")));
         }
 
         for msg in &input.recent_messages[keep_from_index..] {
@@ -288,17 +304,25 @@ pub fn assemble_context(
 
         messages.push(build_user_message(input.user_message, input.image_file_ids));
 
+        let estimated_context_tokens = available - remaining;
+        // Only flag truncation if non-system messages were actually dropped.
+        // System messages are always skipped in output and don't count.
+        let messages_truncated = input.recent_messages[..keep_from_index]
+            .iter()
+            .any(|m| !matches!(m.role, Role::System));
         Ok(AssembledContext {
             system_instructions,
             messages,
             tools,
+            estimated_context_tokens,
+            messages_truncated,
         })
     } else {
         // No budget — include everything without truncation.
         let mut messages = Vec::new();
 
         if let Some(summary) = input.thread_summary {
-            messages.push(LlmMessage::user(format!("[Thread Summary]\n{summary}")));
+            messages.push(LlmMessage::user(format!("{SUMMARY_PREAMBLE}{summary}")));
         }
 
         for msg in input.recent_messages {
@@ -315,6 +339,8 @@ pub fn assemble_context(
             system_instructions,
             messages,
             tools,
+            estimated_context_tokens: 0,
+            messages_truncated: false,
         })
     }
 }
@@ -490,7 +516,7 @@ mod tests {
         let first_content = &result.messages[0].content;
         match &first_content[0] {
             crate::domain::llm::ContentPart::Text { text } => {
-                assert!(text.contains("[Thread Summary]"));
+                assert!(text.contains("earlier messages that have been summarized"));
                 assert!(text.contains("Summary of prior conversation."));
             }
             crate::domain::llm::ContentPart::Image { .. } => {
@@ -838,7 +864,7 @@ mod tests {
         // Make summary expensive enough that it won't fit alongside 2 messages
         let big_summary = "X".repeat(2000);
         let summary_cost = estimate_item_tokens(
-            (big_summary.len() + "[Thread Summary]\n".len()) as u64,
+            (big_summary.len() + SUMMARY_PREAMBLE.len()) as u64,
             &budgets,
         );
         // Budget: mandatory + 2 messages, but NOT enough for summary

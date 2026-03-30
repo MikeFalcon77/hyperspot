@@ -151,6 +151,10 @@ pub struct ModelApiParams {
     /// value under the `"extra_body"` key in the request payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_body: Option<serde_json::Value>,
+    /// Reasoning effort for o-series models (low/medium/high).
+    /// Omitted for non-reasoning models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 /// Feature capability flags (API: `PolicyModelFeatures`).
@@ -307,9 +311,13 @@ pub struct UsageTokens {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageEvent {
     pub tenant_id: Uuid,
-    pub user_id: Uuid,
+    /// User who initiated the turn. `None` for system tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<Uuid>,
     pub chat_id: Uuid,
-    pub turn_id: Uuid,
+    /// Turn ID. `None` for system tasks (no `chat_turns` row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<Uuid>,
     pub request_id: Uuid,
     pub effective_model: String,
     pub selected_model: String,
@@ -323,6 +331,19 @@ pub struct UsageEvent {
     pub code_interpreter_calls: u32,
     #[serde(with = "time::serde::rfc3339")]
     pub timestamp: OffsetDateTime,
+    /// `"user"` for normal turns, `"system"` for background system tasks.
+    #[serde(default = "default_requester_type")]
+    pub requester_type: String,
+    /// Deduplication key. For system tasks: `"{tenant_id}/{system_task_type}/{system_request_id}"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedupe_key: Option<String>,
+    /// System task type identifier (e.g. `"thread_summary_update"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_task_type: Option<String>,
+}
+
+fn default_requester_type() -> String {
+    "user".to_owned()
 }
 
 #[cfg(test)]
@@ -410,6 +431,7 @@ mod tests {
                 presence_penalty: 0.0,
                 stop: vec![],
                 extra_body: None,
+                reasoning_effort: None,
             },
             features: ModelFeatures {
                 streaming: true,

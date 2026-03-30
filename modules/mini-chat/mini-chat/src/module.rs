@@ -93,6 +93,9 @@ struct OutboxDeferred {
     vector_store_prov: Arc<dyn crate::domain::ports::VectorStoreProvider>,
     metrics: Arc<dyn MiniChatMetricsPort>,
     enqueuer: Arc<InfraOutboxEnqueuer>,
+    provider_resolver: Arc<crate::infra::llm::provider_resolver::ProviderResolver>,
+    model_resolver: Arc<dyn crate::domain::repos::ModelResolver>,
+    thread_summary_config: crate::config::background::ThreadSummaryWorkerConfig,
 }
 
 impl Default for MiniChatModule {
@@ -364,6 +367,9 @@ impl Module for MiniChatModule {
             vector_store_prov: Arc::clone(&vector_store_prov),
             metrics: Arc::clone(&metrics),
             enqueuer: Arc::clone(&outbox_enqueuer),
+            provider_resolver: Arc::clone(&provider_resolver),
+            model_resolver: model_policy_gw.clone() as Arc<dyn crate::domain::repos::ModelResolver>,
+            thread_summary_config: cfg.thread_summary_worker.clone(),
         }));
 
         // ── Services ────────────────────────────────────────────────────────
@@ -386,6 +392,7 @@ impl Module for MiniChatModule {
             cfg.rag,
             cfg.thumbnail,
             metrics,
+            cfg.thread_summary_worker,
         ));
 
         self.service
@@ -509,7 +516,28 @@ impl RunnableCapability for MiniChatModule {
                     ),
                 )
                 .queue(&od.outbox_config.thread_summary_queue_name, partitions)
-                .leased(crate::infra::workers::thread_summary_worker::ThreadSummaryHandler)
+                .leased(
+                    crate::infra::workers::thread_summary_worker::ThreadSummaryHandler::new(
+                        Arc::new(
+                            crate::infra::workers::thread_summary_worker::ThreadSummaryDeps {
+                                db: Arc::clone(&od.db),
+                                thread_summary_repo: Arc::new(ThreadSummaryRepository),
+                                message_repo: Arc::new(MessageRepository::new(
+                                    modkit_db::odata::LimitCfg {
+                                        default: 20,
+                                        max: 100,
+                                    },
+                                )),
+                                outbox_enqueuer: Arc::clone(&od.enqueuer)
+                                    as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
+                                metrics: Arc::clone(&od.metrics),
+                                provider_resolver: Arc::clone(&od.provider_resolver),
+                                model_resolver: Arc::clone(&od.model_resolver),
+                                config: od.thread_summary_config.clone(),
+                            },
+                        ),
+                    ),
+                )
                 .queue(&od.outbox_config.audit_queue_name, partitions)
                 .leased(AuditEventHandler {
                     audit_gateway: Arc::clone(&od.audit_gateway),

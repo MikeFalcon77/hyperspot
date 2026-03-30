@@ -216,6 +216,12 @@ pub(super) struct FinalizationCtx<TR: TurnRepository + 'static, MR: MessageRepos
         crate::infra::db::entity::quota_usage::PeriodType,
         time::Date,
     )>,
+    /// Context window size of the effective model (tokens) — for summary trigger.
+    pub(super) context_window: u32,
+    /// Estimated input tokens from context assembly (all messages + system prompt).
+    pub(super) assembled_context_tokens: u64,
+    /// `true` when context assembly dropped older messages due to budget.
+    pub(super) messages_truncated: bool,
     /// Provider ID for metrics labels.
     pub(super) provider_id: String,
     /// Metrics port for recording stream metrics in the spawned task.
@@ -269,6 +275,9 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
             period_starts: self.period_starts.clone(),
             web_search_calls,
             code_interpreter_calls,
+            context_window: self.context_window,
+            assembled_context_tokens: self.assembled_context_tokens,
+            messages_truncated: self.messages_truncated,
             ttft_ms,
             total_ms,
         }

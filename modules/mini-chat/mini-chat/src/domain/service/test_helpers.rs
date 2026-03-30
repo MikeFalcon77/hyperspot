@@ -376,6 +376,19 @@ impl ThreadSummaryRepository for MockThreadSummaryRepo {
     {
         Ok(None)
     }
+
+    async fn upsert_with_cas<C: modkit_db::secure::DBRunner>(
+        &self,
+        _runner: &C,
+        _chat_id: uuid::Uuid,
+        _tenant_id: uuid::Uuid,
+        _expected_base_frontier: Option<&crate::domain::repos::SummaryFrontier>,
+        _new_frontier: &crate::domain::repos::SummaryFrontier,
+        _summary_text: &str,
+        _token_estimate: i32,
+    ) -> Result<u64, crate::domain::error::DomainError> {
+        Ok(1)
+    }
 }
 
 pub fn mock_thread_summary_repo() -> Arc<MockThreadSummaryRepo> {
@@ -461,6 +474,7 @@ pub fn test_catalog_entry(params: TestCatalogEntryParams) -> ModelCatalogEntry {
                 presence_penalty: 0.0,
                 stop: vec![],
                 extra_body: None,
+                reasoning_effort: None,
             },
             features: ModelFeatures {
                 streaming: true,
@@ -904,6 +918,13 @@ impl OutboxEnqueuer for NoopOutboxEnqueuer {
     ) -> Result<(), crate::domain::error::DomainError> {
         Ok(())
     }
+    async fn enqueue_thread_summary(
+        &self,
+        _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        _payload: crate::domain::repos::ThreadSummaryTaskPayload,
+    ) -> Result<(), crate::domain::error::DomainError> {
+        Ok(())
+    }
     fn flush(&self) {}
 }
 
@@ -913,6 +934,7 @@ pub struct RecordingOutboxEnqueuer {
     pub usage_events: Mutex<Vec<mini_chat_sdk::UsageEvent>>,
     pub cleanup_events: Mutex<Vec<AttachmentCleanupEvent>>,
     pub chat_cleanup_events: Mutex<Vec<ChatCleanupEvent>>,
+    pub thread_summary_payloads: Mutex<Vec<crate::domain::repos::ThreadSummaryTaskPayload>>,
     recorded_audit_events: Mutex<Vec<AuditEnvelope>>,
     recorded_flush_count: AtomicU32,
 }
@@ -923,6 +945,7 @@ impl RecordingOutboxEnqueuer {
             usage_events: Mutex::new(Vec::new()),
             cleanup_events: Mutex::new(Vec::new()),
             chat_cleanup_events: Mutex::new(Vec::new()),
+            thread_summary_payloads: Mutex::new(Vec::new()),
             recorded_audit_events: Mutex::new(Vec::new()),
             recorded_flush_count: AtomicU32::new(0),
         }
@@ -975,6 +998,14 @@ impl OutboxEnqueuer for RecordingOutboxEnqueuer {
         self.recorded_audit_events.lock().unwrap().push(event);
         Ok(())
     }
+    async fn enqueue_thread_summary(
+        &self,
+        _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        payload: crate::domain::repos::ThreadSummaryTaskPayload,
+    ) -> Result<(), crate::domain::error::DomainError> {
+        self.thread_summary_payloads.lock().unwrap().push(payload);
+        Ok(())
+    }
     fn flush(&self) {
         self.recorded_flush_count.fetch_add(1, Ordering::SeqCst);
     }
@@ -1015,6 +1046,13 @@ impl OutboxEnqueuer for FailingOutboxEnqueuer {
         &self,
         _runner: &(dyn modkit_db::secure::DBRunner + Sync),
         _event: AuditEnvelope,
+    ) -> Result<(), crate::domain::error::DomainError> {
+        Ok(())
+    }
+    async fn enqueue_thread_summary(
+        &self,
+        _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        _payload: crate::domain::repos::ThreadSummaryTaskPayload,
     ) -> Result<(), crate::domain::error::DomainError> {
         Ok(())
     }
@@ -1285,9 +1323,6 @@ impl crate::domain::ports::MiniChatMetricsPort for TestMetrics {
         self.attachments_pending.fetch_add(-1, Ordering::Relaxed);
     }
     fn record_image_inputs_per_turn(&self, _count: u32) {}
-    fn record_orphan_detected(&self, _: &str) {}
-    fn record_orphan_finalized(&self, _: &str) {}
-    fn record_orphan_scan_duration_seconds(&self, _: f64) {}
     fn record_code_interpreter_calls(&self, _: &str, _: u32) {
         self.code_interpreter_calls.fetch_add(1, Ordering::Relaxed);
     }
@@ -1296,6 +1331,13 @@ impl crate::domain::ports::MiniChatMetricsPort for TestMetrics {
     fn record_cleanup_retry(&self, _: &str, _: &str) {}
     fn record_cleanup_backlog(&self, _: &str, _: &str, _: i64) {}
     fn record_cleanup_vs_with_failed_attachments(&self) {}
+    fn record_orphan_detected(&self, _: &str) {}
+    fn record_orphan_finalized(&self, _: &str) {}
+    fn record_orphan_scan_duration_seconds(&self, _: f64) {}
+    fn record_thread_summary_trigger(&self, _: &str) {}
+    fn record_thread_summary_execution(&self, _: &str) {}
+    fn record_thread_summary_cas_conflict(&self) {}
+    fn record_summary_fallback(&self) {}
 }
 
 // ── Mock User Limits Provider ──

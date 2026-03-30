@@ -92,6 +92,7 @@ struct AttachmentCleanupPayload {
 
 #[async_trait]
 impl LeasedMessageHandler for AttachmentCleanupHandler {
+    #[tracing::instrument(name = "worker", skip_all, fields(worker = "attachment_cleanup"))]
     async fn handle(&self, msg: &OutboxMessage) -> MessageResult {
         // 1. Deserialize payload
         let event: AttachmentCleanupPayload = match serde_json::from_slice(&msg.payload) {
@@ -291,6 +292,7 @@ struct ChatCleanupPayload {
 
 #[async_trait]
 impl LeasedMessageHandler for ChatCleanupHandler {
+    #[tracing::instrument(name = "worker", skip_all, fields(worker = "chat_cleanup"))]
     async fn handle(&self, msg: &OutboxMessage) -> MessageResult {
         use crate::domain::repos::{
             AttachmentRepository as _, ChatRepository as _, VectorStoreRepository as _,

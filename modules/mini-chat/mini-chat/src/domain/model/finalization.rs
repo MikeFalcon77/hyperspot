@@ -55,6 +55,14 @@ pub struct FinalizationInput {
     /// Number of completed code interpreter calls during this turn.
     pub code_interpreter_calls: u32,
 
+    /// Context window size of the effective model (tokens) — for summary trigger.
+    pub context_window: u32,
+    /// Estimated input tokens from context assembly (all messages + system prompt).
+    pub assembled_context_tokens: u64,
+    /// `true` when context assembly dropped older messages due to budget.
+    /// Primary signal for the thread summary trigger.
+    pub messages_truncated: bool,
+
     /// Time-to-first-token in milliseconds (captured in `stream_service`).
     pub ttft_ms: Option<u64>,
     /// Total stream duration in milliseconds (captured in `stream_service`).

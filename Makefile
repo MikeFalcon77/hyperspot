@@ -497,12 +497,33 @@ fips:
 mini-chat:
 	cargo run --bin hyperspot-server --features mini-chat,static-authn,static-authz,single-tenant,static-credstore,otel -- --config config/mini-chat.yaml run
 
-## Build mini-chat Docker image for K8s
+## Build mini-chat Docker image for K8s (dev build by default, RELEASE=1 for optimized)
+## On linux: builds on host (reuses local target/), then packages the binary.
+## On other OS: full multi-stage Docker build with BuildKit caching.
+MINI_CHAT_PROFILE = $(if $(RELEASE),release,dev)
+MINI_CHAT_CARGO_RELEASE_FLAG = $(if $(RELEASE),--release,)
+MINI_CHAT_TARGET_DIR = $(or $(CARGO_TARGET_DIR),target)/$(if $(RELEASE),release,debug)
+
 mini-chat-docker:
-	docker build \
+ifeq ($(shell uname -s),Linux)
+	@echo "==> Linux host: building on host, packaging into image"
+	cargo build $(MINI_CHAT_CARGO_RELEASE_FLAG) --bin hyperspot-server --package=hyperspot-server \
+		--features "$(MINI_CHAT_K8S_FEATURES)"
+	@mkdir -p .docker-stage
+	@cp $(MINI_CHAT_TARGET_DIR)/hyperspot-server .docker-stage/hyperspot-server
+	DOCKER_BUILDKIT=1 docker build \
+		-f modules/mini-chat/deploy/docker/mini-chat-prebuilt.Dockerfile \
+		--build-arg BINARY_PATH=".docker-stage/hyperspot-server" \
+		-t $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) .
+	@rm -rf .docker-stage
+else
+	@echo "==> Non-linux host: full Docker build"
+	DOCKER_BUILDKIT=1 docker build \
 		-f modules/mini-chat/deploy/docker/mini-chat.Dockerfile \
 		--build-arg CARGO_FEATURES="$(MINI_CHAT_K8S_FEATURES)" \
+		--build-arg BUILD_PROFILE="$(MINI_CHAT_PROFILE)" \
 		-t $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) .
+endif
 
 ## Deploy mini-chat Helm chart to local K8s cluster (build + load + install)
 mini-chat-helm: mini-chat-docker

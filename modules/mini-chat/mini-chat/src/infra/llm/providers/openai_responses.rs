@@ -58,7 +58,7 @@ pub(super) enum ProviderEvent {
         error: ProviderErrorPayload,
     },
     ResponseIncomplete {
-        reason: String,
+        response: ResponseObject,
     },
     Unknown {
         #[allow(dead_code)]
@@ -77,6 +77,15 @@ pub struct ResponseObject {
     #[serde(default)]
     pub output: Vec<OutputItem>,
     pub usage: RawUsage,
+    #[serde(default)]
+    pub incomplete_details: Option<IncompleteDetails>,
+}
+
+/// Details returned when a response finishes with status `"incomplete"`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IncompleteDetails {
+    #[serde(default)]
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -255,8 +264,7 @@ struct ResponseFailedData {
 
 #[derive(Deserialize)]
 struct ResponseIncompleteData {
-    #[serde(default)]
-    reason: String,
+    response: ResponseObject,
 }
 
 /// A single output item from `response.code_interpreter_call.completed`.
@@ -388,7 +396,7 @@ impl FromServerEvent for ProviderEvent {
                         }
                     })?;
                 Ok(ProviderEvent::ResponseIncomplete {
-                    reason: data.reason,
+                    response: data.response,
                 })
             }
 
@@ -521,16 +529,15 @@ pub(super) fn translate_provider_event(
             })
         }
 
-        ProviderEvent::ResponseIncomplete { reason } => {
+        ProviderEvent::ResponseIncomplete { response } => {
+            let reason = response
+                .incomplete_details
+                .as_ref()
+                .map_or_else(String::new, |d| d.reason.clone());
+            let usage = response.usage.to_usage();
             TranslatedEvent::Terminal(TerminalOutcome::Incomplete {
-                reason: reason.clone(),
-                usage: Usage {
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cache_read_input_tokens: 0,
-                    cache_write_input_tokens: 0,
-                    reasoning_tokens: 0,
-                },
+                reason,
+                usage,
                 partial_content: accumulated_text.to_owned(),
             })
         }
@@ -1681,14 +1688,23 @@ mod tests {
     fn parse_response_incomplete_event() {
         let event = ServerEvent {
             event: Some("response.incomplete".to_string()),
-            data: r#"{"reason":"max_output_tokens"}"#.to_string(),
+            data: r#"{"response":{"id":"resp-inc","output":[],"usage":{"input_tokens":200,"output_tokens":4096},"incomplete_details":{"reason":"max_output_tokens"}}}"#.to_string(),
             id: None,
             retry: None,
         };
         let result = ProviderEvent::from_server_event(event).unwrap();
-        assert!(
-            matches!(result, ProviderEvent::ResponseIncomplete { reason } if reason == "max_output_tokens")
-        );
+        match result {
+            ProviderEvent::ResponseIncomplete { response } => {
+                assert_eq!(response.id, "resp-inc");
+                assert_eq!(response.usage.input_tokens, 200);
+                assert_eq!(response.usage.output_tokens, 4096);
+                assert_eq!(
+                    response.incomplete_details.as_ref().unwrap().reason,
+                    "max_output_tokens"
+                );
+            }
+            _ => panic!("expected ResponseIncomplete"),
+        }
     }
 
     #[test]
@@ -1862,6 +1878,7 @@ mod tests {
                     input_tokens_details: None,
                     output_tokens_details: None,
                 },
+                incomplete_details: None,
             },
         };
         let translated = translate_provider_event(&event, "Hello");
@@ -1895,6 +1912,7 @@ mod tests {
                         reasoning_tokens: 60,
                     }),
                 },
+                incomplete_details: None,
             },
         };
         let translated = translate_provider_event(&event, "");
@@ -1930,17 +1948,31 @@ mod tests {
     #[test]
     fn translate_incomplete_returns_terminal() {
         let event = ProviderEvent::ResponseIncomplete {
-            reason: "max_output_tokens".into(),
+            response: ResponseObject {
+                id: "resp-inc".into(),
+                output: vec![],
+                usage: RawUsage {
+                    input_tokens: 200,
+                    output_tokens: 4096,
+                    input_tokens_details: None,
+                    output_tokens_details: None,
+                },
+                incomplete_details: Some(IncompleteDetails {
+                    reason: "max_output_tokens".into(),
+                }),
+            },
         };
         let translated = translate_provider_event(&event, "partial");
         match translated {
             TranslatedEvent::Terminal(TerminalOutcome::Incomplete {
                 reason,
+                usage,
                 partial_content,
-                ..
             }) => {
                 assert_eq!(reason, "max_output_tokens");
                 assert_eq!(partial_content, "partial");
+                assert_eq!(usage.input_tokens, 200);
+                assert_eq!(usage.output_tokens, 4096);
             }
             _ => panic!("expected Terminal(Incomplete)"),
         }
@@ -1981,6 +2013,7 @@ mod tests {
                 input_tokens_details: None,
                 output_tokens_details: None,
             },
+            incomplete_details: None,
         };
         let citations = extract_citations(&response, "");
         assert_eq!(citations.len(), 1);
@@ -2017,6 +2050,7 @@ mod tests {
                 input_tokens_details: None,
                 output_tokens_details: None,
             },
+            incomplete_details: None,
         };
         let citations = extract_citations(&response, "");
         assert_eq!(citations.len(), 1);
@@ -2043,6 +2077,7 @@ mod tests {
                 input_tokens_details: None,
                 output_tokens_details: None,
             },
+            incomplete_details: None,
         };
         let citations = extract_citations(&response, "");
         assert!(citations.is_empty());
@@ -2075,6 +2110,7 @@ mod tests {
                 input_tokens_details: None,
                 output_tokens_details: None,
             },
+            incomplete_details: None,
         };
         let citations = extract_citations(&response, accumulated);
         assert_eq!(citations.len(), 1);
@@ -2107,6 +2143,7 @@ mod tests {
                 input_tokens_details: None,
                 output_tokens_details: None,
             },
+            incomplete_details: None,
         };
         let citations = extract_citations(&response, "Hello world");
         assert_eq!(citations.len(), 1);
@@ -2139,6 +2176,7 @@ mod tests {
                 input_tokens_details: None,
                 output_tokens_details: None,
             },
+            incomplete_details: None,
         };
         let citations = extract_citations(&response, "Hello");
         assert_eq!(citations.len(), 1);

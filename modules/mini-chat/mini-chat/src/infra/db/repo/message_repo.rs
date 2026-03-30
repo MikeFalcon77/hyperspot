@@ -339,7 +339,8 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
         let mut cond = Condition::all()
             .add(Column::ChatId.eq(chat_id))
             .add(Column::RequestId.is_not_null())
-            .add(Column::DeletedAt.is_null());
+            .add(Column::DeletedAt.is_null())
+            .add(Column::IsCompressed.eq(false));
 
         if let Some(b) = boundary {
             cond = cond.add(upper_bound_filter(b));
@@ -381,6 +382,7 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
             .add(Column::ChatId.eq(chat_id))
             .add(Column::RequestId.is_not_null())
             .add(Column::DeletedAt.is_null())
+            .add(Column::IsCompressed.eq(false))
             .add(lower_filter);
 
         if let Some(b) = boundary {
@@ -398,6 +400,151 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
             .await?;
         rows.reverse();
         Ok(rows)
+    }
+
+    async fn last_assistant_token_counts<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+    ) -> Result<Option<(i64, i64)>, DomainError> {
+        let row = MessageEntity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::ChatId.eq(chat_id))
+                    .add(Column::Role.eq(MessageRole::Assistant))
+                    .add(Column::DeletedAt.is_null())
+                    // Skip fully-unknown rows (both tokens 0 = no usage data).
+                    // Keep rows where either field is known.
+                    .add(
+                        Condition::any()
+                            .add(Column::InputTokens.gt(0))
+                            .add(Column::OutputTokens.gt(0)),
+                    ),
+            )
+            .secure()
+            .scope_with(scope)
+            .order_by(Column::CreatedAt, Order::Desc)
+            .order_by(Column::Id, Order::Desc)
+            .one(runner)
+            .await?;
+        Ok(row.map(|m| (m.input_tokens, m.output_tokens)))
+    }
+
+    // Unlike `snapshot_boundary` and context-building queries (`recent_for_context`,
+    // `recent_after_boundary`) which filter `RequestId.is_not_null()` to only include
+    // committed messages, this method intentionally includes ALL non-deleted messages
+    // to reflect the full frontier for thread summary tracking.
+    async fn find_latest_message<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+    ) -> Result<Option<crate::domain::repos::SummaryFrontier>, DomainError> {
+        let row = MessageEntity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::ChatId.eq(chat_id))
+                    .add(Column::DeletedAt.is_null()),
+            )
+            .secure()
+            .scope_with(scope)
+            .order_by(Column::CreatedAt, Order::Desc)
+            .order_by(Column::Id, Order::Desc)
+            .one(runner)
+            .await?;
+        Ok(row.map(|m| crate::domain::repos::SummaryFrontier {
+            created_at: m.created_at,
+            message_id: m.id,
+        }))
+    }
+
+    async fn fetch_messages_in_range<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        base_frontier: Option<&crate::domain::repos::SummaryFrontier>,
+        target_frontier: &crate::domain::repos::SummaryFrontier,
+    ) -> Result<Vec<MessageModel>, DomainError> {
+        let mut cond = Condition::all()
+            .add(Column::ChatId.eq(chat_id))
+            .add(Column::DeletedAt.is_null())
+            .add(Column::IsCompressed.eq(false));
+
+        // Lower bound: (created_at, id) > base_frontier (exclusive)
+        if let Some(bf) = base_frontier {
+            let lower = Condition::any()
+                .add(Column::CreatedAt.gt(bf.created_at))
+                .add(
+                    Condition::all()
+                        .add(Column::CreatedAt.eq(bf.created_at))
+                        .add(Column::Id.gt(bf.message_id)),
+                );
+            cond = cond.add(lower);
+        }
+
+        // Upper bound: (created_at, id) <= target_frontier (inclusive)
+        let upper = Condition::any()
+            .add(Column::CreatedAt.lt(target_frontier.created_at))
+            .add(
+                Condition::all()
+                    .add(Column::CreatedAt.eq(target_frontier.created_at))
+                    .add(Column::Id.lte(target_frontier.message_id)),
+            );
+        cond = cond.add(upper);
+
+        let rows = MessageEntity::find()
+            .filter(cond)
+            .secure()
+            .scope_with(scope)
+            .order_by(Column::CreatedAt, Order::Asc)
+            .order_by(Column::Id, Order::Asc)
+            .all(runner)
+            .await?;
+        Ok(rows)
+    }
+
+    async fn mark_messages_compressed<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        base_frontier: Option<&crate::domain::repos::SummaryFrontier>,
+        target_frontier: &crate::domain::repos::SummaryFrontier,
+    ) -> Result<u64, DomainError> {
+        let mut cond = Condition::all()
+            .add(Column::ChatId.eq(chat_id))
+            .add(Column::DeletedAt.is_null());
+
+        if let Some(bf) = base_frontier {
+            let lower = Condition::any()
+                .add(Column::CreatedAt.gt(bf.created_at))
+                .add(
+                    Condition::all()
+                        .add(Column::CreatedAt.eq(bf.created_at))
+                        .add(Column::Id.gt(bf.message_id)),
+                );
+            cond = cond.add(lower);
+        }
+
+        let upper = Condition::any()
+            .add(Column::CreatedAt.lt(target_frontier.created_at))
+            .add(
+                Condition::all()
+                    .add(Column::CreatedAt.eq(target_frontier.created_at))
+                    .add(Column::Id.lte(target_frontier.message_id)),
+            );
+        cond = cond.add(upper);
+
+        let result = MessageEntity::update_many()
+            .col_expr(Column::IsCompressed, Expr::value(true))
+            .filter(cond)
+            .secure()
+            .scope_with(scope)
+            .exec(runner)
+            .await?;
+        Ok(result.rows_affected)
     }
 }
 

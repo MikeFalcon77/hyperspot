@@ -147,11 +147,9 @@ pub struct MiniChatMetricsMeter {
     cleanup_backlog: Gauge<i64>,
     cleanup_vs_with_failed_attachments: Counter<u64>,
 
-    // ── P3: Summary (deferred: summary feature not implemented) ──
+    // ── P3: Summary regen (deferred) ──
     #[allow(dead_code)]
     summary_regen: Counter<u64>,
-    #[allow(dead_code)]
-    summary_fallback: Counter<u64>,
 
     // ── P3: Image quota (deferred: image quota not implemented) ──
     #[allow(dead_code)]
@@ -188,6 +186,12 @@ pub struct MiniChatMetricsMeter {
     orphan_detected: Counter<u64>,
     orphan_finalized: Counter<u64>,
     orphan_scan_duration: Histogram<f64>,
+
+    // ── P1: Thread Summary Health ───────────────────────────────────────
+    thread_summary_trigger: Counter<u64>,
+    thread_summary_execution: Counter<u64>,
+    thread_summary_cas_conflicts: Counter<u64>,
+    summary_fallback: Counter<u64>,
 
     // ── Low-priority deferred ──────────────────────────────────────────
     #[allow(dead_code)]
@@ -503,11 +507,6 @@ impl MiniChatMetricsMeter {
                 .u64_counter(format!("{prefix}_summary_regen"))
                 .with_description("Summary regeneration events")
                 .build(),
-            summary_fallback: meter
-                .u64_counter(format!("{prefix}_summary_fallback"))
-                .with_description("Summary fallback events")
-                .build(),
-
             // deferred: image quota not implemented
             quota_image_commit: meter
                 .u64_counter(format!("{prefix}_quota_image_commit"))
@@ -570,6 +569,24 @@ impl MiniChatMetricsMeter {
             orphan_scan_duration: meter
                 .f64_histogram(format!("{prefix}_orphan_scan_duration_seconds"))
                 .with_description("Watchdog scan execution duration")
+                .build(),
+
+            // ── P1: Thread Summary Health ───────────────────────────────
+            thread_summary_trigger: meter
+                .u64_counter(format!("{prefix}_thread_summary_trigger"))
+                .with_description("Thread summary trigger evaluations")
+                .build(),
+            thread_summary_execution: meter
+                .u64_counter(format!("{prefix}_thread_summary_execution"))
+                .with_description("Thread summary execution outcomes")
+                .build(),
+            thread_summary_cas_conflicts: meter
+                .u64_counter(format!("{prefix}_thread_summary_cas_conflicts"))
+                .with_description("Thread summary CAS frontier conflicts")
+                .build(),
+            summary_fallback: meter
+                .u64_counter(format!("{prefix}_summary_fallback"))
+                .with_description("Summary fallback - previous summary kept")
                 .build(),
 
             // deferred: low-priority
@@ -827,6 +844,26 @@ impl MiniChatMetricsPort for MiniChatMetricsMeter {
 
     fn record_orphan_scan_duration_seconds(&self, seconds: f64) {
         self.orphan_scan_duration.record(seconds, &[]);
+    }
+
+    // ── P1: Thread Summary Health ────────────────────────────────────
+
+    fn record_thread_summary_trigger(&self, result: &str) {
+        self.thread_summary_trigger
+            .add(1, &[KeyValue::new(key::RESULT, result.to_owned())]);
+    }
+
+    fn record_thread_summary_execution(&self, result: &str) {
+        self.thread_summary_execution
+            .add(1, &[KeyValue::new(key::RESULT, result.to_owned())]);
+    }
+
+    fn record_thread_summary_cas_conflict(&self) {
+        self.thread_summary_cas_conflicts.add(1, &[]);
+    }
+
+    fn record_summary_fallback(&self) {
+        self.summary_fallback.add(1, &[]);
     }
 
     // ── P1: Cleanup ──────────────────────────────────────────────────

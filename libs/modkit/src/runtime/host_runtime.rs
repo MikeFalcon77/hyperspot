@@ -768,8 +768,27 @@ impl HostRuntime {
         // 9. Wait for cancellation
         self.cancel.cancelled().await;
 
-        // 10. Stop phase
+        // 10. Stop phase with hard timeout.
+        //     Blocking syscalls (e.g. libc getaddrinfo in tokio spawn_blocking)
+        //     can saturate all tokio worker threads, preventing tokio timers
+        //     from firing. Use an OS thread so the watchdog works even when
+        //     the tokio runtime is fully blocked.
+        let stop_timeout = std::time::Duration::from_secs(15);
+        let disarm = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let disarm_clone = std::sync::Arc::clone(&disarm);
+        std::thread::spawn(move || {
+            std::thread::sleep(stop_timeout);
+            if !disarm_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    timeout_secs = stop_timeout.as_secs(),
+                    "shutdown: stop phase timed out, force exiting"
+                );
+                std::process::exit(1);
+            }
+        });
+
         self.run_stop_phase().await?;
+        disarm.store(true, std::sync::atomic::Ordering::Relaxed);
 
         Ok(())
     }

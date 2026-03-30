@@ -218,7 +218,7 @@ Where:
 - `effective_model_context_window` — from model catalog entry for the resolved effective_model (see `context_window` field)
 - `reserved_output_tokens` — `max_output_tokens` configured for the request (persisted as `chat_turns.max_output_tokens_applied`)
 
-When context exceeds the budget, the system truncates in reverse priority: retrieval excerpts first, then document summaries, then old messages (not summary). Thread summary and system prompt are never truncated.
+When context exceeds the budget, the system truncates in reverse priority: retrieval excerpts first, then document summaries, then old messages, then thread summary (droppable). System prompt and current user message are never truncated.
 
 The budget MUST be computed after `resolve_effective_model()` (i.e., after quota downgrade), because a downgraded model may have a smaller context window than the selected_model.
 
@@ -362,11 +362,11 @@ graph TB
 
   **Tier availability rule**: a tier is considered **available** only if it has remaining quota in **ALL** configured periods for that tier. If **ANY** period is exhausted, the tier is treated as exhausted and the downgrade cascade continues to the next tier. When all tiers are exhausted, the system rejects with `quota_exceeded`.
 
-  - **Phase 1 - Preflight (reserve) estimate** (on request start, before any streaming begins and before outbound call): estimate token usage from `ContextPlan` size + `max_output_tokens` (persisted as `max_output_tokens_applied`), convert to reserved credits using model multipliers (section 5.4.1), and reserve credits for quota enforcement. Decision: allow at requested tier / downgrade to next tier / reject if all tiers exhausted.
+  - **Phase 1 - Preflight (reserve) estimate** (on request start, before any streaming begins and before outbound call): estimate token usage from current message size + `prior_context_tokens` (actual `input_tokens + output_tokens` from the last completed turn, representing the conversation history that will be re-sent) + `max_output_tokens` (persisted as `max_output_tokens_applied`), convert to reserved credits using model multipliers (section 5.4.1), and reserve credits for quota enforcement. Decision: allow at requested tier / downgrade to next tier / reject if all tiers exhausted.
     - Reserve MUST prevent parallel requests from overspending remaining tier quota.
-    - Reserve SHOULD be keyed by `(user_id, period_type, period_start, bucket)` and reconciled on terminal outcome. Reserves MUST be checked across all configured period types (`daily`, `monthly`) and all required buckets for the current tier; if any period or bucket is exhausted, the tier is considered exhausted and the cascade proceeds to the next tier.
+    - Reserve MUST be keyed by `(tenant_id, user_id, period_type, period_start, bucket)` and reconciled on terminal outcome. Reserves MUST be checked across all configured period types (`daily`, `monthly`) and all required buckets for the current tier; if any period or bucket is exhausted, the tier is considered exhausted and the cascade proceeds to the next tier.
   - **Phase 2 - Commit actual** (on `event: done`): reconcile the reserve to actual provider usage (`response.usage.input_tokens` + `response.usage.output_tokens`), compute actual credits via model multipliers, and commit actual credits to `quota_usage`. If actual exceeds estimate (overshoot), the completed response is never retroactively cancelled, but guardrails apply:
-    - Commit MUST be atomic per `(user_id, period_type, period_start, bucket)` row (avoid race conditions under parallel streams)
+    - Commit MUST be atomic per `(tenant_id, user_id, period_type, period_start, bucket)` row (avoid race conditions under parallel streams)
     - If the remaining quota for a tier is below a configured negative threshold, preflight MUST downgrade new requests to the next tier in the cascade. The negative threshold is a configurable absolute credit value defined in quota configuration.
     - `max_output_tokens` and an explicit input budget MUST bound the maximum cost per request
   - **Streaming constraint**: quota check is preflight-only. Mid-stream abort due to quota is NOT supported (would produce broken UX and partial content). Mid-stream abort is only triggered by: user cancel, provider error, or infrastructure limits.
@@ -1543,9 +1543,14 @@ Thread summary generation MUST be driven by the estimated token size of the asse
 
 Before each LLM call, the system already constructs a `ContextPlan` and computes an estimated input token size for the final request payload (system prompt, current thread summary, recent messages, retrieval/document context, tools, and the new user message).
 
-The thread summary trigger MUST evaluate this assembled request estimate.
+The thread summary trigger MUST evaluate the `assembled_context_tokens` value computed during context assembly (which reflects the real conversation size: system prompt + thread summary + history messages + current user message).
 
-A summary SHOULD be triggered when the estimated assembled request input reaches a configurable compression threshold.
+A summary SHOULD be triggered under either of these conditions (OR):
+
+1. **Proactive (first summary):** `assembled_context_tokens >= compression_threshold_pct% of effective_budget` AND no existing summary. Default threshold: **80%**.
+2. **Urgent (re-summarize):** Context assembly had to truncate (drop) older messages (`messages_truncated = true`). This means the existing summary is stale and the conversation is losing context.
+
+When a summary already exists and context assembly is not truncating messages, the trigger MUST NOT fire — the existing summary is still effective.
 
 The default compression threshold SHOULD be **80% of the effective input token budget**.
 
@@ -1553,7 +1558,7 @@ The effective input token budget is defined as:
 
 `token_budget = min(configured_max_input_tokens, model_context_window - reserved_output_tokens)`
 
-If the estimated assembled request tokens exceed the compression threshold, the system SHOULD enqueue durable thread-summary work in the transaction that durably persists or finalizes the causing turn.
+If the trigger conditions above are met (proactive or urgent), the system MUST enqueue durable thread-summary work in the transaction that durably persists or finalizes the causing turn.
 
 **Heuristic triggers**
 
@@ -1582,6 +1587,9 @@ Such heuristics MUST NOT be used as the sole correctness criterion for summary g
 - A handler attempt MUST bind itself to the frozen target frontier carried by the durable outbox message.
 - The handler MUST load exactly the non-deleted, non-compressed messages whose order key is in `(base_frontier, frozen_target_frontier]`.
 - Messages appended after `frozen_target_frontier` MUST be excluded from the current run. They MUST NOT cancel, widen, or invalidate the in-flight run and are eligible only for a future summary cycle.
+- If the LLM call fails with a context-length-exceeded error (prompt too large for the summary model), the handler SHOULD retry by dropping the oldest messages from the prompt (up to 2 retries, dropping ~20% of messages each time). This PTL retry mechanism ensures summaries can be generated even for very long conversations.
+
+**Context assembly filtering**: when building the `ContextPlan` for a user turn, message queries (`recent_for_context`, `recent_after_boundary`) MUST filter `is_compressed = false` to exclude messages already covered by the thread summary. The `is_compressed` rows remain in the database for UI rendering (chat history display) but MUST NOT be sent to the LLM.
 
 4. **CAS-protected commit**
 
@@ -2161,13 +2169,13 @@ If the chat is soft-deleted before vector store creation completes, the creation
   - If the turn ran on premium tier (bucket `tier:premium`): `reserved_credits_micro -= turn_reserved_credits_micro; spent_credits_micro += turn_actual_credits_micro; calls += 1`.
   - Token telemetry counters (`input_tokens`, `output_tokens`) are updated only in bucket `total`.
 
-Both operations MUST target the correct `(user_id, period_type, period_start, bucket)` row(s) within the finalization transaction. Image accounting: on each turn that includes images, increment `image_inputs` by the number of images in the request on the `total` bucket row. On each image upload, increment `image_upload_bytes` by the uploaded file size on the `total` bucket row. Preflight checks MUST validate `image_upload_bytes` caps on upload requests and MUST validate `image_inputs` caps on send-message requests (plus any optional per-turn byte caps computed from attachment metadata).
+Both operations MUST target the correct `(tenant_id, user_id, period_type, period_start, bucket)` row(s) within the finalization transaction. Image accounting: on each turn that includes images, increment `image_inputs` by the number of images in the request on the `total` bucket row. On each image upload, increment `image_upload_bytes` by the uploaded file size on the `total` bucket row. Preflight checks MUST validate `image_upload_bytes` caps on upload requests and MUST validate `image_inputs` caps on send-message requests (plus any optional per-turn byte caps computed from attachment metadata).
 
 **PK**: `id`
 
-**Constraints**: UNIQUE on `(user_id, period_type, period_start, bucket)`.
+**Constraints**: UNIQUE on `(tenant_id, user_id, period_type, period_start, bucket)`.
 
-**Indexes**: `(user_id, period_type, period_start, bucket)` for quota lookups
+**Indexes**: `(tenant_id, user_id, period_type, period_start, bucket)` for quota lookups
 
 **Secure ORM**: `#[secure(tenant_col = "tenant_id", owner_col = "user_id", resource_col = "id", no_type)]`
 
@@ -2710,9 +2718,9 @@ On each user message, the domain service assembles a `ContextPlan` in this norma
 | Priority (highest first) | Item |
 |--------------------------|------|
 | 1 (never truncated) | System prompt + tool guard instructions |
-| 2 (never truncated) | Thread summary |
-| 3 | User message + image attachments (current turn) |
-| 4 | Recent messages |
+| 2 (never truncated) | User message + image attachments (current turn) |
+| 3 (droppable) | Thread summary — dropped if it doesn't fit after mandatory items |
+| 4 | Recent messages (oldest dropped first) |
 | 5 | Document summaries |
 | 6 (truncated first) | Retrieval excerpts |
 
@@ -2734,8 +2742,9 @@ token_budget = min(configured_max_input_tokens, effective_model.context_window -
 
 | Category | Items | Rule |
 |----------|-------|------|
-| Never truncated | System prompt + tool guard instructions, thread summary | Always included. If these alone exceed the budget, the turn is rejected at preflight. |
-| Truncatable | User message + image attachments, recent messages, document summaries, retrieval excerpts | Removed in reverse priority order (lowest priority first, per the table above). |
+| Never truncated | System prompt + tool guard instructions, user message + image attachments | Always included. If these alone exceed the budget, the turn is rejected at preflight. |
+| Droppable | Thread summary | Dropped if it doesn't fit after mandatory items. |
+| Truncatable | Recent messages, document summaries, retrieval excerpts | Removed in reverse priority order (lowest priority first, per the table above). |
 
 **Algorithm** (step by step):
 
@@ -2746,8 +2755,8 @@ token_budget = min(configured_max_input_tokens, effective_model.context_window -
    a. **Retrieval excerpts**: drop lowest-ranked chunks first, then reduce `retrieval_k` until retrieval is empty or budget is met.
    b. **Document summaries**: drop document summaries starting from the least relevant.
    c. **Recent messages**: drop oldest conversation turns first, preserving the most recent turns.
-   d. **User message**: never truncated. If the plan still exceeds the budget after steps a-c, reject at preflight with an oversize error.
-5. Thread summary is never truncated. If the system prompt + thread summary + user message alone exceed the budget, the turn MUST be rejected before any outbound call.
+   d. **Thread summary**: dropped entirely if it doesn't fit after steps a-c.
+   e. **User message**: never truncated. If the plan still exceeds the budget after steps a-d, reject at preflight with an oversize error.
 
 **Determinism note**: given identical inputs (same message history, same retrieval results, same model context window), the truncation algorithm MUST produce the same `ContextPlan`. This property is important for debugging and idempotent retry scenarios. Determinism applies to truncation and ordering logic given identical retrieval inputs. Retrieval results themselves may vary depending on provider behavior.
 
@@ -6895,7 +6904,9 @@ Concrete deployment keys for these parameters are integration-specific, but thei
 | `thread_summary.enabled` | `bool` | `true` | **ConfigMap** |
 | `thread_summary.queue_name` | `string` | implementation-defined | **ConfigMap** |
 | `thread_summary.partition_count` | `integer` | implementation-defined (e.g. 8) | **ConfigMap** |
-| `thread_summary.compression_threshold_pct` | — | `80` | **ConfigMap** |
+| `thread_summary.compression_threshold_pct` | `integer` | `80` | **ConfigMap** |
+| `thread_summary.message_content_limit` | `integer` | `4000` | **ConfigMap** |
+| `thread_summary.summary_model_id` | `string` | `""` (chat's model) | **ConfigMap** |
 | User turn interval trigger | — | `15` | **ConfigMap** |
 | `summary_quality.min_length` | — | — | **ConfigMap** |
 | `summary_quality.min_entropy` | — | — | **ConfigMap** |

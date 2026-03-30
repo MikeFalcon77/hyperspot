@@ -615,6 +615,7 @@ mod tests {
             request_id: rid,
             message_id: mid,
             is_new_turn: true,
+            thread_summary_applied: None,
         };
         let json = serde_json::to_string(&data).unwrap();
         assert!(json.contains(&format!("\"request_id\":\"{rid}\"")));
@@ -632,6 +633,7 @@ mod tests {
             request_id: uuid::Uuid::new_v4(),
             message_id: uuid::Uuid::new_v4(),
             is_new_turn: false,
+            thread_summary_applied: None,
         };
         let json = serde_json::to_string(&data).unwrap();
         assert!(json.contains("\"is_new_turn\":false"));

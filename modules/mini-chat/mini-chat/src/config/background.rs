@@ -71,6 +71,22 @@ pub struct ThreadSummaryWorkerConfig {
     /// Max claim/execution attempts per task. Default: 3.
     #[serde(default = "default_ts_max_attempts")]
     pub max_attempts: u32,
+    /// Compression threshold: summary triggered when estimated input tokens
+    /// reach this percentage of the effective input token budget. Default: 80.
+    #[serde(default = "default_compression_threshold")]
+    pub compression_threshold_pct: u32,
+    /// Model ID from the model catalog for summary generation.
+    /// Empty string falls back to `gpt-4.1-mini`. Default: empty.
+    #[serde(default)]
+    pub summary_model_id: String,
+    /// Fallback system prompt when `ModelCatalogEntry.thread_summary_prompt` is empty.
+    #[serde(default = "default_summary_system_prompt")]
+    pub summary_system_prompt: String,
+    /// Maximum characters per message included in the summary prompt.
+    /// Messages longer than this are truncated with "..." appended.
+    /// 0 = no truncation. Default: 4000.
+    #[serde(default = "default_message_content_limit")]
+    pub message_content_limit: usize,
 }
 
 impl Default for ThreadSummaryWorkerConfig {
@@ -80,6 +96,10 @@ impl Default for ThreadSummaryWorkerConfig {
             reconcile_interval_secs: default_ts_reconcile_interval(),
             claim_timeout_secs: default_ts_claim_timeout(),
             max_attempts: default_ts_max_attempts(),
+            compression_threshold_pct: default_compression_threshold(),
+            summary_model_id: String::new(),
+            summary_system_prompt: default_summary_system_prompt(),
+            message_content_limit: default_message_content_limit(),
         }
     }
 }
@@ -95,6 +115,12 @@ impl ThreadSummaryWorkerConfig {
         if self.max_attempts == 0 {
             return Err("thread_summary_worker.max_attempts must be > 0".to_owned());
         }
+        if self.compression_threshold_pct == 0 || self.compression_threshold_pct > 99 {
+            return Err(format!(
+                "thread_summary_worker.compression_threshold_pct must be 1-99, got {}",
+                self.compression_threshold_pct
+            ));
+        }
         Ok(())
     }
 }
@@ -107,6 +133,20 @@ fn default_ts_claim_timeout() -> u64 {
 }
 fn default_ts_max_attempts() -> u32 {
     3
+}
+fn default_compression_threshold() -> u32 {
+    80
+}
+fn default_summary_system_prompt() -> String {
+    "You are a conversation summarizer. Given a conversation (and optionally an existing \
+     summary), produce a detailed structured summary. Respond with an <analysis> block \
+     (your reasoning) followed by a <summary> block (the final summary). Only the \
+     <summary> content will be stored. Do not invent information not present in the \
+     conversation."
+        .to_owned()
+}
+fn default_message_content_limit() -> usize {
+    4000
 }
 
 /// Cleanup worker — removes provider resources for soft-deleted chats.

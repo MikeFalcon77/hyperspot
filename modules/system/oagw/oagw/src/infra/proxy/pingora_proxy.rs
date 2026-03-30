@@ -193,6 +193,37 @@ pub fn new_http_proxy(
 /// domain-level `Endpoint` (which carries scheme, original hostname, port).
 type AddrMap = Arc<ArcSwap<HashMap<String, Endpoint>>>;
 
+/// Resolve a hostname with retry and exponential backoff.
+///
+/// Retries up to 3 times with 100ms / 500ms / 2500ms delays. This handles
+/// transient DNS failures (common in container environments where CoreDNS
+/// may briefly drop queries under load).
+async fn dns_lookup_with_retry(addr: &str) -> Result<Vec<std::net::SocketAddr>, std::io::Error> {
+    const MAX_RETRIES: u32 = 3;
+    const BASE_DELAY_MS: u64 = 100;
+
+    let mut last_err = None;
+    for attempt in 0..=MAX_RETRIES {
+        match tokio::net::lookup_host(addr).await {
+            Ok(addrs) => return Ok(addrs.collect()),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt < MAX_RETRIES {
+                    let delay = BASE_DELAY_MS * 5u64.pow(attempt); // 100ms, 500ms, 2500ms
+                    tracing::debug!(
+                        addr,
+                        attempt = attempt + 1,
+                        delay_ms = delay,
+                        "DNS lookup failed, retrying"
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+            }
+        }
+    }
+    Err(last_err.expect("retry loop always sets last_err on failure"))
+}
+
 /// [`ServiceDiscovery`] implementation that re-resolves hostnames on every
 /// `discover()` call. IP-only endpoints are passed through without DNS.
 ///
@@ -216,7 +247,8 @@ impl DnsDiscovery {
     /// Resolve endpoints to `Backend`s and rebuild the reverse-lookup map.
     ///
     /// Uses async `tokio::net::lookup_host` to avoid blocking the Tokio
-    /// worker thread during DNS resolution.
+    /// worker thread during DNS resolution. Retries up to 3 times with
+    /// exponential backoff on transient DNS failures.
     async fn resolve(&self) -> (BTreeSet<Backend>, HashMap<String, Endpoint>) {
         let mut backends = BTreeSet::new();
         let mut map = HashMap::with_capacity(self.endpoints.len());
@@ -224,7 +256,7 @@ impl DnsDiscovery {
         for ep in &self.endpoints {
             let addr_str = format!("{}:{}", ep.host, ep.port);
 
-            let resolved = tokio::net::lookup_host(addr_str.clone()).await;
+            let resolved = dns_lookup_with_retry(&addr_str).await;
             match resolved {
                 Ok(addrs) => {
                     for sock in addrs {
@@ -237,7 +269,7 @@ impl DnsDiscovery {
                     }
                 }
                 Err(e) => {
-                    warn!(addr = %addr_str, error = %e, "DNS resolution failed, using original address");
+                    warn!(addr = %addr_str, error = %e, "DNS resolution failed after retries, using original address");
                     if let Ok(b) = Backend::new(&addr_str) {
                         backends.insert(b);
                         map.entry(addr_str).or_insert_with(|| ep.clone());
@@ -498,17 +530,18 @@ impl ProxyHttp for PingoraProxy {
             Some(a) => a,
             None => {
                 // Fallback: resolve DNS explicitly (single-endpoint bypass, target-host header).
-                tokio::net::lookup_host((ep.host.as_str(), ep.port))
+                let addr_str = format!("{}:{}", ep.host, ep.port);
+                let addrs = dns_lookup_with_retry(&addr_str)
                     .await
                     .map_err(|e| {
-                        warn!(upstream_id = ?ctx.upstream_id, host = %ep.host, port = ep.port, error = %e, "DNS resolution failed");
+                        warn!(upstream_id = ?ctx.upstream_id, host = %ep.host, port = ep.port, error = %e, "DNS resolution failed after retries");
                         pingora_core::Error::because(
                             pingora_core::ErrorType::ConnectError,
                             "DNS resolution failed",
                             e,
                         )
-                    })?
-                    .next()
+                    })?;
+                addrs.into_iter().next()
                     .ok_or_else(|| {
                         warn!(upstream_id = ?ctx.upstream_id, host = %ep.host, port = ep.port, "DNS returned no addresses");
                         pingora_core::Error::explain(

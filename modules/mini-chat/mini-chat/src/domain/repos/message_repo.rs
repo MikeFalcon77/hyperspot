@@ -159,6 +159,52 @@ pub trait MessageRepository: Send + Sync {
         request_id: Uuid,
     ) -> Result<u64, DomainError>;
 
+    /// Return `(input_tokens, output_tokens)` from the last assistant message
+    /// in the chat. Used by preflight to estimate context size for quota reserve.
+    /// Returns `None` if the chat has no assistant messages with token data.
+    async fn last_assistant_token_counts<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+    ) -> Result<Option<(i64, i64)>, DomainError>;
+
+    /// Fetch the latest non-deleted message frontier for a chat.
+    ///
+    /// Returns `(created_at, message_id)` of the most recent message,
+    /// used as `frozen_target_frontier` for thread summary trigger.
+    /// Returns `None` if the chat has no messages.
+    async fn find_latest_message<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+    ) -> Result<Option<crate::domain::repos::SummaryFrontier>, DomainError>;
+
+    /// Fetch messages in a range defined by frontiers for thread summary.
+    ///
+    /// Returns messages where `(created_at, id) > base_frontier` (if provided)
+    /// and `(created_at, id) <= target_frontier`, `deleted_at IS NULL`,
+    /// ordered by `(created_at ASC, id ASC)`.
+    async fn fetch_messages_in_range<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        base_frontier: Option<&crate::domain::repos::SummaryFrontier>,
+        target_frontier: &crate::domain::repos::SummaryFrontier,
+    ) -> Result<Vec<MessageModel>, DomainError>;
+
+    /// Mark messages in a range as compressed by setting `is_compressed = true`.
+    async fn mark_messages_compressed<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        base_frontier: Option<&crate::domain::repos::SummaryFrontier>,
+        target_frontier: &crate::domain::repos::SummaryFrontier,
+    ) -> Result<u64, DomainError>;
+
     /// Fetch recent messages after a thread summary boundary for context assembly.
     ///
     /// Same as [`recent_for_context`] but only returns messages with

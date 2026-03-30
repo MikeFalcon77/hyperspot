@@ -203,6 +203,7 @@ impl<
         rag_config: RagConfig,
         thumbnail_config: ThumbnailConfig,
         metrics: Arc<dyn MiniChatMetricsPort>,
+        summary_config: crate::config::background::ThreadSummaryWorkerConfig,
     ) -> Self {
         let enforcer = PolicyEnforcer::new(authz);
 
@@ -224,6 +225,7 @@ impl<
             Arc::clone(&quota_svc) as Arc<dyn QuotaSettler>,
             Arc::clone(outbox_enqueuer),
             Arc::clone(&metrics),
+            summary_config,
         ));
 
         let turns = TurnService::new(

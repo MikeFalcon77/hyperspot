@@ -139,6 +139,9 @@ pub(super) fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepos
             if let Some(extra_body) = api_params.extra_body {
                 params["extra_body"] = extra_body;
             }
+            if let Some(ref effort) = api_params.reasoning_effort {
+                params["reasoning_effort"] = serde_json::json!(effort);
+            }
             builder = builder.additional_params(params);
         }
 
