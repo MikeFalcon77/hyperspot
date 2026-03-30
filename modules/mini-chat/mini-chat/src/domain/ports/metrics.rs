@@ -178,6 +178,22 @@ pub trait MiniChatMetricsPort: Send + Sync {
     /// `{prefix}_orphan_scan_duration_seconds` — histogram
     fn record_orphan_scan_duration_seconds(&self, seconds: f64);
 
+    // ── P1: Thread Summary Health (4 metrics) ──────────────────────────
+
+    /// `{prefix}_thread_summary_trigger` — counter
+    /// `result`: `scheduled`, `not_needed`
+    fn record_thread_summary_trigger(&self, result: &str);
+
+    /// `{prefix}_thread_summary_execution` — counter
+    /// `result`: `success`, `provider_error`, `timeout`, `retry`
+    fn record_thread_summary_execution(&self, result: &str);
+
+    /// `{prefix}_thread_summary_cas_conflicts` — counter
+    fn record_thread_summary_cas_conflict(&self);
+
+    /// `{prefix}_summary_fallback` — counter
+    fn record_summary_fallback(&self);
+
     // ── P2: Tool Call Counters (1 metric) ────────────────────────────
 
     /// `{prefix}_code_interpreter_calls` — counter
@@ -219,13 +235,17 @@ impl MiniChatMetricsPort for NoopMetrics {
     fn increment_attachments_pending(&self) {}
     fn decrement_attachments_pending(&self) {}
     fn record_image_inputs_per_turn(&self, _: u32) {}
-    fn record_orphan_detected(&self, _: &str) {}
-    fn record_orphan_finalized(&self, _: &str) {}
-    fn record_orphan_scan_duration_seconds(&self, _: f64) {}
     fn record_code_interpreter_calls(&self, _: &str, _: u32) {}
     fn record_cleanup_completed(&self, _: &str) {}
     fn record_cleanup_failed(&self, _: &str) {}
     fn record_cleanup_retry(&self, _: &str, _: &str) {}
     fn record_cleanup_backlog(&self, _: &str, _: &str, _: i64) {}
     fn record_cleanup_vs_with_failed_attachments(&self) {}
+    fn record_orphan_detected(&self, _: &str) {}
+    fn record_orphan_finalized(&self, _: &str) {}
+    fn record_orphan_scan_duration_seconds(&self, _: f64) {}
+    fn record_thread_summary_trigger(&self, _: &str) {}
+    fn record_thread_summary_execution(&self, _: &str) {}
+    fn record_thread_summary_cas_conflict(&self) {}
+    fn record_summary_fallback(&self) {}
 }

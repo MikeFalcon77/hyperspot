@@ -5,6 +5,8 @@ use modkit_macros::domain_model;
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
+use crate::domain::repos::ThreadSummaryRepository as _;
+
 use mini_chat_sdk::{
     AuditUsageTokens, LatencyMs, PolicyDecisions, QuotaDecision, TurnAuditEvent,
     TurnAuditEventType, UsageEvent, UsageTokens,
@@ -36,6 +38,24 @@ fn to_db(e: DomainError) -> modkit_db::DbError {
     modkit_db::DbError::Other(anyhow::anyhow!(e))
 }
 
+/// Evaluate whether thread summary should be triggered.
+///
+/// Returns `true` if `estimated_input_tokens >= compression_threshold_pct% of effective_budget`.
+fn should_trigger_summary(
+    reserve_tokens: i64,
+    max_output_tokens_applied: i32,
+    context_window: u32,
+    compression_threshold_pct: u32,
+) -> bool {
+    let estimated_input = reserve_tokens - i64::from(max_output_tokens_applied);
+    let effective_budget = i64::from(context_window) - i64::from(max_output_tokens_applied);
+    if effective_budget <= 0 || estimated_input <= 0 {
+        return false;
+    }
+    let threshold = effective_budget * i64::from(compression_threshold_pct) / 100;
+    estimated_input >= threshold
+}
+
 /// Service encapsulating the atomic finalization transaction.
 ///
 /// Generic over `TR` and `MR` (repository traits are not dyn-compatible
@@ -52,6 +72,8 @@ pub struct FinalizationService<TR: TurnRepository + 'static, MR: MessageReposito
     quota_settler: Arc<dyn QuotaSettler>,
     outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
     metrics: Arc<dyn MiniChatMetricsPort>,
+    thread_summary_repo: Arc<crate::infra::db::repo::thread_summary_repo::ThreadSummaryRepository>,
+    summary_config: crate::config::background::ThreadSummaryWorkerConfig,
 }
 
 impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> FinalizationService<TR, MR> {
@@ -62,6 +84,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
         quota_settler: Arc<dyn QuotaSettler>,
         outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
         metrics: Arc<dyn MiniChatMetricsPort>,
+        summary_config: crate::config::background::ThreadSummaryWorkerConfig,
     ) -> Self {
         Self {
             db,
@@ -70,6 +93,8 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
             quota_settler,
             outbox_enqueuer,
             metrics,
+            thread_summary_repo: Arc::new(crate::infra::db::repo::thread_summary_repo::ThreadSummaryRepository),
+            summary_config,
         }
     }
 
@@ -196,6 +221,9 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
         let message_repo = Arc::clone(&self.message_repo);
         let quota_settler = Arc::clone(&self.quota_settler);
         let outbox_enqueuer = Arc::clone(&self.outbox_enqueuer);
+        let thread_summary_repo = Arc::clone(&self.thread_summary_repo);
+        let summary_config = self.summary_config.clone();
+        let metrics = Arc::clone(&self.metrics);
         let input = input.clone();
 
         let tx_result = self
@@ -322,6 +350,61 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                         .enqueue_audit_event(tx, audit_event)
                         .await
                         .map_err(to_db)?;
+
+                    // 7. Evaluate thread summary trigger (completed turns only)
+                    if input.terminal_state == TurnState::Completed
+                        && summary_config.enabled
+                        && should_trigger_summary(
+                            input.reserve_tokens,
+                            input.max_output_tokens_applied,
+                            input.context_window,
+                            summary_config.compression_threshold_pct,
+                        )
+                    {
+                        let scope = input.scope.clone();
+                        let current_summary = thread_summary_repo
+                            .get_latest(tx, &scope, input.chat_id)
+                            .await
+                            .map_err(to_db)?;
+
+                        let base_frontier = current_summary.as_ref().map(|s| &s.frontier);
+
+                        let frozen_target = message_repo
+                            .find_latest_message(tx, &scope, input.chat_id)
+                            .await
+                            .map_err(to_db)?;
+
+                        if let Some(target) = frozen_target {
+                            let should_enqueue = match base_frontier {
+                                Some(bf) => bf != &target,
+                                None => true,
+                            };
+
+                            if should_enqueue {
+                                let payload = crate::domain::repos::ThreadSummaryTaskPayload {
+                                    tenant_id: input.tenant_id,
+                                    chat_id: input.chat_id,
+                                    system_request_id: Uuid::new_v4(),
+                                    system_task_type: "thread_summary_update".to_owned(),
+                                    base_frontier_created_at: base_frontier
+                                        .map(|f| f.created_at),
+                                    base_frontier_message_id: base_frontier
+                                        .map(|f| f.message_id),
+                                    frozen_target_created_at: target.created_at,
+                                    frozen_target_message_id: target.message_id,
+                                };
+
+                                outbox_enqueuer
+                                    .enqueue_thread_summary(tx, payload)
+                                    .await
+                                    .map_err(to_db)?;
+
+                                metrics.record_thread_summary_trigger("scheduled");
+                            } else {
+                                metrics.record_thread_summary_trigger("not_needed");
+                            }
+                        }
+                    }
 
                     Ok(FinalizationOutcome {
                         won_cas: true,
@@ -848,6 +931,14 @@ mod tests {
             Ok(())
         }
 
+        async fn enqueue_thread_summary(
+            &self,
+            _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+            _payload: crate::domain::repos::ThreadSummaryTaskPayload,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
         fn flush(&self) {
             self.flush_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -871,6 +962,7 @@ mod tests {
             Arc::new(MockQuotaSettler),
             outbox.clone(),
             Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         );
         (svc, outbox)
     }
@@ -893,6 +985,7 @@ mod tests {
             Arc::new(MockQuotaSettler),
             outbox.clone(),
             metrics,
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         );
         (svc, outbox)
     }
@@ -1002,6 +1095,7 @@ mod tests {
                 (PeriodType::Daily, today),
                 (PeriodType::Monthly, month_start),
             ],
+            context_window: 128_000,
             web_search_calls: 3,
             code_interpreter_calls: 0,
             ttft_ms: None,
@@ -1164,6 +1258,7 @@ mod tests {
             Arc::new(FailingQuotaSettler),
             Arc::new(RecordingOutboxEnqueuer::new()),
             Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         );
 
         let tenant_id = Uuid::new_v4();

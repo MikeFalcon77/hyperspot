@@ -216,6 +216,8 @@ pub(super) struct FinalizationCtx<TR: TurnRepository + 'static, MR: MessageRepos
         crate::infra::db::entity::quota_usage::PeriodType,
         time::Date,
     )>,
+    /// Context window size of the effective model (tokens) — for summary trigger.
+    pub(super) context_window: u32,
     /// Provider ID for metrics labels.
     pub(super) provider_id: String,
     /// Metrics port for recording stream metrics in the spawned task.
@@ -267,6 +269,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
             downgrade_from: self.downgrade_from.clone(),
             downgrade_reason: self.downgrade_reason.clone(),
             period_starts: self.period_starts.clone(),
+            context_window: self.context_window,
             web_search_calls,
             code_interpreter_calls,
             ttft_ms,

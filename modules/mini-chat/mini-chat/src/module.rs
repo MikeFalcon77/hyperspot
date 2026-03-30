@@ -386,6 +386,7 @@ impl Module for MiniChatModule {
             cfg.rag,
             cfg.thumbnail,
             metrics,
+            cfg.thread_summary_worker,
         ));
 
         self.service
@@ -509,7 +510,18 @@ impl RunnableCapability for MiniChatModule {
                     ),
                 )
                 .queue(&od.outbox_config.thread_summary_queue_name, partitions)
-                .leased(crate::infra::workers::thread_summary_worker::ThreadSummaryHandler)
+                .leased(crate::infra::workers::thread_summary_worker::ThreadSummaryHandler::new(
+                    Arc::new(crate::infra::workers::thread_summary_worker::ThreadSummaryDeps {
+                        db: Arc::clone(&od.db),
+                        thread_summary_repo: Arc::new(ThreadSummaryRepository),
+                        message_repo: Arc::new(MessageRepository::new(modkit_db::odata::LimitCfg {
+                            default: 20,
+                            max: 100,
+                        })),
+                        outbox_enqueuer: Arc::clone(&od.enqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
+                        metrics: Arc::clone(&od.metrics),
+                    }),
+                ))
                 .queue(&od.outbox_config.audit_queue_name, partitions)
                 .leased(AuditEventHandler {
                     audit_gateway: Arc::clone(&od.audit_gateway),

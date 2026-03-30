@@ -71,6 +71,10 @@ pub struct ThreadSummaryWorkerConfig {
     /// Max claim/execution attempts per task. Default: 3.
     #[serde(default = "default_ts_max_attempts")]
     pub max_attempts: u32,
+    /// Compression threshold: summary triggered when estimated input tokens
+    /// reach this percentage of the effective input token budget. Default: 80.
+    #[serde(default = "default_compression_threshold")]
+    pub compression_threshold_pct: u32,
 }
 
 impl Default for ThreadSummaryWorkerConfig {
@@ -80,6 +84,7 @@ impl Default for ThreadSummaryWorkerConfig {
             reconcile_interval_secs: default_ts_reconcile_interval(),
             claim_timeout_secs: default_ts_claim_timeout(),
             max_attempts: default_ts_max_attempts(),
+            compression_threshold_pct: default_compression_threshold(),
         }
     }
 }
@@ -95,8 +100,18 @@ impl ThreadSummaryWorkerConfig {
         if self.max_attempts == 0 {
             return Err("thread_summary_worker.max_attempts must be > 0".to_owned());
         }
+        if self.compression_threshold_pct == 0 || self.compression_threshold_pct > 99 {
+            return Err(format!(
+                "thread_summary_worker.compression_threshold_pct must be 1-99, got {}",
+                self.compression_threshold_pct
+            ));
+        }
         Ok(())
     }
+}
+
+fn default_compression_threshold() -> u32 {
+    80
 }
 
 fn default_ts_reconcile_interval() -> u64 {

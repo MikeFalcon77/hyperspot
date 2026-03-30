@@ -31,7 +31,6 @@ pub struct InfraOutboxEnqueuer {
     usage_queue_name: String,
     cleanup_queue_name: String,
     chat_cleanup_queue_name: String,
-    #[allow(dead_code)]
     thread_summary_queue_name: String,
     audit_queue_name: String,
     num_partitions: u32,
@@ -85,39 +84,6 @@ impl InfraOutboxEnqueuer {
         }
     }
 
-    /// Enqueue a thread summary task event within the caller's transaction.
-    ///
-    /// Partitions by `chat_id` so all summary events for a given chat land in
-    /// the same partition (processed in order by a single consumer).
-    #[allow(dead_code)]
-    pub async fn enqueue_thread_summary_task(
-        &self,
-        runner: &(dyn modkit_db::secure::DBRunner + Sync),
-        chat_id: uuid::Uuid,
-        payload: Vec<u8>,
-    ) -> Result<(), DomainError> {
-        let partition = Self::compute_partition(chat_id, self.num_partitions);
-
-        self.outbox()
-            .enqueue(
-                runner,
-                &self.thread_summary_queue_name,
-                partition,
-                payload,
-                "application/json",
-            )
-            .await
-            .map_err(|e| DomainError::internal(format!("outbox enqueue: {e}")))?;
-
-        info!(
-            queue = %self.thread_summary_queue_name,
-            partition,
-            chat_id = %chat_id,
-            "thread summary task enqueued"
-        );
-
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -247,6 +213,37 @@ impl OutboxEnqueuer for InfraOutboxEnqueuer {
         partition,
         %tenant_id,
         "audit event enqueued"
+        );
+
+        Ok(())
+    }
+
+    async fn enqueue_thread_summary(
+        &self,
+        runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        payload: crate::domain::repos::ThreadSummaryTaskPayload,
+    ) -> Result<(), DomainError> {
+        let partition = Self::compute_partition(payload.chat_id, self.num_partitions);
+        let serialized = serde_json::to_vec(&payload)
+            .map_err(|e| DomainError::internal(format!("serialize ThreadSummaryTaskPayload: {e}")))?;
+
+        self.outbox()
+            .enqueue(
+                runner,
+                &self.thread_summary_queue_name,
+                partition,
+                serialized,
+                "application/json",
+            )
+            .await
+            .map_err(|e| DomainError::internal(format!("outbox enqueue: {e}")))?;
+
+        info!(
+            queue = %self.thread_summary_queue_name,
+            partition,
+            chat_id = %payload.chat_id,
+            system_request_id = %payload.system_request_id,
+            "thread summary task enqueued"
         );
 
         Ok(())

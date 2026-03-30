@@ -399,6 +399,117 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
         rows.reverse();
         Ok(rows)
     }
+
+    async fn find_latest_message<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+    ) -> Result<Option<crate::domain::repos::SummaryFrontier>, DomainError> {
+        let row = MessageEntity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::ChatId.eq(chat_id))
+                    .add(Column::DeletedAt.is_null()),
+            )
+            .secure()
+            .scope_with(scope)
+            .order_by(Column::CreatedAt, Order::Desc)
+            .order_by(Column::Id, Order::Desc)
+            .one(runner)
+            .await?;
+        Ok(row.map(|m| crate::domain::repos::SummaryFrontier {
+            created_at: m.created_at,
+            message_id: m.id,
+        }))
+    }
+
+    async fn fetch_messages_in_range<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        base_frontier: Option<&crate::domain::repos::SummaryFrontier>,
+        target_frontier: &crate::domain::repos::SummaryFrontier,
+    ) -> Result<Vec<MessageModel>, DomainError> {
+        let mut cond = Condition::all()
+            .add(Column::ChatId.eq(chat_id))
+            .add(Column::DeletedAt.is_null());
+
+        // Lower bound: (created_at, id) > base_frontier (exclusive)
+        if let Some(bf) = base_frontier {
+            let lower = Condition::any()
+                .add(Column::CreatedAt.gt(bf.created_at))
+                .add(
+                    Condition::all()
+                        .add(Column::CreatedAt.eq(bf.created_at))
+                        .add(Column::Id.gt(bf.message_id)),
+                );
+            cond = cond.add(lower);
+        }
+
+        // Upper bound: (created_at, id) <= target_frontier (inclusive)
+        let upper = Condition::any()
+            .add(Column::CreatedAt.lt(target_frontier.created_at))
+            .add(
+                Condition::all()
+                    .add(Column::CreatedAt.eq(target_frontier.created_at))
+                    .add(Column::Id.lte(target_frontier.message_id)),
+            );
+        cond = cond.add(upper);
+
+        let rows = MessageEntity::find()
+            .filter(cond)
+            .secure()
+            .scope_with(scope)
+            .order_by(Column::CreatedAt, Order::Asc)
+            .order_by(Column::Id, Order::Asc)
+            .all(runner)
+            .await?;
+        Ok(rows)
+    }
+
+    async fn mark_messages_compressed<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        base_frontier: Option<&crate::domain::repos::SummaryFrontier>,
+        target_frontier: &crate::domain::repos::SummaryFrontier,
+    ) -> Result<u64, DomainError> {
+        let mut cond = Condition::all()
+            .add(Column::ChatId.eq(chat_id))
+            .add(Column::DeletedAt.is_null());
+
+        if let Some(bf) = base_frontier {
+            let lower = Condition::any()
+                .add(Column::CreatedAt.gt(bf.created_at))
+                .add(
+                    Condition::all()
+                        .add(Column::CreatedAt.eq(bf.created_at))
+                        .add(Column::Id.gt(bf.message_id)),
+                );
+            cond = cond.add(lower);
+        }
+
+        let upper = Condition::any()
+            .add(Column::CreatedAt.lt(target_frontier.created_at))
+            .add(
+                Condition::all()
+                    .add(Column::CreatedAt.eq(target_frontier.created_at))
+                    .add(Column::Id.lte(target_frontier.message_id)),
+            );
+        cond = cond.add(upper);
+
+        let result = MessageEntity::update_many()
+            .col_expr(Column::IsCompressed, Expr::value(true))
+            .filter(cond)
+            .secure()
+            .scope_with(scope)
+            .exec(runner)
+            .await?;
+        Ok(result.rows_affected)
+    }
 }
 
 /// Composite upper-bound filter: `(created_at, id) <= (b.created_at, b.id)`.

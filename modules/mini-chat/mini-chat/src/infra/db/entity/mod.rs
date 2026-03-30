@@ -6,3 +6,4 @@ pub mod message;
 pub mod message_attachment;
 pub mod message_reaction;
 pub mod quota_usage;
+pub mod thread_summary;

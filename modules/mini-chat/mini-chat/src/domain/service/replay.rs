@@ -261,6 +261,37 @@ mod tests {
         ) -> Result<Vec<MessageModel>, DomainError> {
             unimplemented!()
         }
+
+        async fn find_latest_message<C: DBRunner>(
+            &self,
+            _: &C,
+            _: &AccessScope,
+            _: Uuid,
+        ) -> Result<Option<crate::domain::repos::SummaryFrontier>, DomainError> {
+            Ok(None)
+        }
+
+        async fn fetch_messages_in_range<C: DBRunner>(
+            &self,
+            _: &C,
+            _: &AccessScope,
+            _: Uuid,
+            _: Option<&crate::domain::repos::SummaryFrontier>,
+            _: &crate::domain::repos::SummaryFrontier,
+        ) -> Result<Vec<MessageModel>, DomainError> {
+            Ok(vec![])
+        }
+
+        async fn mark_messages_compressed<C: DBRunner>(
+            &self,
+            _: &C,
+            _: &AccessScope,
+            _: Uuid,
+            _: Option<&crate::domain::repos::SummaryFrontier>,
+            _: &crate::domain::repos::SummaryFrontier,
+        ) -> Result<u64, DomainError> {
+            Ok(0)
+        }
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────

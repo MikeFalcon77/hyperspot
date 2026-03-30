@@ -475,6 +475,7 @@ impl<
             downgrade_from: pf.downgrade_from,
             downgrade_reason: pf.downgrade_reason,
             period_starts,
+            context_window: pf.context_window,
             provider_id: provider_id.clone(),
             metrics: Arc::clone(&self.metrics),
             quota_warnings_provider: Arc::clone(&self.quota)
@@ -811,8 +812,8 @@ impl<
                         &conn,
                         &scope,
                         chat_id,
-                        ts.boundary_created_at,
-                        ts.boundary_message_id,
+                        ts.frontier.created_at,
+                        ts.frontier.message_id,
                         self.context_config.recent_messages_limit,
                         snapshot_boundary,
                     )
@@ -1160,6 +1161,7 @@ impl<
             downgrade_from: pf.downgrade_from,
             downgrade_reason: pf.downgrade_reason,
             period_starts,
+            context_window: pf.context_window,
             provider_id: provider_id.clone(),
             metrics: Arc::clone(&self.metrics),
             quota_warnings_provider: Arc::clone(&self.quota)
@@ -1321,6 +1323,14 @@ mod tests {
             &self,
             _runner: &(dyn modkit_db::secure::DBRunner + Sync),
             _event: crate::domain::model::audit_envelope::AuditEnvelope,
+        ) -> Result<(), crate::domain::error::DomainError> {
+            Ok(())
+        }
+
+        async fn enqueue_thread_summary(
+            &self,
+            _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+            _payload: crate::domain::repos::ThreadSummaryTaskPayload,
         ) -> Result<(), crate::domain::error::DomainError> {
             Ok(())
         }
@@ -1961,6 +1971,7 @@ mod tests {
             Arc::new(MockQuotaSettler) as Arc<dyn QuotaSettler>,
             Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
             Arc::clone(&metrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         ));
 
         // QuotaService with permissive defaults — model catalog includes
@@ -2657,6 +2668,7 @@ mod tests {
             Arc::new(MockQuotaSettler) as Arc<dyn QuotaSettler>,
             Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
             Arc::clone(&metrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         ));
 
         // Keep max_output_tokens well below context_window so preflight maths
@@ -3098,6 +3110,7 @@ mod tests {
             Arc::new(NoopSettler) as Arc<dyn QuotaSettler>,
             Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
             Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         ));
 
         let fctx = FinalizationCtx {
@@ -3123,6 +3136,7 @@ mod tests {
             downgrade_from: Some("gpt-4o".to_owned()),
             downgrade_reason: Some("premium_exhausted".to_owned()),
             period_starts: Vec::new(),
+            context_window: 128_000,
             provider_id: "openai".to_owned(),
             metrics: Arc::new(crate::domain::ports::metrics::NoopMetrics),
             quota_warnings_provider: Arc::new(NoopQuotaWarningsProvider),
@@ -3273,6 +3287,7 @@ mod tests {
             Arc::new(MockQuotaSettler) as Arc<dyn QuotaSettler>,
             Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
             Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         ));
 
         let quota_svc = Arc::new(crate::domain::service::QuotaService::new(
@@ -4894,6 +4909,7 @@ mod tests {
             Arc::new(MockQuotaSettler) as Arc<dyn QuotaSettler>,
             Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
             Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            crate::config::background::ThreadSummaryWorkerConfig::default(),
         ));
 
         let quota_svc = Arc::new(crate::domain::service::QuotaService::new(
@@ -5267,6 +5283,10 @@ mod tests {
         fn record_cleanup_retry(&self, _: &str, _: &str) {}
         fn record_cleanup_backlog(&self, _: &str, _: &str, _: i64) {}
         fn record_cleanup_vs_with_failed_attachments(&self) {}
+        fn record_thread_summary_trigger(&self, _: &str) {}
+        fn record_thread_summary_execution(&self, _: &str) {}
+        fn record_thread_summary_cas_conflict(&self) {}
+        fn record_summary_fallback(&self) {}
     }
 
     // ── Metric emission tests ────────────────────────────────────────────

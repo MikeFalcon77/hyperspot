@@ -65,6 +65,27 @@ pub struct ChatCleanupEvent {
     pub chat_deleted_at: OffsetDateTime,
 }
 
+/// Durable outbox payload for thread summary generation.
+///
+/// Persisted at enqueue time in the finalization transaction. The handler
+/// reads this payload to know exactly which message range to summarize.
+/// `system_request_id` is generated once and reused across retries.
+#[domain_model]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadSummaryTaskPayload {
+    pub tenant_id: Uuid,
+    pub chat_id: Uuid,
+    /// Stable system-task identity -- generated at enqueue, reused across retries.
+    pub system_request_id: Uuid,
+    pub system_task_type: String,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub base_frontier_created_at: Option<OffsetDateTime>,
+    pub base_frontier_message_id: Option<Uuid>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub frozen_target_created_at: OffsetDateTime,
+    pub frozen_target_message_id: Uuid,
+}
+
 /// Domain-layer abstraction for enqueuing outbox events within a transaction.
 ///
 /// The finalization service calls this trait to insert outbox rows atomically
@@ -140,6 +161,16 @@ pub trait OutboxEnqueuer: Send + Sync {
         &self,
         runner: &(dyn DBRunner + Sync),
         event: AuditEnvelope,
+    ) -> Result<(), DomainError>;
+
+    /// Enqueue a thread summary task within the caller's transaction.
+    ///
+    /// Partitioned by `chat_id` so all summary events for one chat are
+    /// processed sequentially within the same partition.
+    async fn enqueue_thread_summary(
+        &self,
+        runner: &(dyn DBRunner + Sync),
+        payload: ThreadSummaryTaskPayload,
     ) -> Result<(), DomainError>;
 
     /// Notify the outbox sequencer that new events are available.
