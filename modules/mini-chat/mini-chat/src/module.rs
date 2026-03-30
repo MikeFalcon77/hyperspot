@@ -9,7 +9,7 @@ use modkit::contracts::RunnableCapability;
 use modkit::{DatabaseCapability, Module, ModuleCtx, RestApiCapability};
 use std::time::Duration;
 
-use modkit_db::outbox::{DecoupledConfig, Outbox, OutboxHandle, Partitions};
+use modkit_db::outbox::{LeaseConfig, Outbox, OutboxHandle, Partitions};
 use oagw_sdk::ServiceGatewayClientV1;
 use sea_orm_migration::MigrationTrait;
 use tokio_util::sync::CancellationToken;
@@ -187,11 +187,7 @@ impl Module for MiniChatModule {
         let db = Arc::new(db_provider);
 
         // Create the model-policy gateway early for both outbox handler and services.
-        let model_policy_gw = Arc::new(ModelPolicyGateway::new(
-            ctx.client_hub(),
-            vendor.clone(),
-            ctx.cancellation_token().clone(),
-        ));
+        let model_policy_gw = Arc::new(ModelPolicyGateway::new(ctx.client_hub(), vendor.clone()));
 
         // Audit gateway: lazily resolves audit plugin(s) on first emission.
         let audit_gateway = Arc::new(AuditGateway::new(ctx.client_hub(), vendor));
@@ -482,11 +478,11 @@ impl RunnableCapability for MiniChatModule {
 
             let outbox_handle = Outbox::builder(outbox_db)
                 .queue(&od.outbox_config.queue_name, partitions)
-                .decoupled(UsageEventHandler {
+                .leased(UsageEventHandler {
                     plugin_provider: od.model_policy_gw.clone(),
                 })
                 .queue(&od.outbox_config.cleanup_queue_name, partitions)
-                .decoupled(
+                .leased(
                     crate::infra::workers::cleanup_worker::AttachmentCleanupHandler::new(
                         Arc::clone(&od.file_storage),
                         Arc::clone(&od.db),
@@ -499,7 +495,7 @@ impl RunnableCapability for MiniChatModule {
                     ),
                 )
                 .queue(&od.outbox_config.chat_cleanup_queue_name, partitions)
-                .decoupled(
+                .leased(
                     crate::infra::workers::cleanup_worker::ChatCleanupHandler::new(
                         Arc::clone(&od.file_storage),
                         Arc::clone(&od.vector_store_prov),
@@ -513,17 +509,16 @@ impl RunnableCapability for MiniChatModule {
                     ),
                 )
                 .queue(&od.outbox_config.thread_summary_queue_name, partitions)
-                .decoupled(crate::infra::workers::thread_summary_worker::ThreadSummaryHandler)
+                .leased(crate::infra::workers::thread_summary_worker::ThreadSummaryHandler)
                 .queue(&od.outbox_config.audit_queue_name, partitions)
-                .batch_decoupled_with(
-                    AuditEventHandler {
-                        audit_gateway: Arc::clone(&od.audit_gateway),
-                        metrics: Arc::clone(&od.metrics),
-                    },
-                    DecoupledConfig {
-                        lease_duration: Duration::from_secs(60),
-                    },
-                )
+                .leased(AuditEventHandler {
+                    audit_gateway: Arc::clone(&od.audit_gateway),
+                    metrics: Arc::clone(&od.metrics),
+                })
+                .lease(LeaseConfig {
+                    duration: Duration::from_secs(60),
+                    ..LeaseConfig::default()
+                })
                 .start()
                 .await
                 .map_err(|e| anyhow::anyhow!("outbox start: {e}"))?;

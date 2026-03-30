@@ -5,17 +5,16 @@
 //! - [`AttachmentCleanupHandler`]: per-attachment file delete (attachment-deletion API path).
 //! - [`ChatCleanupHandler`]: chat-level batch cleanup + vector store deletion.
 //!
-//! Both run as part of the outbox pipeline (decoupled strategy). All replicas
+//! Both run as part of the outbox pipeline (leased strategy). All replicas
 //! process events in parallel. No leader election needed.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use modkit_db::DBProvider;
-use modkit_db::outbox::{HandlerResult, MessageHandler, OutboxMessage};
+use modkit_db::outbox::{LeasedMessageHandler, MessageResult, OutboxMessage};
 use modkit_security::SecurityContext;
 use serde::Deserialize;
-use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::domain::ports::{FileStorageProvider, metric_labels};
@@ -92,16 +91,14 @@ struct AttachmentCleanupPayload {
 }
 
 #[async_trait]
-impl MessageHandler for AttachmentCleanupHandler {
-    async fn handle(&self, msg: &OutboxMessage, cancel: CancellationToken) -> HandlerResult {
+impl LeasedMessageHandler for AttachmentCleanupHandler {
+    async fn handle(&self, msg: &OutboxMessage) -> MessageResult {
         // 1. Deserialize payload
         let event: AttachmentCleanupPayload = match serde_json::from_slice(&msg.payload) {
             Ok(e) => e,
             Err(e) => {
                 warn!(error = %e, "attachment cleanup: invalid payload");
-                return HandlerResult::Reject {
-                    reason: format!("invalid payload: {e}"),
-                };
+                return MessageResult::Reject(format!("invalid payload: {e}"));
             }
         };
 
@@ -119,9 +116,8 @@ impl MessageHandler for AttachmentCleanupHandler {
             let conn = match self.db.conn() {
                 Ok(c) => c,
                 Err(e) => {
-                    return HandlerResult::Retry {
-                        reason: format!("db conn: {e}"),
-                    };
+                    warn!(error = %e, "attachment cleanup: db conn failed");
+                    return MessageResult::Retry;
                 }
             };
             match self.chat_repo.is_deleted_system(&conn, event.chat_id).await {
@@ -131,13 +127,12 @@ impl MessageHandler for AttachmentCleanupHandler {
                         chat_id = %event.chat_id,
                         "attachment cleanup: parent chat soft-deleted - ownership transferred, acking"
                     );
-                    return HandlerResult::Success;
+                    return MessageResult::Ok;
                 }
                 Ok(false) => {} // chat is active — proceed
                 Err(e) => {
-                    return HandlerResult::Retry {
-                        reason: format!("db error checking chat: {e}"),
-                    };
+                    warn!(error = %e, "attachment cleanup: db error checking chat");
+                    return MessageResult::Retry;
                 }
             }
         }
@@ -147,19 +142,10 @@ impl MessageHandler for AttachmentCleanupHandler {
             tracing::debug!(attachment_id = %event.attachment_id, "attachment cleanup: no provider file - marking done");
             if let Err(e) = self.mark_done(event.attachment_id).await {
                 warn!(attachment_id = %event.attachment_id, error = %e, "attachment cleanup: failed to mark done");
-                return HandlerResult::Retry {
-                    reason: format!("db error: {e}"),
-                };
+                return MessageResult::Retry;
             }
-            return HandlerResult::Success;
+            return MessageResult::Ok;
         };
-
-        // 3. Respect graceful shutdown before the provider call.
-        if cancel.is_cancelled() {
-            return HandlerResult::Retry {
-                reason: "shutdown".to_owned(),
-            };
-        }
 
         // 4. Delete provider file via OAGW.
         //    RagHttpClient.delete() is best-effort (404 = success).
@@ -182,15 +168,13 @@ impl MessageHandler for AttachmentCleanupHandler {
         // 5. Success — mark cleanup as done.
         if let Err(e) = self.mark_done(event.attachment_id).await {
             warn!(attachment_id = %event.attachment_id, error = %e, "attachment cleanup: failed to mark done after provider delete");
-            return HandlerResult::Retry {
-                reason: format!("db error: {e}"),
-            };
+            return MessageResult::Retry;
         }
 
         self.metrics
             .record_cleanup_completed(metric_labels::resource_type::FILE);
         info!(attachment_id = %event.attachment_id, "attachment cleanup: done");
-        HandlerResult::Success
+        MessageResult::Ok
     }
 }
 
@@ -210,14 +194,14 @@ impl AttachmentCleanupHandler {
         Ok(())
     }
 
-    async fn record_failure(&self, attachment_id: uuid::Uuid, error: &str) -> HandlerResult {
+    #[allow(clippy::cognitive_complexity)]
+    async fn record_failure(&self, attachment_id: uuid::Uuid, error: &str) -> MessageResult {
         use crate::domain::repos::{AttachmentRepository as _, CleanupOutcome};
         let conn = match self.db.conn() {
             Ok(c) => c,
             Err(e) => {
-                return HandlerResult::Retry {
-                    reason: format!("db conn error: {e}"),
-                };
+                warn!(error = %e, "record_failure: db conn failed");
+                return MessageResult::Retry;
             }
         };
         match self
@@ -229,24 +213,21 @@ impl AttachmentCleanupHandler {
                 warn!(attachment_id = %attachment_id, "attachment cleanup: max attempts reached -- terminal failure");
                 self.metrics
                     .record_cleanup_failed(metric_labels::resource_type::FILE);
-                HandlerResult::Reject {
-                    reason: format!("max attempts ({}) reached", self.max_attempts),
-                }
+                MessageResult::Reject(format!("max attempts ({}) reached", self.max_attempts))
             }
             Ok(CleanupOutcome::AlreadyTerminal) => {
                 tracing::debug!(attachment_id = %attachment_id, "attachment cleanup: already terminal (stale redelivery)");
-                HandlerResult::Success
+                MessageResult::Ok
             }
             Ok(CleanupOutcome::StillPending) => {
                 self.metrics
                     .record_cleanup_retry(metric_labels::resource_type::FILE, error);
-                HandlerResult::Retry {
-                    reason: error.to_owned(),
-                }
+                MessageResult::Retry
             }
-            Err(e) => HandlerResult::Retry {
-                reason: format!("db error recording attempt: {e}"),
-            },
+            Err(e) => {
+                warn!(error = %e, "record_failure: db error recording attempt");
+                MessageResult::Retry
+            }
         }
     }
 }
@@ -309,8 +290,8 @@ struct ChatCleanupPayload {
 }
 
 #[async_trait]
-impl MessageHandler for ChatCleanupHandler {
-    async fn handle(&self, msg: &OutboxMessage, cancel: CancellationToken) -> HandlerResult {
+impl LeasedMessageHandler for ChatCleanupHandler {
+    async fn handle(&self, msg: &OutboxMessage) -> MessageResult {
         use crate::domain::repos::{
             AttachmentRepository as _, ChatRepository as _, VectorStoreRepository as _,
         };
@@ -320,9 +301,7 @@ impl MessageHandler for ChatCleanupHandler {
             Ok(e) => e,
             Err(e) => {
                 warn!(error = %e, "chat cleanup: invalid payload");
-                return HandlerResult::Reject {
-                    reason: format!("invalid payload: {e}"),
-                };
+                return MessageResult::Reject(format!("invalid payload: {e}"));
             }
         };
 
@@ -334,9 +313,8 @@ impl MessageHandler for ChatCleanupHandler {
         let conn = match self.db.conn() {
             Ok(c) => c,
             Err(e) => {
-                return HandlerResult::Retry {
-                    reason: format!("db conn: {e}"),
-                };
+                warn!(error = %e, "chat cleanup: db conn failed");
+                return MessageResult::Retry;
             }
         };
 
@@ -345,14 +323,11 @@ impl MessageHandler for ChatCleanupHandler {
             Ok(true) => {} // expected
             Ok(false) => {
                 warn!(chat_id = %chat_id, "chat cleanup: chat is not soft-deleted -- rejecting");
-                return HandlerResult::Reject {
-                    reason: "chat is not soft-deleted".to_owned(),
-                };
+                return MessageResult::Reject("chat is not soft-deleted".to_owned());
             }
             Err(e) => {
-                return HandlerResult::Retry {
-                    reason: format!("db error checking chat: {e}"),
-                };
+                warn!(chat_id = %chat_id, error = %e, "chat cleanup: db error checking chat");
+                return MessageResult::Retry;
             }
         }
 
@@ -364,20 +339,13 @@ impl MessageHandler for ChatCleanupHandler {
         {
             Ok(p) => p,
             Err(e) => {
-                return HandlerResult::Retry {
-                    reason: format!("db error loading attachments: {e}"),
-                };
+                warn!(chat_id = %chat_id, error = %e, "chat cleanup: db error loading attachments");
+                return MessageResult::Retry;
             }
         };
 
         let mut any_still_pending = false;
         for att in &pending {
-            if cancel.is_cancelled() {
-                return HandlerResult::Retry {
-                    reason: "shutdown".to_owned(),
-                };
-            }
-
             // Attempt provider file delete
             if let Some(ref provider_file_id) = att.provider_file_id {
                 let ctx = tenant_security_context(event.tenant_id);
@@ -439,9 +407,7 @@ impl MessageHandler for ChatCleanupHandler {
 
         // 5. If any attachments are still pending → retry later
         if any_still_pending {
-            return HandlerResult::Retry {
-                reason: "some attachments still pending".to_owned(),
-            };
+            return MessageResult::Retry;
         }
 
         // 6. Vector store cleanup — only after all attachments are terminal
@@ -452,9 +418,8 @@ impl MessageHandler for ChatCleanupHandler {
         {
             Ok(vs) => vs,
             Err(e) => {
-                return HandlerResult::Retry {
-                    reason: format!("db error loading vector store: {e}"),
-                };
+                warn!(chat_id = %chat_id, error = %e, "chat cleanup: db error loading vector store");
+                return MessageResult::Retry;
             }
         };
 
@@ -466,14 +431,11 @@ impl MessageHandler for ChatCleanupHandler {
                 .await
             {
                 Ok(still) if !still.is_empty() => {
-                    return HandlerResult::Retry {
-                        reason: "attachments still pending before VS delete".to_owned(),
-                    };
+                    return MessageResult::Retry;
                 }
                 Err(e) => {
-                    return HandlerResult::Retry {
-                        reason: format!("db error re-checking attachments: {e}"),
-                    };
+                    warn!(chat_id = %chat_id, error = %e, "chat cleanup: db error re-checking attachments");
+                    return MessageResult::Retry;
                 }
                 _ => {}
             }
@@ -486,9 +448,8 @@ impl MessageHandler for ChatCleanupHandler {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    return HandlerResult::Retry {
-                        reason: format!("db error counting failed attachments: {e}"),
-                    };
+                    warn!(chat_id = %chat_id, error = %e, "chat cleanup: db error counting failed attachments");
+                    return MessageResult::Retry;
                 }
             };
             if failed_count > 0 {
@@ -512,7 +473,7 @@ impl MessageHandler for ChatCleanupHandler {
                     warn!(chat_id = %chat_id, vector_store_id = vs_id, error = %e, "chat cleanup: vector store delete failed");
                     self.metrics
                         .record_cleanup_retry(metric_labels::resource_type::VECTOR_STORE, &reason);
-                    return HandlerResult::Retry { reason };
+                    return MessageResult::Retry;
                 }
 
                 info!(chat_id = %chat_id, vector_store_id = vs_id, "chat cleanup: vector store deleted on provider");
@@ -521,9 +482,7 @@ impl MessageHandler for ChatCleanupHandler {
             // Hard-delete the chat_vector_stores row (durable completion marker)
             if let Err(e) = self.vector_store_repo.delete_system(&conn, vs_row.id).await {
                 warn!(chat_id = %chat_id, error = %e, "chat cleanup: failed to delete VS row");
-                return HandlerResult::Retry {
-                    reason: format!("db error deleting VS row: {e}"),
-                };
+                return MessageResult::Retry;
             }
 
             // Record metric only after durable completion (avoids double-counting on retry).
@@ -535,7 +494,7 @@ impl MessageHandler for ChatCleanupHandler {
         }
 
         info!(chat_id = %chat_id, "chat cleanup: complete");
-        HandlerResult::Success
+        MessageResult::Ok
     }
 }
 
@@ -596,9 +555,9 @@ mod tests {
         );
 
         let msg = make_msg(); // payload is "{}" — missing required fields
-        let result = handler.handle(&msg, CancellationToken::new()).await;
+        let result = handler.handle(&msg).await;
         assert!(
-            matches!(result, HandlerResult::Reject { .. }),
+            matches!(result, MessageResult::Reject(_)),
             "invalid payload should be rejected"
         );
     }
@@ -621,11 +580,11 @@ mod tests {
         );
 
         let msg = make_cleanup_payload(None);
-        let result = handler.handle(&msg, CancellationToken::new()).await;
+        let result = handler.handle(&msg).await;
         // mark_done will fail (attachment doesn't exist in DB) → Retry
         // but the important thing is it doesn't Reject for missing provider_file_id
         assert!(
-            matches!(result, HandlerResult::Success | HandlerResult::Retry { .. }),
+            matches!(result, MessageResult::Ok | MessageResult::Retry),
             "no provider file should not reject"
         );
     }
@@ -687,9 +646,9 @@ mod tests {
             build_chat_handler(crate::domain::service::test_helpers::mock_db_provider(db));
 
         let msg = make_msg(); // "{}" — missing fields
-        let result = handler.handle(&msg, CancellationToken::new()).await;
+        let result = handler.handle(&msg).await;
         assert!(
-            matches!(result, HandlerResult::Reject { .. }),
+            matches!(result, MessageResult::Reject(_)),
             "invalid payload should be rejected"
         );
     }
@@ -703,9 +662,9 @@ mod tests {
 
         // Non-existent chat → is_deleted_system returns false
         let msg = make_chat_cleanup_payload(uuid::Uuid::new_v4());
-        let result = handler.handle(&msg, CancellationToken::new()).await;
+        let result = handler.handle(&msg).await;
         assert!(
-            matches!(result, HandlerResult::Reject { .. }),
+            matches!(result, MessageResult::Reject(_)),
             "active/non-existent chat should be rejected"
         );
     }
@@ -745,9 +704,9 @@ mod tests {
 
         let handler = build_chat_handler(db_provider);
         let msg = make_chat_cleanup_payload(chat_id);
-        let result = handler.handle(&msg, CancellationToken::new()).await;
+        let result = handler.handle(&msg).await;
         assert!(
-            matches!(result, HandlerResult::Success),
+            matches!(result, MessageResult::Ok),
             "empty soft-deleted chat should succeed, got: {result:?}"
         );
     }
@@ -866,10 +825,10 @@ mod tests {
 
         let handler = build_chat_handler(Arc::clone(&db_provider));
         let msg = make_chat_cleanup_payload(chat_id);
-        let result = handler.handle(&msg, CancellationToken::new()).await;
+        let result = handler.handle(&msg).await;
 
         assert!(
-            matches!(result, HandlerResult::Success),
+            matches!(result, MessageResult::Ok),
             "should succeed with NoopFileStorage, got: {result:?}"
         );
 
@@ -910,10 +869,10 @@ mod tests {
         );
 
         let msg = make_chat_cleanup_payload(chat_id);
-        let result = handler.handle(&msg, CancellationToken::new()).await;
+        let result = handler.handle(&msg).await;
 
         assert!(
-            matches!(result, HandlerResult::Retry { .. }),
+            matches!(result, MessageResult::Retry),
             "should retry on provider failure, got: {result:?}"
         );
 
@@ -962,11 +921,11 @@ mod tests {
         );
 
         let msg = make_chat_cleanup_payload(chat_id);
-        let result = handler.handle(&msg, CancellationToken::new()).await;
+        let result = handler.handle(&msg).await;
 
         // All attachments terminal (failed) → handler proceeds to VS check → Success
         assert!(
-            matches!(result, HandlerResult::Success),
+            matches!(result, MessageResult::Ok),
             "all attachments terminal -> should succeed, got: {result:?}"
         );
 

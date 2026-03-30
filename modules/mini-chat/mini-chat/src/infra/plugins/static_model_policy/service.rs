@@ -6,7 +6,6 @@ use mini_chat_sdk::{
 };
 use modkit_macros::domain_model;
 use time::OffsetDateTime;
-use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -44,7 +43,6 @@ impl MiniChatModelPolicyPluginClientV1 for Service {
     async fn get_current_policy_version(
         &self,
         user_id: Uuid,
-        _cancel: CancellationToken,
     ) -> Result<PolicyVersionInfo, MiniChatModelPolicyPluginError> {
         Ok(PolicyVersionInfo {
             user_id,
@@ -57,7 +55,6 @@ impl MiniChatModelPolicyPluginClientV1 for Service {
         &self,
         user_id: Uuid,
         policy_version: u64,
-        _cancel: CancellationToken,
     ) -> Result<PolicySnapshot, MiniChatModelPolicyPluginError> {
         if policy_version != SUPPORTED_POLICY_VERSION {
             return Err(MiniChatModelPolicyPluginError::NotFound);
@@ -74,7 +71,6 @@ impl MiniChatModelPolicyPluginClientV1 for Service {
         &self,
         user_id: Uuid,
         policy_version: u64,
-        _cancel: CancellationToken,
     ) -> Result<UserLimits, MiniChatModelPolicyPluginError> {
         if policy_version != SUPPORTED_POLICY_VERSION {
             return Err(MiniChatModelPolicyPluginError::NotFound);
@@ -91,17 +87,12 @@ impl MiniChatModelPolicyPluginClientV1 for Service {
     async fn check_user_license(
         &self,
         _user_id: Uuid,
-        _cancel: CancellationToken,
     ) -> Result<UserLicenseStatus, MiniChatModelPolicyPluginError> {
         // Static plugin assumes all users are licensed.
         Ok(UserLicenseStatus { active: true })
     }
 
-    async fn publish_usage(
-        &self,
-        payload: UsageEvent,
-        _cancel: CancellationToken,
-    ) -> Result<(), PublishError> {
+    async fn publish_usage(&self, payload: UsageEvent) -> Result<(), PublishError> {
         debug!(
             turn_id = %payload.turn_id,
             tenant_id = %payload.tenant_id,

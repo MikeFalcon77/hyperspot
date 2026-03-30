@@ -10,7 +10,7 @@
 use std::time::{Duration, Instant};
 
 use modkit_db::outbox::{
-    DeadLetterFilter, HandlerResult, MessageHandler, Outbox, OutboxMessage, Partitions,
+    DeadLetterFilter, LeasedMessageHandler, MessageResult, Outbox, OutboxMessage, Partitions,
     WorkerTuning, outbox_migrations,
 };
 use modkit_db::{ConnectOpts, connect_db, migration_runner::run_migrations_for_testing};
@@ -20,26 +20,21 @@ struct RetryThenReject {
 }
 
 #[async_trait::async_trait]
-impl MessageHandler for RetryThenReject {
-    async fn handle(
-        &self,
-        msg: &OutboxMessage,
-        _cancel: tokio_util::sync::CancellationToken,
-    ) -> HandlerResult {
+impl LeasedMessageHandler for RetryThenReject {
+    async fn handle(&self, msg: &OutboxMessage) -> MessageResult {
         let elapsed = self.start.elapsed();
         if msg.attempts < 2 {
             println!("  attempt={} at {elapsed:.0?} -> Retry", msg.attempts);
-            HandlerResult::Retry {
-                reason: format!("transient failure #{}", msg.attempts),
-            }
+            MessageResult::Retry
         } else {
             println!(
                 "  attempt={} at {elapsed:.0?} -> Reject (giving up)",
                 msg.attempts
             );
-            HandlerResult::Reject {
-                reason: format!("permanent failure after {} attempts", msg.attempts + 1),
-            }
+            MessageResult::Reject(format!(
+                "permanent failure after {} attempts",
+                msg.attempts + 1
+            ))
         }
     }
 }
@@ -64,9 +59,10 @@ async fn main() -> anyhow::Result<()> {
             WorkerTuning::sequencer_default().idle_interval(Duration::from_millis(50)),
         )
         .queue("events", Partitions::of(1))
-        .decoupled(RetryThenReject {
+        .leased(RetryThenReject {
             start: Instant::now(),
         })
+        .done()
         .start()
         .await?;
 

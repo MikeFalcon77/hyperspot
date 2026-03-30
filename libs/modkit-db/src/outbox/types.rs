@@ -133,18 +133,44 @@ impl Default for SequencerConfig {
     }
 }
 
-/// Configuration specific to decoupled handler mode.
+/// Lease configuration for leased handlers.
+///
+/// Controls how long the processor holds a partition lease and how much
+/// headroom is reserved for the ack transaction after the handler finishes.
 #[derive(Debug, Clone, Copy)]
-pub struct DecoupledConfig {
-    /// Lease duration for decoupled mode partition locks. Default: 30s.
-    pub lease_duration: Duration,
+pub struct LeaseConfig {
+    /// Total lease duration held on the partition. Default: 30s.
+    pub duration: Duration,
+    /// Time reserved after handler cancellation for the ack DB round-trip.
+    /// The handler cancel point fires at `duration - headroom`. Default: 2s.
+    pub headroom: Duration,
 }
 
-impl Default for DecoupledConfig {
+impl Default for LeaseConfig {
     fn default() -> Self {
         Self {
-            lease_duration: Duration::from_secs(30),
+            duration: Duration::from_secs(30),
+            headroom: Duration::from_secs(2),
         }
+    }
+}
+
+impl LeaseConfig {
+    /// Validate that headroom is strictly less than duration.
+    /// Panics at build time if invalid.
+    pub(crate) fn validate(&self) {
+        assert!(
+            self.headroom < self.duration,
+            "LeaseConfig: headroom ({:?}) must be less than duration ({:?})",
+            self.headroom,
+            self.duration,
+        );
+    }
+
+    /// Duration from lease start until handler cancellation.
+    pub(crate) fn handler_budget(&self) -> Duration {
+        // Safety: validate() ensures headroom < duration at build time.
+        self.duration.saturating_sub(self.headroom)
     }
 }
 
@@ -199,7 +225,7 @@ pub struct WorkerTuning {
     /// Consecutive handler failures before batch size degrades.
     /// Processor-only. Set to 1 for immediate degradation.
     pub degradation_threshold: u32,
-    /// Lease duration for decoupled mode partition locks.
+    /// Lease duration for leased mode partition locks.
     /// Processor-only. Ignored for transactional mode. Default: 30s.
     pub lease_duration: Duration,
 }
@@ -327,9 +353,8 @@ impl WorkerTuning {
     }
 
     /// Low-latency processor profile. Real-time notifications, chat.
-    /// Fast pacing, aggressive retry. Batch size is moderate — latency
-    /// comes from fast intervals, not small batches. Per-message handlers
-    /// (`transactional()`/`decoupled()`) force `batch_size=1` at the factory.
+    /// Fast pacing, aggressive retry. Batch size is moderate - latency
+    /// comes from fast intervals, not small batches.
     #[must_use]
     pub fn processor_low_latency() -> Self {
         Self {
@@ -594,5 +619,33 @@ mod tests {
         WorkerTuning::processor_default()
             .degradation_threshold(0)
             .validate();
+    }
+
+    #[test]
+    fn lease_config_default() {
+        let cfg = LeaseConfig::default();
+        assert_eq!(cfg.duration, Duration::from_secs(30));
+        assert_eq!(cfg.headroom, Duration::from_secs(2));
+        assert_eq!(cfg.handler_budget(), Duration::from_secs(28));
+    }
+
+    #[test]
+    #[should_panic(expected = "headroom")]
+    fn lease_config_rejects_headroom_equal_to_duration() {
+        LeaseConfig {
+            duration: Duration::from_secs(5),
+            headroom: Duration::from_secs(5),
+        }
+        .validate();
+    }
+
+    #[test]
+    #[should_panic(expected = "headroom")]
+    fn lease_config_rejects_headroom_greater_than_duration() {
+        LeaseConfig {
+            duration: Duration::from_secs(5),
+            headroom: Duration::from_secs(10),
+        }
+        .validate();
     }
 }

@@ -2,8 +2,8 @@
 
 //! Batch processing with multiple queues in a single pipeline.
 //!
-//! "orders" uses `batch_decoupled` (handler receives up to 5 messages at once).
-//! "notifications" uses decoupled (single-message handler).
+//! "orders" uses `leased` with a batch handler (handler receives messages in batches).
+//! "notifications" uses leased with a single-message handler.
 //! Both queues process independently within the same `OutboxBuilder`.
 //!
 //! Run:
@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use modkit_db::outbox::{
-    Handler, HandlerResult, MessageHandler, Outbox, OutboxMessage, Partitions, WorkerTuning,
-    outbox_migrations,
+    Batch, HandlerResult, LeasedHandler, LeasedMessageHandler, MessageResult, Outbox,
+    OutboxMessage, Partitions, WorkerTuning, outbox_migrations,
 };
 use modkit_db::{ConnectOpts, connect_db, migration_runner::run_migrations_for_testing};
 
@@ -24,15 +24,16 @@ struct OrderBatchHandler {
 }
 
 #[async_trait::async_trait]
-impl Handler for OrderBatchHandler {
-    async fn handle(
-        &self,
-        msgs: &[OutboxMessage],
-        _cancel: tokio_util::sync::CancellationToken,
-    ) -> HandlerResult {
+impl LeasedHandler for OrderBatchHandler {
+    async fn handle(&self, batch: &mut Batch<'_>) -> HandlerResult {
         // batch handler receives multiple messages per call
-        println!("  orders: batch of {} messages", msgs.len());
-        self.count.fetch_add(msgs.len(), Ordering::Relaxed);
+        let mut n = 0usize;
+        while let Some(_msg) = batch.next_msg() {
+            self.count.fetch_add(1, Ordering::Relaxed);
+            batch.ack();
+            n += 1;
+        }
+        println!("  orders: batch of {n} messages");
         HandlerResult::Success
     }
 }
@@ -42,16 +43,12 @@ struct NotificationHandler {
 }
 
 #[async_trait::async_trait]
-impl MessageHandler for NotificationHandler {
-    async fn handle(
-        &self,
-        msg: &OutboxMessage,
-        _cancel: tokio_util::sync::CancellationToken,
-    ) -> HandlerResult {
+impl LeasedMessageHandler for NotificationHandler {
+    async fn handle(&self, msg: &OutboxMessage) -> MessageResult {
         let payload = String::from_utf8_lossy(&msg.payload);
         println!("  notifs: seq={} payload={payload}", msg.seq);
         self.count.fetch_add(1, Ordering::Relaxed);
-        HandlerResult::Success
+        MessageResult::Ok
     }
 }
 
@@ -77,16 +74,18 @@ async fn main() -> anyhow::Result<()> {
         .sequencer_tuning(
             WorkerTuning::sequencer_default().idle_interval(Duration::from_millis(50)),
         )
-        // orders: 2 partitions for parallelism, batch handler processes up to 5 at once
+        // orders: 2 partitions for parallelism, batch handler processes messages in batches
         .queue("orders", Partitions::of(2))
-        .batch_decoupled(OrderBatchHandler {
+        .leased(OrderBatchHandler {
             count: order_count.clone(),
         })
+        .done()
         // notifications: single partition, single-message handler
         .queue("notifications", Partitions::of(1))
-        .decoupled(NotificationHandler {
+        .leased(NotificationHandler {
             count: notif_count.clone(),
         })
+        .done()
         .start()
         .await?;
 

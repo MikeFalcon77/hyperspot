@@ -710,7 +710,7 @@ impl Dialect {
         }
     }
 
-    /// Acquire a lease on the processor row for decoupled mode.
+    /// Acquire a lease on the processor row for leased mode.
     ///
     /// Atomically increments `attempts` so that a pod crash leaves a trace —
     /// the next pod will see a non-zero attempt count even though the previous

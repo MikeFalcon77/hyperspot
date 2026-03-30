@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::audit_models::{
@@ -14,15 +13,14 @@ use crate::models::{PolicySnapshot, PolicyVersionInfo, UsageEvent, UserLicenseSt
 /// The mini-chat module discovers plugins via GTS types-registry and
 /// delegates policy queries to the selected plugin.
 ///
-/// Every method accepts a [`CancellationToken`] so callers can abort
-/// in-flight HTTP requests on shutdown or request cancellation.
+/// Cancellation is handled by the framework: in-flight futures are dropped
+/// on shutdown or lease expiry - no explicit `CancellationToken` needed.
 #[async_trait]
 pub trait MiniChatModelPolicyPluginClientV1: Send + Sync {
     /// Get the current policy version for a user.
     async fn get_current_policy_version(
         &self,
         user_id: Uuid,
-        cancel: CancellationToken,
     ) -> Result<PolicyVersionInfo, MiniChatModelPolicyPluginError>;
 
     /// Get the full policy snapshot for a given version, including
@@ -31,7 +29,6 @@ pub trait MiniChatModelPolicyPluginClientV1: Send + Sync {
         &self,
         user_id: Uuid,
         policy_version: u64,
-        cancel: CancellationToken,
     ) -> Result<PolicySnapshot, MiniChatModelPolicyPluginError>;
 
     /// Get per-user credit limits for a specific policy version.
@@ -39,21 +36,19 @@ pub trait MiniChatModelPolicyPluginClientV1: Send + Sync {
         &self,
         user_id: Uuid,
         policy_version: u64,
-        cancel: CancellationToken,
     ) -> Result<UserLimits, MiniChatModelPolicyPluginError>;
 
     /// Check whether a user holds an active `CyberChat` license in the caller's tenant.
     ///
     /// Returns `active: true` when the user's status is `active`.
     /// Returns `active: false` for any other status (`invited`, `deactivated`,
-    /// `deleted`) or when the user is not found — this is not an error condition.
+    /// `deleted`) or when the user is not found - this is not an error condition.
     ///
     /// The default implementation returns `active: false` so that existing
     /// out-of-tree V1 plugins remain compatible without code changes.
     async fn check_user_license(
         &self,
         _user_id: Uuid,
-        _cancel: CancellationToken,
     ) -> Result<UserLicenseStatus, MiniChatModelPolicyPluginError> {
         Ok(UserLicenseStatus { active: false })
     }
@@ -62,11 +57,7 @@ pub trait MiniChatModelPolicyPluginClientV1: Send + Sync {
     ///
     /// Called by the outbox processor after the finalization transaction
     /// commits. Plugins can forward the event to external billing systems.
-    async fn publish_usage(
-        &self,
-        payload: UsageEvent,
-        cancel: CancellationToken,
-    ) -> Result<(), PublishError>;
+    async fn publish_usage(&self, payload: UsageEvent) -> Result<(), PublishError>;
 }
 
 /// Plugin API trait for mini-chat audit event publishing.
@@ -84,10 +75,9 @@ pub trait MiniChatModelPolicyPluginClientV1: Send + Sync {
 ///
 /// # Delivery semantics
 ///
-/// Audit emission is best-effort (fire-and-forget after DB commit). There is no
-/// transactional outbox for audit events. If the process crashes between DB
-/// commit and audit emission, the event is lost. Callers SHOULD track emission
-/// outcomes via `mini_chat_audit_emit_total{result}` metrics.
+/// Audit emission uses the transactional outbox with leased processing.
+/// Cancellation is handled by the framework via future dropping - no explicit
+/// `CancellationToken` needed.
 ///
 /// # Independence
 ///
@@ -96,30 +86,23 @@ pub trait MiniChatModelPolicyPluginClientV1: Send + Sync {
 #[async_trait]
 pub trait MiniChatAuditPluginClientV1: Send + Sync {
     /// Emit a turn audit event (turn completed or failed).
-    async fn emit_turn_audit(
-        &self,
-        event: TurnAuditEvent,
-        cancel: CancellationToken,
-    ) -> Result<(), MiniChatAuditPluginError>;
+    async fn emit_turn_audit(&self, event: TurnAuditEvent) -> Result<(), MiniChatAuditPluginError>;
 
     /// Emit a turn-retry audit event.
     async fn emit_turn_retry_audit(
         &self,
         event: TurnRetryAuditEvent,
-        cancel: CancellationToken,
     ) -> Result<(), MiniChatAuditPluginError>;
 
     /// Emit a turn-edit audit event.
     async fn emit_turn_edit_audit(
         &self,
         event: TurnEditAuditEvent,
-        cancel: CancellationToken,
     ) -> Result<(), MiniChatAuditPluginError>;
 
     /// Emit a turn-delete audit event.
     async fn emit_turn_delete_audit(
         &self,
         event: TurnDeleteAuditEvent,
-        cancel: CancellationToken,
     ) -> Result<(), MiniChatAuditPluginError>;
 }

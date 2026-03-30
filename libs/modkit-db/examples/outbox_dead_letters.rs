@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use modkit_db::outbox::{
-    DeadLetterFilter, DeadLetterScope, HandlerResult, MessageHandler, Outbox, OutboxMessage,
+    DeadLetterFilter, DeadLetterScope, LeasedMessageHandler, MessageResult, Outbox, OutboxMessage,
     Partitions, WorkerTuning, outbox_migrations,
 };
 use modkit_db::{ConnectOpts, connect_db, migration_runner::run_migrations_for_testing};
@@ -16,15 +16,9 @@ use modkit_db::{ConnectOpts, connect_db, migration_runner::run_migrations_for_te
 struct RejectAll;
 
 #[async_trait::async_trait]
-impl MessageHandler for RejectAll {
-    async fn handle(
-        &self,
-        _msg: &OutboxMessage,
-        _cancel: tokio_util::sync::CancellationToken,
-    ) -> HandlerResult {
-        HandlerResult::Reject {
-            reason: "bad format".into(),
-        }
+impl LeasedMessageHandler for RejectAll {
+    async fn handle(&self, _msg: &OutboxMessage) -> MessageResult {
+        MessageResult::Reject("bad format".into())
     }
 }
 
@@ -49,7 +43,8 @@ async fn main() -> anyhow::Result<()> {
             WorkerTuning::sequencer_default().idle_interval(Duration::from_millis(50)),
         )
         .queue("events", Partitions::of(1))
-        .decoupled(RejectAll)
+        .leased(RejectAll)
+        .done()
         .start()
         .await?;
     let conn = db.conn()?;

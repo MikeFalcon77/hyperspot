@@ -19,18 +19,17 @@ use std::time::Duration;
 use sea_orm::{ConnectionTrait, DbBackend, FromQueryResult, Statement};
 use tokio_util::sync::CancellationToken;
 
+use super::batch::Batch;
 use super::dead_letter::{DeadLetterFilter, DeadLetterScope};
 use super::dialect::Dialect;
 use super::handler::{
-    Handler, HandlerResult, MessageHandler, OutboxMessage, PerMessageAdapter, TransactionalHandler,
-    TransactionalMessageHandler,
+    HandlerResult, LeasedHandler, LeasedMessageHandler, MessageResult, OutboxMessage,
+    PerMessageAdapter, TransactionalHandler, TransactionalMessageHandler,
 };
 use super::prioritizer::SharedPrioritizer;
-use super::strategy::{
-    DecoupledStrategy, ProcessContext, ProcessingStrategy, TransactionalStrategy,
-};
+use super::strategy::{LeasedStrategy, ProcessContext, ProcessingStrategy, TransactionalStrategy};
 use super::taskward::{Directive, WorkerAction};
-use super::types::{EnqueueMessage, OutboxConfig, SequencerConfig, WorkerTuning};
+use super::types::{EnqueueMessage, LeaseConfig, OutboxConfig, SequencerConfig, WorkerTuning};
 use super::workers::sequencer::Sequencer;
 use super::{Outbox, OutboxError, Partitions};
 use crate::migration_runner::run_migrations_for_testing;
@@ -372,10 +371,12 @@ struct CountingSuccessHandler {
 }
 
 #[async_trait::async_trait]
-impl Handler for CountingSuccessHandler {
-    async fn handle(&self, msgs: &[OutboxMessage], _cancel: CancellationToken) -> HandlerResult {
-        #[allow(clippy::cast_possible_truncation)]
-        self.count.fetch_add(msgs.len() as u32, Ordering::Relaxed);
+impl LeasedHandler for CountingSuccessHandler {
+    async fn handle(&self, batch: &mut Batch<'_>) -> HandlerResult {
+        while batch.next_msg().is_some() {
+            self.count.fetch_add(1, Ordering::Relaxed);
+            batch.ack();
+        }
         HandlerResult::Success
     }
 }
@@ -385,32 +386,28 @@ struct CountingMessageHandler {
 }
 
 #[async_trait::async_trait]
-impl MessageHandler for CountingMessageHandler {
-    async fn handle(&self, _msg: &OutboxMessage, _cancel: CancellationToken) -> HandlerResult {
+impl LeasedMessageHandler for CountingMessageHandler {
+    async fn handle(&self, _msg: &OutboxMessage) -> MessageResult {
         self.count.fetch_add(1, Ordering::Relaxed);
-        HandlerResult::Success
+        MessageResult::Ok
     }
 }
 
 struct AlwaysRetryHandler;
 
 #[async_trait::async_trait]
-impl MessageHandler for AlwaysRetryHandler {
-    async fn handle(&self, _msg: &OutboxMessage, _cancel: CancellationToken) -> HandlerResult {
-        HandlerResult::Retry {
-            reason: "transient failure".into(),
-        }
+impl LeasedMessageHandler for AlwaysRetryHandler {
+    async fn handle(&self, _msg: &OutboxMessage) -> MessageResult {
+        MessageResult::Retry
     }
 }
 
 struct AlwaysRejectHandler;
 
 #[async_trait::async_trait]
-impl MessageHandler for AlwaysRejectHandler {
-    async fn handle(&self, _msg: &OutboxMessage, _cancel: CancellationToken) -> HandlerResult {
-        HandlerResult::Reject {
-            reason: "permanently bad".into(),
-        }
+impl LeasedMessageHandler for AlwaysRejectHandler {
+    async fn handle(&self, _msg: &OutboxMessage) -> MessageResult {
+        MessageResult::Reject("permanently bad".into())
     }
 }
 
@@ -419,10 +416,10 @@ struct AttemptsRecorder {
 }
 
 #[async_trait::async_trait]
-impl MessageHandler for AttemptsRecorder {
-    async fn handle(&self, msg: &OutboxMessage, _cancel: CancellationToken) -> HandlerResult {
+impl LeasedMessageHandler for AttemptsRecorder {
+    async fn handle(&self, msg: &OutboxMessage) -> MessageResult {
         self.seen_attempts.lock().unwrap().push(msg.attempts);
-        HandlerResult::Success
+        MessageResult::Ok
     }
 }
 
@@ -432,12 +429,7 @@ struct CountingTxHandler {
 
 #[async_trait::async_trait]
 impl TransactionalHandler for CountingTxHandler {
-    async fn handle(
-        &self,
-        _txn: &dyn ConnectionTrait,
-        msgs: &[OutboxMessage],
-        _cancel: CancellationToken,
-    ) -> HandlerResult {
+    async fn handle(&self, _txn: &dyn ConnectionTrait, msgs: &[OutboxMessage]) -> HandlerResult {
         #[allow(clippy::cast_possible_truncation)]
         self.count.fetch_add(msgs.len() as u32, Ordering::Relaxed);
         HandlerResult::Success
@@ -448,12 +440,7 @@ struct AlwaysRetryTxHandler;
 
 #[async_trait::async_trait]
 impl TransactionalHandler for AlwaysRetryTxHandler {
-    async fn handle(
-        &self,
-        _txn: &dyn ConnectionTrait,
-        _msgs: &[OutboxMessage],
-        _cancel: CancellationToken,
-    ) -> HandlerResult {
+    async fn handle(&self, _txn: &dyn ConnectionTrait, _msgs: &[OutboxMessage]) -> HandlerResult {
         HandlerResult::Retry {
             reason: "transient tx failure".into(),
         }
@@ -464,12 +451,7 @@ struct AlwaysRejectTxHandler;
 
 #[async_trait::async_trait]
 impl TransactionalHandler for AlwaysRejectTxHandler {
-    async fn handle(
-        &self,
-        _txn: &dyn ConnectionTrait,
-        _msgs: &[OutboxMessage],
-        _cancel: CancellationToken,
-    ) -> HandlerResult {
+    async fn handle(&self, _txn: &dyn ConnectionTrait, _msgs: &[OutboxMessage]) -> HandlerResult {
         HandlerResult::Reject {
             reason: "permanently bad tx".into(),
         }
@@ -482,14 +464,12 @@ struct PoisonMessageHandler {
 }
 
 #[async_trait::async_trait]
-impl MessageHandler for PoisonMessageHandler {
-    async fn handle(&self, msg: &OutboxMessage, _cancel: CancellationToken) -> HandlerResult {
+impl LeasedMessageHandler for PoisonMessageHandler {
+    async fn handle(&self, msg: &OutboxMessage) -> MessageResult {
         if self.poison_seqs.contains(&msg.seq) {
-            HandlerResult::Reject {
-                reason: format!("poison seq={}", msg.seq),
-            }
+            MessageResult::Reject(format!("poison seq={}", msg.seq))
         } else {
-            HandlerResult::Success
+            MessageResult::Ok
         }
     }
 }
@@ -1115,7 +1095,6 @@ async fn run_transactional(
     db: &Db,
     partition_id: i64,
     handler: impl TransactionalHandler + 'static,
-    lease_duration: Duration,
     msg_batch_size: u32,
 ) -> Option<super::strategy::ProcessResult> {
     let conn = db.sea_internal();
@@ -1130,15 +1109,7 @@ async fn run_transactional(
         dialect,
         partition_id,
     };
-    strategy
-        .process(
-            &ctx,
-            lease_duration,
-            msg_batch_size,
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap()
+    strategy.process(&ctx, msg_batch_size).await.unwrap()
 }
 
 #[tokio::test]
@@ -1157,7 +1128,6 @@ async fn transactional_success_advances_cursor() {
         CountingTxHandler {
             count: count.clone(),
         },
-        Duration::from_secs(30),
         3,
     )
     .await;
@@ -1177,7 +1147,7 @@ async fn transactional_retry_increments_attempts() {
 
     enqueue_and_sequence(&t, &db, "q", 0, &["msg"]).await;
 
-    run_transactional(&db, pid, AlwaysRetryTxHandler, Duration::from_secs(30), 10).await;
+    run_transactional(&db, pid, AlwaysRetryTxHandler, 10).await;
 
     let snap = read_processor_state(&db, pid).await;
     assert_eq!(snap.processed_seq, 0, "cursor not advanced");
@@ -1194,7 +1164,7 @@ async fn transactional_reject_creates_dead_letter_and_advances() {
 
     enqueue_and_sequence(&t, &db, "q", 0, &["poison"]).await;
 
-    run_transactional(&db, pid, AlwaysRejectTxHandler, Duration::from_secs(30), 10).await;
+    run_transactional(&db, pid, AlwaysRejectTxHandler, 10).await;
 
     let snap = read_processor_state(&db, pid).await;
     assert_eq!(snap.processed_seq, 1, "cursor advanced past rejected msg");
@@ -1228,7 +1198,6 @@ async fn transactional_batch_processes_multiple_in_single_tx() {
         CountingTxHandler {
             count: count.clone(),
         },
-        Duration::from_secs(30),
         3,
     )
     .await;
@@ -1241,10 +1210,10 @@ async fn transactional_batch_processes_multiple_in_single_tx() {
 // Chapter 5: Decoupled Processing
 // ======================================================================
 
-async fn run_decoupled(
+async fn run_leased(
     db: &Db,
     partition_id: i64,
-    handler: impl Handler + 'static,
+    handler: impl LeasedHandler + 'static,
     lease_duration: Duration,
     msg_batch_size: u32,
 ) -> Option<super::strategy::ProcessResult> {
@@ -1253,22 +1222,58 @@ async fn run_decoupled(
     let dialect = Dialect::from(backend);
     drop(conn);
 
-    let strategy = DecoupledStrategy::new(Box::new(handler), "test-AAAAAA".to_owned());
+    let strategy = LeasedStrategy::new(
+        Arc::new(handler),
+        "test-AAAAAA".to_owned(),
+        LeaseConfig {
+            duration: lease_duration,
+            headroom: Duration::from_secs(2),
+        },
+    );
     let ctx = ProcessContext {
         db,
         backend,
         dialect,
         partition_id,
     };
-    strategy
-        .process(
-            &ctx,
-            lease_duration,
-            msg_batch_size,
-            CancellationToken::new(),
+    strategy.process(&ctx, msg_batch_size).await.unwrap()
+}
+
+/// Idle poll cycles must not accumulate `attempts` on the processor row.
+/// `lease_acquire` increments attempts as a crash trace, but `lease_release`
+/// resets it to 0 when no messages are found. After N idle cycles, the
+/// processor row should have `attempts = 0`, not `N`.
+#[tokio::test]
+async fn idle_poll_does_not_ratchet_attempts() {
+    let db = setup_db("ch5_idle_attempts").await;
+    let t = make_default_test_outbox().await;
+    t.outbox.register_queue(&db, "q", 1).await.unwrap();
+    let pid = t.outbox.all_partition_ids()[0];
+
+    // No messages enqueued - every cycle is an idle poll.
+    let count = Arc::new(AtomicU32::new(0));
+    for _ in 0..5 {
+        run_leased(
+            &db,
+            pid,
+            CountingSuccessHandler {
+                count: count.clone(),
+            },
+            Duration::from_secs(30),
+            10,
         )
-        .await
-        .unwrap()
+        .await;
+    }
+
+    // Handler should never have been called (no messages).
+    assert_eq!(count.load(Ordering::Relaxed), 0);
+
+    // Attempts must be 0 after idle cycles, not 5.
+    let snap = read_processor_state(&db, pid).await;
+    assert_eq!(
+        snap.attempts, 0,
+        "idle poll cycles should not accumulate attempts (crash trace is reset by lease_release)"
+    );
 }
 
 #[tokio::test]
@@ -1281,7 +1286,7 @@ async fn decoupled_success_advances_cursor_and_releases_lease() {
     enqueue_and_sequence(&t, &db, "q", 0, &["a", "b"]).await;
 
     let count = Arc::new(AtomicU32::new(0));
-    run_decoupled(
+    run_leased(
         &db,
         pid,
         CountingSuccessHandler {
@@ -1309,19 +1314,15 @@ async fn decoupled_retry_preserves_cursor_and_releases_lease() {
 
     enqueue_and_sequence(&t, &db, "q", 0, &["msg"]).await;
 
-    run_decoupled(
-        &db,
-        pid,
-        PerMessageAdapter::new(AlwaysRetryHandler),
-        Duration::from_secs(30),
-        10,
-    )
-    .await;
+    run_leased(&db, pid, AlwaysRetryHandler, Duration::from_secs(30), 10).await;
 
     let snap = read_processor_state(&db, pid).await;
     assert_eq!(snap.processed_seq, 0, "cursor unchanged");
     assert_eq!(snap.attempts, 1, "attempts incremented by lease_acquire");
-    assert_eq!(snap.last_error.as_deref(), Some("transient failure"));
+    assert_eq!(
+        snap.last_error.as_deref(),
+        Some("message handler returned Retry")
+    );
     assert!(snap.locked_by.is_none(), "lease released");
 }
 
@@ -1334,14 +1335,7 @@ async fn decoupled_reject_creates_dead_letter_and_releases_lease() {
 
     enqueue_and_sequence(&t, &db, "q", 0, &["bad"]).await;
 
-    run_decoupled(
-        &db,
-        pid,
-        PerMessageAdapter::new(AlwaysRejectHandler),
-        Duration::from_secs(30),
-        10,
-    )
-    .await;
+    run_leased(&db, pid, AlwaysRejectHandler, Duration::from_secs(30), 10).await;
 
     let snap = read_processor_state(&db, pid).await;
     assert_eq!(snap.processed_seq, 1, "cursor advanced past rejected");
@@ -1361,7 +1355,7 @@ async fn decoupled_empty_partition_releases_lease() {
 
     // No messages enqueued
     let count = Arc::new(AtomicU32::new(0));
-    let result = run_decoupled(
+    let result = run_leased(
         &db,
         pid,
         CountingSuccessHandler {
@@ -1388,7 +1382,7 @@ async fn decoupled_empty_partition_does_not_accumulate_attempts() {
     // Run 5 empty lease cycles: acquire → empty → release
     for _ in 0..5 {
         let count = Arc::new(AtomicU32::new(0));
-        run_decoupled(
+        run_leased(
             &db,
             pid,
             CountingSuccessHandler {
@@ -1419,12 +1413,12 @@ async fn decoupled_each_message_adapter_processes_individually() {
     enqueue_and_sequence(&t, &db, "q", 0, &["a", "b", "c"]).await;
 
     let count = Arc::new(AtomicU32::new(0));
-    let handler = PerMessageAdapter::new(CountingMessageHandler {
+    let handler = CountingMessageHandler {
         count: count.clone(),
-    });
-    run_decoupled(&db, pid, handler, Duration::from_secs(30), 3).await;
+    };
+    run_leased(&db, pid, handler, Duration::from_secs(30), 3).await;
 
-    // PerMessageAdapter calls MessageHandler once per message
+    // LeasedMessageHandler blanket impl calls handler once per message
     assert_eq!(count.load(Ordering::Relaxed), 3);
 }
 
@@ -1468,14 +1462,7 @@ async fn recovery_after_crash_sees_nonzero_attempts() {
     let handler = AttemptsRecorder {
         seen_attempts: seen.clone(),
     };
-    run_decoupled(
-        &db,
-        pid,
-        PerMessageAdapter::new(handler),
-        Duration::from_secs(30),
-        10,
-    )
-    .await;
+    run_leased(&db, pid, handler, Duration::from_secs(30), 10).await;
 
     {
         let recorded = seen.lock().unwrap();
@@ -1518,14 +1505,7 @@ async fn retry_does_not_double_increment_attempts() {
 
     // lease_acquire increments attempts 0→1 in DB;
     // handler returns Retry; lease_record_retry does NOT increment again
-    run_decoupled(
-        &db,
-        pid,
-        PerMessageAdapter::new(AlwaysRetryHandler),
-        Duration::from_secs(30),
-        10,
-    )
-    .await;
+    run_leased(&db, pid, AlwaysRetryHandler, Duration::from_secs(30), 10).await;
 
     let snap = read_processor_state(&db, pid).await;
     assert_eq!(snap.attempts, 1, "not 2 - retry doesn't double-increment");
@@ -1549,7 +1529,7 @@ async fn success_after_crash_resets_attempts() {
 
     // Recovery succeeds
     let count = Arc::new(AtomicU32::new(0));
-    run_decoupled(
+    run_leased(
         &db,
         pid,
         CountingSuccessHandler {
@@ -1583,41 +1563,39 @@ async fn adaptive_batch_isolates_poison_message() {
     // with batch_size=1 (the degraded size):
 
     // Process msg 1 (ok1) — success
-    let r = run_decoupled(
+    let r = run_leased(
         &db,
         pid,
-        PerMessageAdapter::new(PoisonMessageHandler {
+        PoisonMessageHandler {
             poison_seqs: vec![2],
-        }),
+        },
         Duration::from_secs(30),
         1,
     )
     .await;
     assert!(matches!(r.unwrap().handler_result, HandlerResult::Success));
 
-    // Process msg 2 (poison) — reject, dead-lettered
-    let r = run_decoupled(
+    // Process msg 2 (poison) — rejected via batch.reject(), dead-lettered in ack phase
+    let r = run_leased(
         &db,
         pid,
-        PerMessageAdapter::new(PoisonMessageHandler {
+        PoisonMessageHandler {
             poison_seqs: vec![2],
-        }),
+        },
         Duration::from_secs(30),
         1,
     )
     .await;
-    assert!(matches!(
-        r.unwrap().handler_result,
-        HandlerResult::Reject { .. }
-    ));
+    // Leased blanket impl returns Success with rejections tracked in the batch
+    assert!(matches!(r.unwrap().handler_result, HandlerResult::Success));
 
     // Process msg 3 (ok3) — success
-    let r = run_decoupled(
+    let r = run_leased(
         &db,
         pid,
-        PerMessageAdapter::new(PoisonMessageHandler {
+        PoisonMessageHandler {
             poison_seqs: vec![2],
-        }),
+        },
         Duration::from_secs(30),
         1,
     )
@@ -1625,12 +1603,12 @@ async fn adaptive_batch_isolates_poison_message() {
     assert!(matches!(r.unwrap().handler_result, HandlerResult::Success));
 
     // Process msg 4 (ok4) — success
-    let r = run_decoupled(
+    let r = run_leased(
         &db,
         pid,
-        PerMessageAdapter::new(PoisonMessageHandler {
+        PoisonMessageHandler {
             poison_seqs: vec![2],
-        }),
+        },
         Duration::from_secs(30),
         1,
     )
@@ -1739,7 +1717,7 @@ async fn vacuum_deletes_processed_outgoing_and_body_rows() {
 
     // Process all 3
     let count = Arc::new(AtomicU32::new(0));
-    run_decoupled(
+    run_leased(
         &db,
         pid,
         CountingSuccessHandler {
@@ -1790,7 +1768,7 @@ async fn vacuum_preserves_unprocessed_rows() {
 
     // Process only 3 of 5 (batch_size=3)
     let count = Arc::new(AtomicU32::new(0));
-    run_decoupled(
+    run_leased(
         &db,
         pid,
         CountingSuccessHandler {
@@ -1863,7 +1841,7 @@ async fn vacuum_counter_bumped_on_processed_seq_advance() {
 
     // Process batch of 2 — counter should bump once (one ack).
     let count = Arc::new(AtomicU32::new(0));
-    run_decoupled(
+    run_leased(
         &db,
         pid,
         CountingSuccessHandler {
@@ -1877,7 +1855,7 @@ async fn vacuum_counter_bumped_on_processed_seq_advance() {
     assert_eq!(read_vacuum_counter(&db, pid).await, 1);
 
     // Process again (no messages) — counter should not change.
-    run_decoupled(
+    run_leased(
         &db,
         pid,
         CountingSuccessHandler {
@@ -1902,7 +1880,7 @@ async fn vacuum_counter_preserves_concurrent_bumps() {
 
     // Process all 3 — counter = 1 (one ack of batch=3).
     let count = Arc::new(AtomicU32::new(0));
-    run_decoupled(
+    run_leased(
         &db,
         pid,
         CountingSuccessHandler {
@@ -1937,7 +1915,7 @@ async fn vacuum_stale_counter_reset() {
     // Create and process a message so processed_seq > 0.
     enqueue_and_sequence(&t, &db, "q", 0, &["a"]).await;
     let count = Arc::new(AtomicU32::new(0));
-    run_decoupled(
+    run_leased(
         &db,
         pid,
         CountingSuccessHandler {
@@ -2001,10 +1979,10 @@ async fn create_dead_letters(
     enqueue_and_sequence(t, db, queue, partition, payloads).await;
     let ids = t.outbox.all_partition_ids();
     let pid = ids[partition as usize];
-    run_decoupled(
+    run_leased(
         db,
         pid,
-        PerMessageAdapter::new(AlwaysRejectHandler),
+        AlwaysRejectHandler,
         Duration::from_secs(30),
         u32::try_from(payloads.len()).unwrap(),
     )
@@ -2235,6 +2213,107 @@ async fn dead_letter_filter_with_limit() {
 // Chapter 10: Builder API
 // ======================================================================
 
+/// Graceful shutdown: handler is mid-batch when `stop()` is called.
+/// The current batch completes (all messages processed and acked),
+/// then the processor stops. No messages are lost or left unacked.
+#[tokio::test]
+async fn graceful_shutdown_completes_current_batch() {
+    struct SlowHandler {
+        processed: Arc<AtomicU32>,
+        entered: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl LeasedMessageHandler for SlowHandler {
+        async fn handle(&self, _msg: &OutboxMessage) -> MessageResult {
+            self.entered.notify_one();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            self.processed.fetch_add(1, Ordering::SeqCst);
+            MessageResult::Ok
+        }
+    }
+
+    let db = setup_db("ch10_graceful_shutdown").await;
+    let processed = Arc::new(AtomicU32::new(0));
+    let handler_entered = Arc::new(tokio::sync::Notify::new());
+
+    let handle = Outbox::builder(db.clone())
+        .processor_tuning(
+            WorkerTuning::processor_default()
+                .idle_interval(Duration::from_millis(50))
+                .batch_size(5),
+        )
+        .sequencer_tuning(
+            WorkerTuning::sequencer_default().idle_interval(Duration::from_millis(50)),
+        )
+        .queue("q", Partitions::of(1))
+        .leased(SlowHandler {
+            processed: processed.clone(),
+            entered: handler_entered.clone(),
+        })
+        .start()
+        .await
+        .unwrap();
+
+    let outbox = handle.outbox();
+
+    // Enqueue 3 messages
+    let db2 = setup_db("ch10_graceful_shutdown").await;
+    let conn = db2.conn().unwrap();
+    for i in 0..3 {
+        outbox
+            .enqueue(&conn, "q", 0, format!("msg-{i}").into_bytes(), "text/plain")
+            .await
+            .unwrap();
+    }
+    outbox.flush();
+
+    // Wait for at least 1 message to be processed (handler is active)
+    tokio::time::timeout(Duration::from_secs(5), handler_entered.notified())
+        .await
+        .expect("handler should start processing within 5s");
+
+    // Enqueue 3 more messages while the handler is active.
+    // These should be processed in the current or next batch cycle.
+    for i in 3..6 {
+        outbox
+            .enqueue(&conn, "q", 0, format!("msg-{i}").into_bytes(), "text/plain")
+            .await
+            .unwrap();
+    }
+    outbox.flush();
+
+    // Wait for all 6 messages to be processed
+    poll_until(
+        || {
+            let c = processed.load(Ordering::SeqCst);
+            async move { c >= 6 }
+        },
+        5000,
+    )
+    .await;
+
+    // All 6 pre-stop messages processed.
+    assert!(
+        processed.load(Ordering::SeqCst) >= 6,
+        "all pre-stop messages should be processed: got {}",
+        processed.load(Ordering::SeqCst)
+    );
+
+    // Stop the pipeline. Must return without hanging.
+    let stop_result = tokio::time::timeout(Duration::from_secs(5), handle.stop()).await;
+    assert!(stop_result.is_ok(), "stop() should complete within 5s");
+
+    // No further processing after stop.
+    let after_stop = processed.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        processed.load(Ordering::SeqCst),
+        after_stop,
+        "no messages should be processed after stop()"
+    );
+}
+
 #[tokio::test]
 async fn builder_start_stop_clean() {
     let db = setup_db("ch10_start_stop").await;
@@ -2251,7 +2330,7 @@ async fn builder_start_stop_clean() {
             WorkerTuning::sequencer_default().idle_interval(Duration::from_millis(50)),
         )
         .queue("orders", Partitions::of(1))
-        .decoupled(handler)
+        .leased(handler)
         .start()
         .await
         .unwrap();
@@ -2283,11 +2362,11 @@ async fn builder_multiple_queues() {
             WorkerTuning::sequencer_default().idle_interval(Duration::from_millis(50)),
         )
         .queue("a", Partitions::of(1))
-        .decoupled(CountingMessageHandler {
+        .leased(CountingMessageHandler {
             count: count_a.clone(),
         })
         .queue("b", Partitions::of(2))
-        .decoupled(CountingMessageHandler {
+        .leased(CountingMessageHandler {
             count: count_b.clone(),
         })
         .start()
@@ -2341,7 +2420,7 @@ async fn e2e_happy_path_enqueue_through_reap() {
     enqueue_and_sequence(&t, &db, "q", 0, &["a", "b", "c"]).await;
 
     let count = Arc::new(AtomicU32::new(0));
-    run_decoupled(
+    run_leased(
         &db,
         pid,
         CountingSuccessHandler {
@@ -2373,23 +2452,9 @@ async fn e2e_retry_then_recovery() {
     enqueue_and_sequence(&t, &db, "q", 0, &["msg"]).await;
 
     // Retry twice
-    run_decoupled(
-        &db,
-        pid,
-        PerMessageAdapter::new(AlwaysRetryHandler),
-        Duration::from_secs(30),
-        10,
-    )
-    .await;
+    run_leased(&db, pid, AlwaysRetryHandler, Duration::from_secs(30), 10).await;
     expire_lease(&db, pid).await;
-    run_decoupled(
-        &db,
-        pid,
-        PerMessageAdapter::new(AlwaysRetryHandler),
-        Duration::from_secs(30),
-        10,
-    )
-    .await;
+    run_leased(&db, pid, AlwaysRetryHandler, Duration::from_secs(30), 10).await;
     expire_lease(&db, pid).await;
 
     let snap = read_processor_state(&db, pid).await;
@@ -2398,7 +2463,7 @@ async fn e2e_retry_then_recovery() {
 
     // Then succeed
     let count = Arc::new(AtomicU32::new(0));
-    run_decoupled(
+    run_leased(
         &db,
         pid,
         CountingSuccessHandler {
@@ -2466,14 +2531,7 @@ async fn e2e_crash_then_recovery() {
     let handler = AttemptsRecorder {
         seen_attempts: seen.clone(),
     };
-    run_decoupled(
-        &db,
-        pid,
-        PerMessageAdapter::new(handler),
-        Duration::from_secs(30),
-        10,
-    )
-    .await;
+    run_leased(&db, pid, handler, Duration::from_secs(30), 10).await;
 
     {
         let recorded = seen.lock().unwrap();
@@ -2486,7 +2544,7 @@ async fn e2e_crash_then_recovery() {
 }
 
 // ======================================================================
-// Chapter 12: PerMessageAdapter partial failure
+// Chapter 12: Leased partial failure
 // ======================================================================
 
 /// Test helper: records which seqs the handler was called with,
@@ -2498,20 +2556,16 @@ struct PartialFailureHandler {
 }
 
 #[async_trait::async_trait]
-impl MessageHandler for PartialFailureHandler {
-    async fn handle(&self, msg: &OutboxMessage, _cancel: CancellationToken) -> HandlerResult {
+impl LeasedMessageHandler for PartialFailureHandler {
+    async fn handle(&self, msg: &OutboxMessage) -> MessageResult {
         self.seen_seqs.lock().unwrap().push(msg.seq);
         if msg.seq == self.poison_seq {
             if self.reject {
-                return HandlerResult::Reject {
-                    reason: format!("poison seq={}", msg.seq),
-                };
+                return MessageResult::Reject(format!("poison seq={}", msg.seq));
             }
-            return HandlerResult::Retry {
-                reason: format!("transient seq={}", msg.seq),
-            };
+            return MessageResult::Retry;
         }
-        HandlerResult::Success
+        MessageResult::Ok
     }
 }
 
@@ -2524,12 +2578,7 @@ struct TxPartialFailureHandler {
 
 #[async_trait::async_trait]
 impl TransactionalMessageHandler for TxPartialFailureHandler {
-    async fn handle(
-        &self,
-        _txn: &dyn ConnectionTrait,
-        msg: &OutboxMessage,
-        _cancel: CancellationToken,
-    ) -> HandlerResult {
+    async fn handle(&self, _txn: &dyn ConnectionTrait, msg: &OutboxMessage) -> HandlerResult {
         self.seen_seqs.lock().unwrap().push(msg.seq);
         if msg.seq == self.poison_seq {
             if self.reject {
@@ -2549,8 +2598,8 @@ impl TransactionalMessageHandler for TxPartialFailureHandler {
 struct BatchRejectHandler;
 
 #[async_trait::async_trait]
-impl Handler for BatchRejectHandler {
-    async fn handle(&self, _msgs: &[OutboxMessage], _cancel: CancellationToken) -> HandlerResult {
+impl LeasedHandler for BatchRejectHandler {
+    async fn handle(&self, _batch: &mut Batch<'_>) -> HandlerResult {
         HandlerResult::Reject {
             reason: "batch reject".into(),
         }
@@ -2574,7 +2623,7 @@ async fn tx_partial_reject_processed_count_in_result() {
         poison_seq: 3, // seqs are 1-based; poison at seq=3
         reject: true,
     });
-    let result = run_transactional(&db, pid, handler, Duration::from_secs(30), 5).await;
+    let result = run_transactional(&db, pid, handler, 5).await;
 
     let pr = result.expect("should have a result");
     assert!(matches!(pr.handler_result, HandlerResult::Reject { .. }));
@@ -2605,7 +2654,7 @@ async fn tx_partial_retry_rolls_back_all() {
         poison_seq: 2,
         reject: false, // retry
     });
-    let result = run_transactional(&db, pid, handler, Duration::from_secs(30), 3).await;
+    let result = run_transactional(&db, pid, handler, 3).await;
 
     let pr = result.expect("should have a result");
     assert!(matches!(pr.handler_result, HandlerResult::Retry { .. }));
@@ -2635,7 +2684,7 @@ async fn tx_reject_at_first_msg_processed_count_zero() {
         poison_seq: 1, // first message
         reject: true,
     });
-    let result = run_transactional(&db, pid, handler, Duration::from_secs(30), 2).await;
+    let result = run_transactional(&db, pid, handler, 2).await;
 
     let pr = result.expect("should have a result");
     assert_eq!(pr.processed_count, Some(0));
@@ -2650,8 +2699,7 @@ async fn tx_batch_handler_reject_deadletters_all() {
 
     enqueue_and_sequence(&t, &db, "q", 0, &["a", "b", "c"]).await;
 
-    let result =
-        run_transactional(&db, pid, AlwaysRejectTxHandler, Duration::from_secs(30), 3).await;
+    let result = run_transactional(&db, pid, AlwaysRejectTxHandler, 3).await;
 
     let pr = result.expect("should have a result");
     assert_eq!(pr.processed_count, None, "batch handler returns None");
@@ -2672,22 +2720,21 @@ async fn decoupled_partial_reject_deadletters_only_remaining() {
     enqueue_and_sequence(&t, &db, "q", 0, &["a", "b", "c", "d", "e"]).await;
 
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let handler = PerMessageAdapter::new(PartialFailureHandler {
+    let handler = PartialFailureHandler {
         seen_seqs: seen.clone(),
         poison_seq: 3,
         reject: true,
-    });
-    let result = run_decoupled(&db, pid, handler, Duration::from_secs(30), 5).await;
+    };
+    let result = run_leased(&db, pid, handler, Duration::from_secs(30), 5).await;
 
     let pr = result.expect("should have a result");
-    assert!(matches!(pr.handler_result, HandlerResult::Reject { .. }));
-    assert_eq!(pr.processed_count, Some(2));
+    // Leased blanket impl: reject calls batch.reject() and continues, returns Success
+    assert!(matches!(pr.handler_result, HandlerResult::Success));
 
-    // Decoupled partial reject: only msgs[2..] (seqs 3,4,5) dead-lettered
+    // Only the poison message (seq=3) is dead-lettered; others processed normally
     let dls = read_dead_letters(&db).await;
-    assert_eq!(dls.len(), 3, "only 3 remaining messages dead-lettered");
-    let dl_seqs: Vec<i64> = dls.iter().map(|d| d.seq).collect();
-    assert_eq!(dl_seqs, vec![3, 4, 5]);
+    assert_eq!(dls.len(), 1, "only poison message dead-lettered");
+    assert_eq!(dls[0].seq, 3);
 
     // Cursor advances past all messages
     let snap = read_processor_state(&db, pid).await;
@@ -2695,7 +2742,7 @@ async fn decoupled_partial_reject_deadletters_only_remaining() {
 }
 
 #[tokio::test]
-async fn decoupled_reject_at_first_deadletters_all() {
+async fn leased_reject_at_first_deadletters_only_poison() {
     let db = setup_db("ch12_dc_reject_first").await;
     let t = make_default_test_outbox().await;
     t.outbox.register_queue(&db, "q", 1).await.unwrap();
@@ -2704,19 +2751,25 @@ async fn decoupled_reject_at_first_deadletters_all() {
     enqueue_and_sequence(&t, &db, "q", 0, &["a", "b", "c"]).await;
 
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let handler = PerMessageAdapter::new(PartialFailureHandler {
+    let handler = PartialFailureHandler {
         seen_seqs: seen.clone(),
         poison_seq: 1, // first message
         reject: true,
-    });
-    let result = run_decoupled(&db, pid, handler, Duration::from_secs(30), 3).await;
+    };
+    let result = run_leased(&db, pid, handler, Duration::from_secs(30), 3).await;
 
     let pr = result.expect("should have a result");
-    assert_eq!(pr.processed_count, Some(0));
+    // Leased blanket impl: reject at first, continue with rest, return Success
+    assert!(matches!(pr.handler_result, HandlerResult::Success));
 
-    // processed_count=0, so all messages dead-lettered
+    // Only the poison message (seq=1) is dead-lettered; seqs 2,3 processed normally
     let dls = read_dead_letters(&db).await;
-    assert_eq!(dls.len(), 3, "all dead-lettered when poison is first");
+    assert_eq!(dls.len(), 1, "only poison message dead-lettered");
+    assert_eq!(dls[0].seq, 1);
+
+    // Cursor advances past all messages
+    let snap = read_processor_state(&db, pid).await;
+    assert_eq!(snap.processed_seq, 3);
 }
 
 #[tokio::test]
@@ -2729,19 +2782,24 @@ async fn decoupled_retry_does_not_advance_cursor() {
     enqueue_and_sequence(&t, &db, "q", 0, &["a", "b", "c"]).await;
 
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let handler = PerMessageAdapter::new(PartialFailureHandler {
+    let handler = PartialFailureHandler {
         seen_seqs: seen.clone(),
         poison_seq: 2,
         reject: false,
-    });
-    let result = run_decoupled(&db, pid, handler, Duration::from_secs(30), 3).await;
+    };
+    let result = run_leased(&db, pid, handler, Duration::from_secs(30), 3).await;
 
     let pr = result.expect("should have a result");
     assert!(matches!(pr.handler_result, HandlerResult::Retry { .. }));
-    assert_eq!(pr.processed_count, Some(1));
 
     let snap = read_processor_state(&db, pid).await;
-    assert_eq!(snap.processed_seq, 0, "cursor not advanced on retry");
+    // With the leased blanket impl, msg 1 (seq 1) was acked before msg 2
+    // triggered Retry. The cursor advances past the processed prefix so
+    // only the failing tail retries - msg 1 is not redelivered.
+    assert_eq!(
+        snap.processed_seq, 1,
+        "cursor advances past processed prefix on retry"
+    );
 
     let dls = read_dead_letters(&db).await;
     assert!(dls.is_empty(), "no dead letters on retry");
@@ -2756,12 +2814,16 @@ async fn decoupled_batch_handler_reject_deadletters_all() {
 
     enqueue_and_sequence(&t, &db, "q", 0, &["a", "b", "c"]).await;
 
-    let result = run_decoupled(&db, pid, BatchRejectHandler, Duration::from_secs(30), 3).await;
+    let result = run_leased(&db, pid, BatchRejectHandler, Duration::from_secs(30), 3).await;
 
     let pr = result.expect("should have a result");
-    assert_eq!(pr.processed_count, None, "batch handler returns None");
+    assert_eq!(
+        pr.processed_count,
+        Some(0),
+        "batch handler processed nothing"
+    );
 
-    // None → all messages dead-lettered
+    // processed_count=0 → all messages dead-lettered
     let dls = read_dead_letters(&db).await;
     assert_eq!(dls.len(), 3, "all dead-lettered for batch handler");
 }
@@ -2832,9 +2894,8 @@ async fn degradation_processed_count_zero_degrades_to_one() {
 
 #[tokio::test]
 async fn batch_size_one_partial_failure_is_noop() {
-    // With batch_size=1, PerMessageAdapter processes exactly 1 message.
-    // If it rejects, processed_count=0, skip=0 → all (1) dead-lettered.
-    // This is the same as full rejection — no partial behavior.
+    // With batch_size=1, the leased blanket impl processes exactly 1 message.
+    // If it rejects, batch.reject() is called and the single message is dead-lettered.
     let db = setup_db("ch12_batch_one_noop").await;
     let t = make_default_test_outbox().await;
     t.outbox.register_queue(&db, "q", 1).await.unwrap();
@@ -2843,15 +2904,16 @@ async fn batch_size_one_partial_failure_is_noop() {
     enqueue_and_sequence(&t, &db, "q", 0, &["a"]).await;
 
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let handler = PerMessageAdapter::new(PartialFailureHandler {
+    let handler = PartialFailureHandler {
         seen_seqs: seen.clone(),
         poison_seq: 1,
         reject: true,
-    });
-    let result = run_decoupled(&db, pid, handler, Duration::from_secs(30), 1).await;
+    };
+    let result = run_leased(&db, pid, handler, Duration::from_secs(30), 1).await;
 
     let pr = result.expect("should have a result");
-    assert_eq!(pr.processed_count, Some(0));
+    // Leased blanket impl: reject calls batch.reject(), returns Success
+    assert!(matches!(pr.handler_result, HandlerResult::Success));
 
     let dls = read_dead_letters(&db).await;
     assert_eq!(dls.len(), 1, "single message dead-lettered");
@@ -3523,13 +3585,12 @@ struct CountingHandler {
 }
 
 #[async_trait::async_trait]
-impl Handler for CountingHandler {
-    async fn handle(
-        &self,
-        msgs: &[OutboxMessage],
-        _cancel: CancellationToken,
-    ) -> super::handler::HandlerResult {
-        self.counter.fetch_add(msgs.len(), Ordering::Relaxed);
+impl LeasedHandler for CountingHandler {
+    async fn handle(&self, batch: &mut Batch<'_>) -> super::handler::HandlerResult {
+        while batch.next_msg().is_some() {
+            self.counter.fetch_add(1, Ordering::Relaxed);
+            batch.ack();
+        }
         self.notify.notify_one();
         super::handler::HandlerResult::Success
     }
@@ -3556,7 +3617,7 @@ async fn pipeline_single_enqueue_one_delivery() {
         .processors(1)
         .maintenance(1, 1)
         .queue("test-q", Partitions::of(1))
-        .batch_decoupled(handler)
+        .leased(handler)
         .start()
         .await
         .unwrap();
@@ -3773,7 +3834,6 @@ impl TransactionalHandler for MaxBatchSizeHandler {
         &self,
         _txn: &dyn sea_orm::ConnectionTrait,
         msgs: &[OutboxMessage],
-        _cancel: CancellationToken,
     ) -> HandlerResult {
         #[allow(clippy::cast_possible_truncation)]
         let batch_len = msgs.len() as u32;

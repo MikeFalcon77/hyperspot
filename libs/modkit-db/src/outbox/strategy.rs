@@ -1,13 +1,11 @@
 use std::collections::HashMap;
-use std::time::Duration;
 
-use sea_orm::{ConnectionTrait, DbBackend, FromQueryResult, Statement, TransactionTrait};
-use tokio_util::sync::CancellationToken;
-
+use super::batch::Batch;
 use super::dialect::Dialect;
-use super::handler::{Handler, HandlerResult, OutboxMessage, TransactionalHandler};
-use super::types::OutboxError;
+use super::handler::{HandlerResult, LeasedHandler, OutboxMessage, TransactionalHandler};
+use super::types::{LeaseConfig, OutboxError};
 use crate::Db;
+use sea_orm::{ConnectionTrait, DbBackend, FromQueryResult, Statement, TransactionTrait};
 
 /// Context for processing a single partition's batch.
 pub struct ProcessContext<'a> {
@@ -32,9 +30,7 @@ pub trait ProcessingStrategy: Send + Sync {
     fn process(
         &self,
         ctx: &ProcessContext<'_>,
-        lease_duration: Duration,
         msg_batch_size: u32,
-        cancel: CancellationToken,
     ) -> impl std::future::Future<Output = Result<Option<ProcessResult>, OutboxError>> + Send;
 }
 
@@ -81,7 +77,7 @@ async fn read_messages(
     proc_row: &ProcessorRow,
     msg_batch_size: u32,
 ) -> Result<Vec<OutboxMessage>, OutboxError> {
-    // Use seq > processed_seq (not seq >= processed_seq + 1) — the cursor
+    // Use seq > processed_seq (not seq >= processed_seq + 1) - the cursor
     // stores the last processed seq, so `>` is the natural predicate.
     let outgoing_rows = OutgoingRow::find_by_statement(Statement::from_sql_and_values(
         backend,
@@ -250,9 +246,7 @@ impl ProcessingStrategy for TransactionalStrategy {
     async fn process(
         &self,
         ctx: &ProcessContext<'_>,
-        _lease_duration: Duration,
         msg_batch_size: u32,
-        cancel: CancellationToken,
     ) -> Result<Option<ProcessResult>, OutboxError> {
         let conn = ctx.db.sea_internal();
         let txn = conn.begin().await?;
@@ -281,14 +275,14 @@ impl ProcessingStrategy for TransactionalStrategy {
         #[allow(clippy::cast_possible_truncation)]
         let count = msgs.len() as u32;
 
-        let result = self.handler.handle(&txn, &msgs, cancel).await;
+        let result = self.handler.handle(&txn, &msgs).await;
         #[allow(clippy::cast_possible_truncation)]
         let pc = self.handler.processed_count().map(|n| n as u32);
 
         // Transactional partial-failure semantics: on Reject/Retry the entire
         // transaction (including any handler side-effects) is committed with
         // the ack. Dead letters are created for all messages in the batch on
-        // Reject — even those the handler processed successfully — because
+        // Reject - even those the handler processed successfully - because
         // the handler's successful work is atomic with the cursor advance.
         // The `processed_count` is still recorded in ProcessResult so the
         // PartitionMode state machine can degrade batch size intelligently.
@@ -313,227 +307,314 @@ impl ProcessingStrategy for TransactionalStrategy {
     }
 }
 
-// ---- Decoupled strategy ----
+// ---- Shared lease helpers ----
 
-/// Processes messages outside any DB transaction.
-/// Uses lease-based 3-phase: acquire lease+read → handle → lease-guarded ack.
-pub struct DecoupledStrategy {
-    handler: Box<dyn Handler>,
-    worker_id: String,
-}
+/// Phase 1: Acquire a time-based lease and read messages.
+/// Returns `None` if another processor holds the lease or no messages are available.
+async fn acquire_lease_and_read(
+    ctx: &ProcessContext<'_>,
+    lease_id: &str,
+    lease_secs: i64,
+    msg_batch_size: u32,
+) -> Result<Option<Vec<OutboxMessage>>, OutboxError> {
+    let sea_conn = ctx.db.sea_internal();
+    let txn = sea_conn.begin().await?;
 
-impl DecoupledStrategy {
-    pub fn new(handler: Box<dyn Handler>, worker_id: String) -> Self {
-        Self { handler, worker_id }
-    }
-}
-
-impl ProcessingStrategy for DecoupledStrategy {
-    async fn process(
-        &self,
-        ctx: &ProcessContext<'_>,
-        lease_duration: Duration,
-        msg_batch_size: u32,
-        cancel: CancellationToken,
-    ) -> Result<Option<ProcessResult>, OutboxError> {
-        let lease_id = &self.worker_id;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-        let lease_secs = lease_duration.as_secs() as i64;
-
-        // Phase 1: Acquire lease + read messages
-        let (_proc_row, msgs) = {
-            let sea_conn = ctx.db.sea_internal();
-            let txn = sea_conn.begin().await?;
-
-            // Acquire lease via dialect helper (encapsulates RETURNING vs SELECT fallback)
-            let proc_row = ctx
-                .dialect
-                .exec_lease_acquire(&txn, ctx.backend, lease_id, lease_secs, ctx.partition_id)
-                .await?
-                .map(|(processed_seq, attempts)| ProcessorRow {
-                    processed_seq,
-                    attempts,
-                });
-
-            let Some(mut proc_row) = proc_row else {
-                txn.commit().await?;
-                return Ok(None);
-            };
-
+    let proc_row = ctx
+        .dialect
+        .exec_lease_acquire(&txn, ctx.backend, lease_id, lease_secs, ctx.partition_id)
+        .await?
+        .map(|(processed_seq, attempts)| ProcessorRow {
+            processed_seq,
             // lease_acquire increments attempts in the DB so a crash leaves
             // a trace. Subtract 1 so the handler sees the pre-increment
             // value (0 = first attempt, 1 = one previous attempt, etc.).
-            proc_row.attempts = proc_row.attempts.saturating_sub(1);
+            attempts: attempts.saturating_sub(1),
+        });
 
-            let msgs = read_messages(
-                &txn,
-                ctx.backend,
-                &ctx.dialect,
-                ctx.partition_id,
-                &proc_row,
-                msg_batch_size,
+    let Some(proc_row) = proc_row else {
+        txn.commit().await?;
+        return Ok(None);
+    };
+
+    let msgs = read_messages(
+        &txn,
+        ctx.backend,
+        &ctx.dialect,
+        ctx.partition_id,
+        &proc_row,
+        msg_batch_size,
+    )
+    .await?;
+
+    txn.commit().await?;
+
+    if msgs.is_empty() {
+        // Release the lease AND reset `attempts` back to 0.
+        // The increment from `lease_acquire` is a crash-detection trace only:
+        // if the process crashes between acquire and ack, the next processor
+        // sees a non-zero attempt count. On idle polls (no messages),
+        // `lease_release` resets attempts so they do not accumulate across
+        // empty cycles.
+        let conn = ctx.db.sea_internal();
+        conn.execute(Statement::from_sql_and_values(
+            ctx.backend,
+            ctx.dialect.lease_release(),
+            [ctx.partition_id.into(), lease_id.into()],
+        ))
+        .await?;
+        return Ok(None);
+    }
+
+    Ok(Some(msgs))
+}
+
+// ---- Lease-guarded ack helpers ----
+
+/// Persist per-message rejections from the blanket impl as dead-letter rows.
+async fn persist_rejections(
+    txn: &impl ConnectionTrait,
+    ctx: &ProcessContext<'_>,
+    msgs: &[OutboxMessage],
+    rejections: &[super::batch::Rejection],
+) -> Result<(), OutboxError> {
+    for rej in rejections {
+        let msg = &msgs[rej.index];
+        insert_dead_letter(txn, ctx, msg, &rej.reason).await?;
+    }
+    Ok(())
+}
+
+/// Advance the cursor and bump the vacuum counter. Returns `false` if the
+/// lease expired (caller must rollback). Releases the lease if `seq == 0`.
+async fn advance_cursor(
+    txn: &impl ConnectionTrait,
+    ctx: &ProcessContext<'_>,
+    seq: i64,
+    lease_id: &str,
+) -> Result<bool, OutboxError> {
+    if seq == 0 {
+        txn.execute(Statement::from_sql_and_values(
+            ctx.backend,
+            ctx.dialect.lease_release(),
+            [ctx.partition_id.into(), lease_id.into()],
+        ))
+        .await?;
+        return Ok(true);
+    }
+
+    let res = txn
+        .execute(Statement::from_sql_and_values(
+            ctx.backend,
+            ctx.dialect.lease_ack_advance(),
+            [seq.into(), ctx.partition_id.into(), lease_id.into()],
+        ))
+        .await?;
+    if res.rows_affected() == 0 {
+        return Ok(false);
+    }
+
+    txn.execute(Statement::from_sql_and_values(
+        ctx.backend,
+        ctx.dialect.bump_vacuum_counter(),
+        [ctx.partition_id.into()],
+    ))
+    .await?;
+    Ok(true)
+}
+
+/// Record a retry without advancing the cursor. Returns `false` if the
+/// lease expired.
+async fn record_retry(
+    txn: &impl ConnectionTrait,
+    ctx: &ProcessContext<'_>,
+    reason: &str,
+    lease_id: &str,
+) -> Result<bool, OutboxError> {
+    let res = txn
+        .execute(Statement::from_sql_and_values(
+            ctx.backend,
+            ctx.dialect.lease_record_retry(),
+            [reason.into(), ctx.partition_id.into(), lease_id.into()],
+        ))
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Sequence number of the last processed message, or 0 if nothing processed.
+fn processed_advance_seq(msgs: &[OutboxMessage], processed: u32) -> i64 {
+    if processed > 0 && (processed as usize) <= msgs.len() {
+        msgs[processed as usize - 1].seq
+    } else {
+        0
+    }
+}
+
+/// Phase 3: Lease-guarded ack. Used by `LeasedStrategy`.
+async fn lease_guarded_ack(
+    ctx: &ProcessContext<'_>,
+    msgs: &[OutboxMessage],
+    lease_id: &str,
+    result: HandlerResult,
+    processed: u32,
+    rejections: &[super::batch::Rejection],
+) -> Result<Option<ProcessResult>, OutboxError> {
+    let ack_conn = ctx.db.sea_internal();
+    let ack_txn = ack_conn.begin().await?;
+    let count = u32::try_from(msgs.len()).unwrap_or(u32::MAX);
+
+    // All three branches persist rejections first, then differ in cursor behavior.
+    persist_rejections(&ack_txn, ctx, msgs, rejections).await?;
+
+    let lease_ok = match &result {
+        HandlerResult::Success => {
+            advance_cursor(
+                &ack_txn,
+                ctx,
+                processed_advance_seq(msgs, processed),
+                lease_id,
             )
-            .await?;
-
-            txn.commit().await?;
-
-            if msgs.is_empty() {
-                // Release lease — nothing to process
-                let conn = ctx.db.sea_internal();
-                conn.execute(Statement::from_sql_and_values(
-                    ctx.backend,
-                    ctx.dialect.lease_release(),
-                    [ctx.partition_id.into(), lease_id.as_str().into()],
-                ))
-                .await?;
-                return Ok(None);
-            }
-
-            (proc_row, msgs)
-        };
-
-        #[allow(clippy::cast_possible_truncation)]
-        let count = msgs.len() as u32;
-
-        // Phase 2: call handler outside any transaction
-        // Create a child token that fires at 80% of lease duration
-        let lease_cancel = cancel.child_token();
-        let lease_timer = {
-            let token = lease_cancel.clone();
-            let deadline = lease_duration.mul_f64(0.8);
-            tokio::spawn(async move {
-                tokio::time::sleep(deadline).await;
-                token.cancel();
-            })
-        };
-
-        let result = self.handler.handle(&msgs, lease_cancel).await;
-        #[allow(clippy::cast_possible_truncation)]
-        let pc = self.handler.processed_count().map(|n| n as u32);
-        lease_timer.abort();
-
-        // Phase 3: lease-guarded ack
-        let ack_conn = ctx.db.sea_internal();
-        let ack_txn = ack_conn.begin().await?;
-
-        let last_seq = msgs.last().map_or(0, |m| m.seq);
-
-        match &result {
-            HandlerResult::Success => {
-                let res = ack_txn
-                    .execute(Statement::from_sql_and_values(
-                        ctx.backend,
-                        ctx.dialect.lease_ack_advance(),
-                        [
-                            last_seq.into(),
-                            ctx.partition_id.into(),
-                            lease_id.as_str().into(),
-                        ],
-                    ))
-                    .await?;
-                if res.rows_affected() == 0 {
-                    tracing::error!(
-                        partition_id = ctx.partition_id,
-                        "lease expired before ack \u{2014} another processor may have taken over"
-                    );
-                    ack_txn.commit().await?;
-                    return Ok(None);
-                }
-                ack_txn
-                    .execute(Statement::from_sql_and_values(
-                        ctx.backend,
-                        ctx.dialect.bump_vacuum_counter(),
-                        [ctx.partition_id.into()],
-                    ))
-                    .await?;
-            }
-            HandlerResult::Retry { reason } => {
-                // Retry: cursor not advanced — the same batch will be re-read.
-                // processed_count is carried in ProcessResult for PartitionMode
-                // degradation (batch size reduction), but no partial ack occurs.
-                let res = ack_txn
-                    .execute(Statement::from_sql_and_values(
-                        ctx.backend,
-                        ctx.dialect.lease_record_retry(),
-                        [
-                            reason.as_str().into(),
-                            ctx.partition_id.into(),
-                            lease_id.as_str().into(),
-                        ],
-                    ))
-                    .await?;
-                if res.rows_affected() == 0 {
-                    tracing::error!(
-                        partition_id = ctx.partition_id,
-                        "lease expired before retry ack"
-                    );
-                    ack_txn.commit().await?;
-                    return Ok(None);
-                }
-            }
-            HandlerResult::Reject { reason } => {
-                // Partial-failure semantics: when PerMessageAdapter reports
-                // processed_count, only dead-letter the unprocessed tail
-                // (msgs[pc..]). The successfully-processed prefix had its
-                // side-effects committed outside the DB transaction, so we
-                // don't dead-letter those. For batch handlers (pc = None),
-                // dead-letter the entire batch (existing behavior).
-                let skip = pc.map_or(0, |n| n as usize).min(msgs.len());
-                for msg in &msgs[skip..] {
-                    ack_txn
-                        .execute(Statement::from_sql_and_values(
-                            ctx.backend,
-                            ctx.dialect.insert_dead_letter(),
-                            [
-                                ctx.partition_id.into(),
-                                msg.seq.into(),
-                                msg.payload.clone().into(),
-                                msg.payload_type.clone().into(),
-                                msg.created_at.into(),
-                                reason.as_str().into(),
-                                msg.attempts.into(),
-                            ],
-                        ))
-                        .await?;
-                }
-
-                let res = ack_txn
-                    .execute(Statement::from_sql_and_values(
-                        ctx.backend,
-                        ctx.dialect.lease_ack_advance(),
-                        [
-                            last_seq.into(),
-                            ctx.partition_id.into(),
-                            lease_id.as_str().into(),
-                        ],
-                    ))
-                    .await?;
-                if res.rows_affected() == 0 {
-                    tracing::error!(
-                        partition_id = ctx.partition_id,
-                        "lease expired before reject ack"
-                    );
-                    ack_txn.commit().await?;
-                    return Ok(None);
-                }
-                ack_txn
-                    .execute(Statement::from_sql_and_values(
-                        ctx.backend,
-                        ctx.dialect.bump_vacuum_counter(),
-                        [ctx.partition_id.into()],
-                    ))
-                    .await?;
+            .await?
+        }
+        HandlerResult::Retry { reason } => {
+            let advance_seq = processed_advance_seq(msgs, processed);
+            if advance_seq > 0 {
+                // Partial progress: advance past processed prefix, retry the tail.
+                advance_cursor(&ack_txn, ctx, advance_seq, lease_id).await?
+            } else {
+                // Nothing processed: record retry, no cursor advance.
+                record_retry(&ack_txn, ctx, reason, lease_id).await?
             }
         }
+        HandlerResult::Reject { reason } => {
+            // Dead-letter the unprocessed tail (rejections already persisted above).
+            let skip = (processed as usize).min(msgs.len());
+            for msg in &msgs[skip..] {
+                insert_dead_letter(&ack_txn, ctx, msg, reason).await?;
+            }
+            // Advance past the entire batch (all messages handled or dead-lettered).
+            let last_seq = msgs.last().map_or(0, |m| m.seq);
+            advance_cursor(&ack_txn, ctx, last_seq, lease_id).await?
+        }
+    };
 
-        ack_txn.commit().await?;
+    if !lease_ok {
+        tracing::error!(
+            partition_id = ctx.partition_id,
+            "lease expired before ack, another processor may have taken over"
+        );
+        ack_txn.rollback().await?;
+        return Ok(None);
+    }
 
-        Ok(Some(ProcessResult {
-            count,
-            handler_result: result,
+    ack_txn.commit().await?;
 
-            processed_count: pc,
-        }))
+    Ok(Some(ProcessResult {
+        count,
+        handler_result: result,
+        processed_count: Some(processed),
+    }))
+}
+
+/// Insert a single dead-letter row.
+async fn insert_dead_letter(
+    txn: &impl ConnectionTrait,
+    ctx: &ProcessContext<'_>,
+    msg: &OutboxMessage,
+    reason: &str,
+) -> Result<(), OutboxError> {
+    txn.execute(Statement::from_sql_and_values(
+        ctx.backend,
+        ctx.dialect.insert_dead_letter(),
+        [
+            ctx.partition_id.into(),
+            msg.seq.into(),
+            msg.payload.clone().into(),
+            msg.payload_type.clone().into(),
+            msg.created_at.into(),
+            reason.into(),
+            msg.attempts.into(),
+        ],
+    ))
+    .await?;
+    Ok(())
+}
+
+// ---- Leased strategy ----
+
+use std::sync::Arc;
+
+/// Processes messages under a time-limited lease using `LeasedHandler`.
+///
+/// Three-phase pipeline: acquire lease + read, call handler with `timeout_at`,
+/// lease-guarded ack. Cancellation is graceful: `batch.remaining()` signals
+/// the handler to stop between messages; `timeout_at` is the hard backstop.
+pub struct LeasedStrategy {
+    handler: Arc<dyn LeasedHandler>,
+    worker_id: String,
+    lease_config: LeaseConfig,
+}
+
+impl LeasedStrategy {
+    pub fn new(
+        handler: Arc<dyn LeasedHandler>,
+        worker_id: String,
+        lease_config: LeaseConfig,
+    ) -> Self {
+        Self {
+            handler,
+            worker_id,
+            lease_config,
+        }
+    }
+}
+
+impl ProcessingStrategy for LeasedStrategy {
+    async fn process(
+        &self,
+        ctx: &ProcessContext<'_>,
+        msg_batch_size: u32,
+    ) -> Result<Option<ProcessResult>, OutboxError> {
+        let lease_secs = i64::try_from(self.lease_config.duration.as_secs()).unwrap_or(i64::MAX);
+
+        // Capture the clock before Phase 1 so that acquire+read time is
+        // deducted from the handler budget. The DB lease starts at SQL
+        // NOW(), so our Rust deadline must track the same origin.
+        let lease_start = tokio::time::Instant::now();
+
+        let Some(msgs) =
+            acquire_lease_and_read(ctx, &self.worker_id, lease_secs, msg_batch_size).await?
+        else {
+            return Ok(None);
+        };
+
+        // Phase 2: call handler with graceful two-phase cancellation.
+        //
+        // Soft signal: batch.remaining() returns Duration::ZERO after the
+        // deadline. The blanket impl checks this between messages and stops
+        // starting new work.
+        //
+        // Hard drop: timeout_at drops the handler future if it didn't return
+        // before the deadline (catches handlers that ignore remaining()).
+        let deadline = lease_start + self.lease_config.handler_budget();
+        let mut batch = Batch::new(&msgs, deadline);
+
+        let result = tokio::time::timeout_at(deadline, self.handler.handle(&mut batch))
+            .await
+            .unwrap_or_else(|_| HandlerResult::Retry {
+                reason: "lease expired".into(),
+            });
+
+        // Phase 3: lease-guarded ack
+        lease_guarded_ack(
+            ctx,
+            &msgs,
+            &self.worker_id,
+            result,
+            batch.processed(),
+            batch.rejections(),
+        )
+        .await
     }
 }
 
@@ -545,7 +626,7 @@ pub fn generate_worker_id(queue_name: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos();
-    // Simple PRNG seeded from nanosecond clock — sufficient for worker ID uniqueness
+    // Simple PRNG seeded from nanosecond clock - sufficient for worker ID uniqueness
     let mut seed = u64::from(nanos) ^ u64::from(std::process::id());
     let mut suffix = String::with_capacity(6);
     for _ in 0..6 {

@@ -25,12 +25,7 @@ struct Processor {
 
 #[async_trait::async_trait]
 impl TransactionalMessageHandler for Processor {
-    async fn handle(
-        &self,
-        _txn: &dyn ConnectionTrait,
-        msg: &OutboxMessage,
-        _cancel: tokio_util::sync::CancellationToken,
-    ) -> HandlerResult {
+    async fn handle(&self, _txn: &dyn ConnectionTrait, msg: &OutboxMessage) -> HandlerResult {
         let payload = String::from_utf8_lossy(&msg.payload);
         println!("  processed seq={} payload={payload}", msg.seq);
         self.count.fetch_add(1, Ordering::Relaxed);

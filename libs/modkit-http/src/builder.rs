@@ -273,12 +273,12 @@ impl HttpClientBuilder {
         //   LoadShed/Concurrency → OtelLayer → Buffer
         //
         // Key semantics (reqwest-like):
-        //   - send() returns Ok(Response) for ALL HTTP statuses (including 4xx/5xx)
-        //   - send() returns Err only for transport/timeout/TLS errors
-        //   - Non-2xx converted to error ONLY via error_for_status()
-        //   - RetryLayer handles both Err (transport) and Ok(Response) (status)
+        //  - send() returns Ok(Response) for ALL HTTP statuses (including 4xx/5xx)
+        //  - send() returns Err only for transport/timeout/TLS errors
+        //  - Non-2xx converted to error ONLY via error_for_status()
+        //  - RetryLayer handles both Err (transport) and Ok(Response) (status)
         //     retries internally, draining body before retry for connection reuse
-        //   - FollowRedirect handles 3xx responses internally with security protections:
+        //  - FollowRedirect handles 3xx responses internally with security protections:
         //     * Same-origin enforcement (default) - blocks SSRF attacks
         //     * Sensitive header stripping on cross-origin redirects
         //     * HTTPS downgrade protection
@@ -375,6 +375,52 @@ impl HttpClientBuilder {
     }
 }
 
+#[cfg(test)]
+impl HttpClientBuilder {
+    /// Build an `HttpClient` with a custom inner service replacing the
+    /// hyper connector. The full middleware stack (Retry, Concurrency,
+    /// Buffer, etc.) is applied on top.
+    ///
+    /// The inner service must handle `Request<Full<Bytes>>` and return
+    /// `Response<ResponseBody>`. Use this to inject a fake slow service
+    /// for cancellation testing without needing a real HTTP server.
+    fn build_with_inner_service(self, inner: InnerService) -> crate::HttpClient {
+        let mut boxed_service = inner;
+
+        if let Some(ref retry_config) = self.config.retry {
+            let retry_layer =
+                RetryLayer::with_total_timeout(retry_config.clone(), self.config.total_timeout);
+            let retry_service = ServiceBuilder::new()
+                .layer(retry_layer)
+                .service(boxed_service);
+            boxed_service = retry_service.boxed_clone();
+        }
+
+        if let Some(rate_limit) = self.config.rate_limit
+            && rate_limit.max_concurrent_requests < usize::MAX
+        {
+            let limited_service = ServiceBuilder::new()
+                .layer(LoadShedLayer::new())
+                .layer(ConcurrencyLimitLayer::new(
+                    rate_limit.max_concurrent_requests,
+                ))
+                .service(boxed_service);
+            let limited_service = limited_service.map_err(map_load_shed_error);
+            boxed_service = limited_service.boxed_clone();
+        }
+
+        let buffer_capacity = self.config.buffer_capacity.max(1);
+        let buffered_service: crate::client::BufferedService =
+            Buffer::new(boxed_service, buffer_capacity);
+
+        crate::HttpClient {
+            service: buffered_service,
+            max_body_size: self.config.max_body_size,
+            transport_security: self.config.transport,
+        }
+    }
+}
+
 impl Default for HttpClientBuilder {
     fn default() -> Self {
         Self::new()
@@ -452,7 +498,7 @@ fn build_https_connector(
             let provider = tls::get_crypto_provider();
             let builder = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_provider_and_webpki_roots(provider)
-                // Preserve source error for debugging —
+                // Preserve source error for debugging -
                 // rustls::Error implements Error + Send + Sync
                 .map_err(|e| HttpError::Tls(Box::new(e)))?;
             let connector = if allow_http {
@@ -874,6 +920,125 @@ mod tests {
         assert!(
             matches!(result, HttpError::Transport(_)),
             "Should wrap unknown errors as Transport, got: {result:?}"
+        );
+    }
+
+    // ==========================================================================
+    // Cancellation chain test
+    //
+    // Proves that dropping the response future from HttpClient cancels the
+    // inner service future through the modkit-http middleware stack
+    // (Buffer → Concurrency → inner service). Retry is disabled to
+    // isolate the cancellation path.
+    //
+    // Uses build_with_inner_service() to inject a fake slow service at the
+    // bottom of the real tower stack - no HTTP server needed.
+    // ==========================================================================
+
+    /// Dropping the `HttpClient::send()` future must cancel the inner
+    /// service future through the full middleware stack.
+    ///
+    /// Injects a fake service via `build_with_inner_service()` that
+    /// blocks on a `Notify` (never completes) and signals a second
+    /// `Notify` from its `Drop` impl. No sleeps - purely notification-based.
+    #[tokio::test]
+    async fn test_cancellation_propagates_through_full_stack() {
+        use crate::response::ResponseBody;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::task::{Context, Poll};
+        use tower::Service;
+
+        #[derive(Clone)]
+        struct PendingService {
+            completed: Arc<AtomicBool>,
+            drop_notifier: Arc<tokio::sync::Notify>,
+            started_notifier: Arc<tokio::sync::Notify>,
+        }
+
+        struct FutureGuard {
+            completed: Arc<AtomicBool>,
+            drop_notifier: Arc<tokio::sync::Notify>,
+        }
+
+        impl Drop for FutureGuard {
+            fn drop(&mut self) {
+                if !self.completed.load(Ordering::SeqCst) {
+                    self.drop_notifier.notify_one();
+                }
+            }
+        }
+
+        impl Service<http::Request<Full<Bytes>>> for PendingService {
+            type Response = http::Response<ResponseBody>;
+            type Error = HttpError;
+            type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+            fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn call(&mut self, _: http::Request<Full<Bytes>>) -> Self::Future {
+                let completed = self.completed.clone();
+                let drop_notifier = self.drop_notifier.clone();
+                let started_notifier = self.started_notifier.clone();
+                Box::pin(async move {
+                    let _guard = FutureGuard {
+                        completed: completed.clone(),
+                        drop_notifier,
+                    };
+                    // Signal that the request reached the inner service
+                    started_notifier.notify_one();
+                    // Block forever - only completes via drop
+                    std::future::pending::<()>().await;
+                    completed.store(true, Ordering::SeqCst);
+                    unreachable!()
+                })
+            }
+        }
+
+        let inner_completed = Arc::new(AtomicBool::new(false));
+        let drop_notifier = Arc::new(tokio::sync::Notify::new());
+        let started_notifier = Arc::new(tokio::sync::Notify::new());
+
+        let inner = PendingService {
+            completed: inner_completed.clone(),
+            drop_notifier: drop_notifier.clone(),
+            started_notifier: started_notifier.clone(),
+        };
+
+        // Build the real HttpClient stack with our fake service at the bottom.
+        // Retry disabled to isolate cancellation. Tests: Buffer → Concurrency → PendingService
+        let client = HttpClientBuilder::new()
+            .timeout(Duration::from_secs(30))
+            .retry(None)
+            .build_with_inner_service(inner.boxed_clone());
+
+        // Spawn the request so we can drop it explicitly
+        let send_handle = tokio::spawn({
+            let client = client.clone();
+            async move { client.get("http://fake/slow").send().await }
+        });
+
+        // Wait for the request to reach the inner service
+        started_notifier.notified().await;
+
+        // Drop the in-flight request by aborting the task
+        send_handle.abort();
+
+        // Wait for the drop notification - no sleep, pure notification
+        tokio::time::timeout(Duration::from_secs(5), drop_notifier.notified())
+            .await
+            .expect(
+                "Inner service future should have been dropped within 5s - \
+                 the full modkit-http stack must propagate cancellation",
+            );
+
+        assert!(
+            !inner_completed.load(Ordering::SeqCst),
+            "Inner service future should NOT have completed"
         );
     }
 }

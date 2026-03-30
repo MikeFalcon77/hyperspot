@@ -56,11 +56,10 @@ use tokio::runtime::Runtime;
 use tokio::sync::Notify;
 
 use modkit_db::outbox::{
-    EnqueueMessage, Handler, HandlerResult, Outbox, OutboxHandle, OutboxMessage, OutboxProfile,
+    Batch, EnqueueMessage, HandlerResult, LeasedHandler, Outbox, OutboxHandle, OutboxProfile,
     Partitions, outbox_migrations,
 };
 use modkit_db::{ConnectOpts, Db, connect_db, migration_runner::run_migrations_for_testing};
-use tokio_util::sync::CancellationToken;
 
 // Global counter — ensures process-wide unique queue names across iterations.
 static GLOBAL_ITER_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -640,9 +639,9 @@ struct BenchHandler {
 }
 
 #[async_trait::async_trait]
-impl Handler for BenchHandler {
-    async fn handle(&self, msgs: &[OutboxMessage], _cancel: CancellationToken) -> HandlerResult {
-        for msg in msgs {
+impl LeasedHandler for BenchHandler {
+    async fn handle(&self, batch: &mut Batch<'_>) -> HandlerResult {
+        while let Some(msg) = batch.next_msg() {
             let payload = std::str::from_utf8(&msg.payload).unwrap();
             let (_, seq_str) = payload.split_once(':').unwrap();
             let seq: u64 = seq_str.parse().unwrap();
@@ -652,6 +651,8 @@ impl Handler for BenchHandler {
                 .entry(msg.partition_id)
                 .or_default()
                 .push(msg.seq);
+
+            batch.ack();
 
             let prev = self.counter.fetch_add(1, Ordering::Relaxed);
             if prev + 1 >= self.expected_total {
@@ -1019,7 +1020,8 @@ async fn start_instance(
     for name in queue_names(queue_prefix, profile) {
         builder = builder
             .queue(&name, Partitions::of(profile.partitions_per_queue))
-            .batch_decoupled(make_handler(state));
+            .leased(make_handler(state))
+            .done();
     }
 
     builder.start().await.unwrap()

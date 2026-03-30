@@ -18,7 +18,7 @@
 //!
 //! - **Transactional** — handler runs inside the DB transaction holding the
 //!   partition lock. Provides exactly-once semantics within the database.
-//! - **Decoupled** — handler runs outside any transaction, with lease-based
+//! - **Leased** — handler runs outside any transaction, with lease-based
 //!   locking. Provides at-least-once delivery; handlers must be idempotent.
 //!
 //! # Usage
@@ -27,7 +27,7 @@
 //! let handle = Outbox::builder(db)
 //!     .profile(OutboxProfile::low_latency())
 //!     .queue("orders", Partitions::of(4))
-//!         .decoupled(my_handler)
+//!         .leased(my_handler)
 //!     .start().await?;
 //! // ... enqueue via handle.outbox() ...
 //! handle.stop().await;
@@ -84,6 +84,7 @@
 //! }
 //! ```
 
+mod batch;
 mod builder;
 mod core;
 mod dead_letter;
@@ -105,17 +106,18 @@ mod workers;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod integration_tests;
 
-pub use builder::QueueBuilder;
+pub use batch::Batch;
+pub use builder::{LeasedQueueBuilder, QueueBuilder};
 pub use core::Outbox;
 pub use dead_letter::{DeadLetterFilter, DeadLetterMessage, DeadLetterScope, DeadLetterStatus};
 pub use handler::{
-    Handler, HandlerResult, MessageHandler, OutboxMessage, PerMessageAdapter, TransactionalHandler,
-    TransactionalMessageHandler,
+    HandlerResult, LeasedHandler, LeasedMessageHandler, MessageResult, OutboxMessage,
+    PerMessageAdapter, TransactionalHandler, TransactionalMessageHandler,
 };
 pub use manager::{OutboxBuilder, OutboxHandle};
 pub use migrations::outbox_migrations;
 pub use types::{
-    DecoupledConfig, EnqueueMessage, OutboxError, OutboxMessageId, OutboxProfile, Partitions,
+    EnqueueMessage, LeaseConfig, OutboxError, OutboxMessageId, OutboxProfile, Partitions,
     WorkerTuning,
 };
 

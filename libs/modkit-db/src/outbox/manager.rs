@@ -94,7 +94,7 @@ pub(super) fn register_stats<P: Send + Sync + 'static>(
 ///     .profile(OutboxProfile::high_throughput())
 ///     .processor_tuning(WorkerTuning::processor_high_throughput().batch_size(50))
 ///     .queue("orders", Partitions::of(4))
-///         .decoupled(my_handler)
+///         .leased(my_handler)
 ///     .start().await?;
 /// // enqueue via handle.outbox()
 /// handle.stop().await;

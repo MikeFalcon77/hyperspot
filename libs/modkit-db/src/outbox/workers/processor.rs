@@ -182,7 +182,7 @@ impl<S: ProcessingStrategy> WorkerAction for PartitionProcessor<S> {
 
     async fn execute(
         &mut self,
-        cancel: &CancellationToken,
+        _cancel: &CancellationToken,
     ) -> Result<Directive<ProcessorReport>, OutboxError> {
         let (backend, dialect) = {
             let sea_conn = self.db.sea_internal();
@@ -201,17 +201,7 @@ impl<S: ProcessingStrategy> WorkerAction for PartitionProcessor<S> {
             partition_id: self.partition_id,
         };
 
-        let child_cancel = cancel.child_token();
-
-        let result = self
-            .strategy
-            .process(
-                &ctx,
-                self.tuning.lease_duration,
-                effective_size,
-                child_cancel,
-            )
-            .await?;
+        let result = self.strategy.process(&ctx, effective_size).await?;
 
         if let Some(pr) = result {
             let has_more = pr.count >= effective_size;
