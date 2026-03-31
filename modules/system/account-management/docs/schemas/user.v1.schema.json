@@ -1,0 +1,39 @@
+{
+  "$id": "gts://gts.x.core.am.user.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Account Management User",
+  "description": "Account Management user resource type keyed by the IdP-issued UUID user identifier. Used by Account Management user-group schemas; profile-like fields are provider-projected and optional.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "username"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "IdP-issued UUID user identifier."
+    },
+    "username": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "email": {
+      "type": "string",
+      "format": "email"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "avatar_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "attributes": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Provider-defined, non-authoritative attributes forwarded from the IdP."
+    }
+  }
+}

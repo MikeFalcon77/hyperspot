@@ -1,0 +1,947 @@
+# Created:  2026-04-19 by Virtuozzo
+# Updated:  2026-04-19 by Virtuozzo
+
+openapi: 3.1.0
+info:
+  title: Account Management API
+  version: 1.0.0
+  description: |
+    Account Management (AM) is the authoritative control-plane API for tenant
+    hierarchy, tenant mode transitions, delegated user lifecycle operations,
+    and extensible tenant metadata.
+
+    This file is the authoritative machine-readable public contract for AM v1.
+    PRD and DESIGN intentionally summarize behavior and refer here for wire
+    shapes, field semantics, and HTTP-level error mapping.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: tenants
+    description: Tenant hierarchy lifecycle and direct-child discovery.
+  - name: conversions
+    description: |
+      Dual-consent managed/self-managed mode transitions.
+      Child-scope endpoints under `/tenants/{tenant_id}/conversions` let the
+      tenant side create, list, and inspect its own conversion requests.
+      Parent-scope endpoints under `/tenants/{tenant_id}/child-conversions`
+      let the parent side discover and resolve requests targeting direct
+      children. Any post-creation mode change is initiated with `POST` and
+      resolved with `PATCH` on the corresponding `ConversionRequest`.
+  - name: users
+    description: Tenant-scoped delegated user lifecycle through the configured IdP.
+  - name: metadata
+    description: Tenant-scoped extensible metadata and effective-value resolution.
+
+paths:
+  /api/account-management/v1/tenants:
+    post:
+      operationId: createTenant
+      tags: [tenants]
+      summary: Create a child tenant
+      description: |
+        Creates a non-root tenant under an existing parent tenant. The server
+        validates tenant type compatibility, hierarchy constraints, and tenant
+        mode selection before invoking the configured IdP tenant-provisioning
+        contract.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantCreateRequest'
+      responses:
+        '201':
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '4XX':
+          $ref: '#/components/responses/Problem'
+        '5XX':
+          $ref: '#/components/responses/Problem'
+
+  /api/account-management/v1/tenants/{tenant_id}:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+    get:
+      operationId: getTenant
+      tags: [tenants]
+      summary: Read tenant details
+      responses:
+        '200':
+          description: Tenant details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        default:
+          $ref: '#/components/responses/Problem'
+    patch:
+      operationId: updateTenant
+      tags: [tenants]
+      summary: Update mutable tenant fields
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantUpdateRequest'
+      responses:
+        '200':
+          description: Updated tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        default:
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: deleteTenant
+      tags: [tenants]
+      summary: Soft-delete a tenant
+      responses:
+        '200':
+          description: Tenant soft-deleted or already deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /api/account-management/v1/tenants/{tenant_id}/children:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/Top'
+      - $ref: '#/components/parameters/Skip'
+      - $ref: '#/components/parameters/StatusFilter'
+    get:
+      operationId: listChildren
+      tags: [tenants]
+      summary: List direct children of a tenant
+      responses:
+        '200':
+          description: Page of direct child tenants
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantPage'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /api/account-management/v1/tenants/{tenant_id}/conversions:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/Top'
+      - $ref: '#/components/parameters/Skip'
+      - $ref: '#/components/parameters/ConversionStatusFilter'
+    get:
+      operationId: listOwnConversions
+      tags: [conversions]
+      summary: List conversion requests in child scope
+      responses:
+        '200':
+          description: Page of conversion requests visible in child scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnConversionRequestPage'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: createOwnConversion
+      tags: [conversions]
+      summary: Initiate a conversion request from child scope
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyObject'
+      responses:
+        '201':
+          description: Conversion request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnConversionRequest'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /api/account-management/v1/tenants/{tenant_id}/conversions/{request_id}:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      operationId: getOwnConversion
+      tags: [conversions]
+      summary: Read a conversion request in child scope
+      responses:
+        '200':
+          description: Conversion request visible in child scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnConversionRequest'
+        default:
+          $ref: '#/components/responses/Problem'
+    patch:
+      operationId: patchOwnConversion
+      tags: [conversions]
+      summary: Resolve a conversion request in child scope
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversionPatchRequest'
+      responses:
+        '200':
+          description: Updated conversion request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnConversionRequest'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /api/account-management/v1/tenants/{tenant_id}/child-conversions:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/Top'
+      - $ref: '#/components/parameters/Skip'
+      - $ref: '#/components/parameters/ConversionStatusFilter'
+    get:
+      operationId: listChildConversions
+      tags: [conversions]
+      summary: List conversion requests targeting direct children
+      responses:
+        '200':
+          description: Page of conversion requests visible in parent scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChildConversionRequestPage'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: createChildConversion
+      tags: [conversions]
+      summary: Initiate a conversion request for a direct child
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChildConversionCreateRequest'
+      responses:
+        '201':
+          description: Conversion request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChildConversionRequest'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /api/account-management/v1/tenants/{tenant_id}/child-conversions/{request_id}:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      operationId: getChildConversion
+      tags: [conversions]
+      summary: Read a conversion request in parent scope
+      responses:
+        '200':
+          description: Conversion request visible in parent scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChildConversionRequest'
+        default:
+          $ref: '#/components/responses/Problem'
+    patch:
+      operationId: patchChildConversion
+      tags: [conversions]
+      summary: Resolve a conversion request in parent scope
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversionPatchRequest'
+      responses:
+        '200':
+          description: Updated conversion request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChildConversionRequest'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /api/account-management/v1/tenants/{tenant_id}/users:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/Top'
+      - $ref: '#/components/parameters/Skip'
+      - $ref: '#/components/parameters/UserIdFilter'
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List users in a tenant scope
+      responses:
+        '200':
+          description: Page of users returned by the configured IdP integration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPage'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: createUser
+      tags: [users]
+      summary: Provision a user in a tenant scope
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+      responses:
+        '201':
+          description: User provisioned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSummary'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /api/account-management/v1/tenants/{tenant_id}/users/{user_id}:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/UserId'
+    delete:
+      operationId: deleteUser
+      tags: [users]
+      summary: Deprovision a user in a tenant scope
+      responses:
+        '200':
+          description: User deprovisioned or already absent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDeletionResult'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /api/account-management/v1/tenants/{tenant_id}/metadata:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/Top'
+      - $ref: '#/components/parameters/Skip'
+    get:
+      operationId: listTenantMetadata
+      tags: [metadata]
+      summary: List metadata entries written directly on a tenant
+      responses:
+        '200':
+          description: Page of tenant metadata entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantMetadataPage'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /api/account-management/v1/tenants/{tenant_id}/metadata/{schema_id}:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/SchemaId'
+    get:
+      operationId: getTenantMetadata
+      tags: [metadata]
+      summary: Read a tenant's direct metadata entry
+      responses:
+        '200':
+          description: Tenant metadata entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantMetadataEntry'
+        default:
+          $ref: '#/components/responses/Problem'
+    put:
+      operationId: putTenantMetadata
+      tags: [metadata]
+      summary: Create or replace a tenant metadata entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantMetadataValue'
+      responses:
+        '200':
+          description: Metadata entry stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantMetadataEntry'
+        default:
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: deleteTenantMetadata
+      tags: [metadata]
+      summary: Delete a tenant metadata entry
+      responses:
+        '200':
+          description: Metadata entry deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantMetadataDeletionResult'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /api/account-management/v1/tenants/{tenant_id}/metadata/{schema_id}/resolved:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/SchemaId'
+    get:
+      operationId: resolveTenantMetadata
+      tags: [metadata]
+      summary: Resolve the effective metadata value for a tenant and schema
+      responses:
+        '200':
+          description: Effective metadata value
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResolvedTenantMetadata'
+        default:
+          $ref: '#/components/responses/Problem'
+
+components:
+  parameters:
+    TenantId:
+      name: tenant_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RequestId:
+      name: request_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+        description: IdP-issued UUID user identifier.
+    SchemaId:
+      name: schema_id
+      in: path
+      required: true
+      schema:
+        type: string
+        description: Full chained GTS schema identifier.
+    UserIdFilter:
+      name: user_id
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+        description: Optional UUID user identifier filter for point lookup behavior.
+    Top:
+      name: $top
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Skip:
+      name: $skip
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    StatusFilter:
+      name: status
+      in: query
+      required: false
+      schema:
+        $ref: '#/components/schemas/TenantStatus'
+    ConversionStatusFilter:
+      name: status
+      in: query
+      required: false
+      schema:
+        oneOf:
+          - $ref: '#/components/schemas/ConversionStatus'
+          - type: string
+            enum: [any]
+        default: pending
+
+  responses:
+    Problem:
+      description: RFC 9457 problem response
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    EmptyObject:
+      type: object
+      additionalProperties: false
+
+    TenantStatus:
+      type: string
+      enum: [active, suspended, deleted]
+
+    TenantMode:
+      type: string
+      enum: [managed, self_managed]
+
+    ConversionStatus:
+      type: string
+      enum: [pending, approved, cancelled, rejected, expired]
+
+    PageInfo:
+      type: object
+      additionalProperties: false
+      required: [top, skip]
+      properties:
+        top:
+          type: integer
+        skip:
+          type: integer
+        total:
+          type: integer
+          nullable: true
+
+    Tenant:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - parent_id
+        - tenant_type
+        - status
+        - self_managed
+        - depth
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        tenant_type:
+          type: string
+          description: Full chained GTS schema identifier for the tenant type.
+        status:
+          $ref: '#/components/schemas/TenantStatus'
+        self_managed:
+          type: boolean
+        depth:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    TenantCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, parent_id, tenant_type]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        parent_id:
+          type: string
+          format: uuid
+        tenant_type:
+          type: string
+        self_managed:
+          type: boolean
+          default: false
+        provisioning_metadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Opaque provider-specific provisioning context forwarded to the IdP contract.
+
+    TenantUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        status:
+          type: string
+          enum: [active, suspended]
+
+    TenantPage:
+      type: object
+      additionalProperties: false
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tenant'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+
+    OwnConversionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - target_mode
+        - initiator_side
+        - status
+        - created_at
+        - expires_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        target_mode:
+          $ref: '#/components/schemas/TenantMode'
+        initiator_side:
+          type: string
+          enum: [child, parent]
+        status:
+          $ref: '#/components/schemas/ConversionStatus'
+        requested_by:
+          type: string
+          format: uuid
+          nullable: true
+        approved_by:
+          type: string
+          format: uuid
+          nullable: true
+        cancelled_by:
+          type: string
+          format: uuid
+          nullable: true
+        rejected_by:
+          type: string
+          format: uuid
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ChildConversionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - child_tenant_name
+        - target_mode
+        - initiator_side
+        - status
+        - created_at
+        - expires_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        child_tenant_name:
+          type: string
+        target_mode:
+          $ref: '#/components/schemas/TenantMode'
+        initiator_side:
+          type: string
+          enum: [child, parent]
+        status:
+          $ref: '#/components/schemas/ConversionStatus'
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    OwnConversionRequestPage:
+      type: object
+      additionalProperties: false
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OwnConversionRequest'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+
+    ChildConversionRequestPage:
+      type: object
+      additionalProperties: false
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChildConversionRequest'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+
+    ChildConversionCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [child_tenant_id]
+      properties:
+        child_tenant_id:
+          type: string
+          format: uuid
+
+    ConversionPatchRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [approved, cancelled, rejected]
+
+    UserCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [username]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 255
+        attributes:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Provider-defined attributes forwarded to the IdP contract.
+
+    UserSummary:
+      type: object
+      additionalProperties: false
+      required: [id, username]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: IdP-issued UUID user identifier.
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+          nullable: true
+        display_name:
+          type: string
+          nullable: true
+        attributes:
+          type: object
+          additionalProperties: true
+          nullable: true
+
+    UserPage:
+      type: object
+      additionalProperties: false
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserSummary'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+
+    UserDeletionResult:
+      type: object
+      additionalProperties: false
+      required: [user_id, deleted]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: Deleted IdP-issued UUID user identifier.
+        deleted:
+          type: boolean
+
+    TenantMetadataValue:
+      type: object
+      description: GTS-schema-validated metadata payload.
+      additionalProperties: true
+
+    TenantMetadataEntry:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, schema_id, value, created_at, updated_at]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        schema_id:
+          type: string
+        value:
+          $ref: '#/components/schemas/TenantMetadataValue'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TenantMetadataPage:
+      type: object
+      additionalProperties: false
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantMetadataEntry'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+
+    ResolvedTenantMetadata:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, schema_id, resolved]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        schema_id:
+          type: string
+        resolved:
+          type: boolean
+          description: Whether an effective value was found.
+        source_tenant_id:
+          type: string
+          format: uuid
+          nullable: true
+        value:
+          $ref: '#/components/schemas/TenantMetadataValue'
+
+    TenantMetadataDeletionResult:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, schema_id, deleted]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        schema_id:
+          type: string
+        deleted:
+          type: boolean
+
+    Problem:
+      type: object
+      additionalProperties: true
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri-reference
+        code:
+          type: string
+          enum:
+            - validation
+            - not_found
+            - conflict
+            - cross_tenant_denied
+            - idp_unavailable
+            - idp_unsupported_operation
+            - service_unavailable
+            - internal
+        sub_code:
+          type: string
+          enum:
+            - invalid_tenant_type
+            - type_not_allowed
+            - tenant_depth_exceeded
+            - tenant_has_children
+            - tenant_has_resources
+            - root_tenant_cannot_delete
+            - pending_exists
+            - invalid_actor_for_transition
+            - already_resolved
+            - root_tenant_cannot_convert
+            - metadata_schema_not_registered
+            - metadata_entry_not_found
+          nullable: true
+          description: Stable module-specific discriminator when the contract defines one.
+        details:
+          type: object
+          additionalProperties: true
