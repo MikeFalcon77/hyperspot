@@ -599,5 +599,5 @@ build:
 	cargo +stable build --release --bin hyperspot-server $(E2E_ARGS)
 
 # Run all necessary quality checks and tests and then build the release binary
-all: build check test-sqlite e2e-local
+all: build check test-sqlite e2e-local openapi
 	@echo "consider to run 'make test-db' as well"

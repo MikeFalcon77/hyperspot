@@ -1,5 +1,12 @@
-# This workflow intentionally runs only when Rust source files change.
-# OpenAPI output is assumed to be fully derived from .rs files.
+# This workflow enforces two API contract checks on every PR:
+#
+# Phase 1 — Spec freshness: generates the OpenAPI spec from code (same as `make openapi`)
+#   and compares it against the committed docs/api/api.json. If they differ the developer
+#   forgot to run `make openapi`; the build fails with instructions.
+#
+# Phase 2 — Breaking changes: compares the base-branch spec against the freshly generated
+#   spec using oasdiff. Breaking changes block merge unless the `breaking-api-acknowledged`
+#   label is present.
 name: API Contracts
 
 on:
@@ -7,6 +14,13 @@ on:
     branches: [ main ]
     paths:
       - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+      - 'config/quickstart.yaml'
+      - 'config/e2e-features.txt'
+      - 'docs/api/api.json'
+      - '.github/workflows/api_contracts.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -15,55 +29,114 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
 jobs:
-  generate_api_json:
-    name: Generate api.json
+  api_contracts:
+    name: API Contract Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check for bypass label
+        id: check_label
+        run: |
+          if jq -e '.pull_request.labels | any(.[]; .name == "breaking-api-acknowledged")' "$GITHUB_EVENT_PATH" >/dev/null; then
+            echo "bypass=true" >> $GITHUB_OUTPUT
+            echo "::notice::Label 'breaking-api-acknowledged' found - breaking changes will be reported but won't fail the build"
+          else
+            echo "bypass=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Fetch base branch API spec
+        id: fetch_prev
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -e
+          git fetch origin "$BASE_REF" --depth=1
+          if git show "origin/$BASE_REF:docs/api/api.json" > /tmp/api.base.json 2>/dev/null; then
+            echo "Previous API spec found"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "No previous API spec on base branch - skipping breaking change detection"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ── Build & generate spec ──────────────────────────────────────────
 
       - name: Install protoc
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Rust stable toolchain
+      - name: Install Go (required for aws-lc-fips-sys FIPS build)
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@9bc92bc5598b4f3bec5d910d352094982cb0c3b9 # 1.92.0
 
+      # Cache Cargo registry/git + target/ across platforms.
       - name: Cache Cargo/target
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
         with:
           cache-bin: false
           cache-targets: false
-          shared-key: pr-${{ runner.os }}-api-json
+          shared-key: pr-${{ runner.os }}-stable-1.92
 
-      - name: Fetch previous API spec from base branch
-        env:
-          BASE_REF: ${{ github.base_ref }}
+      # Install sccache (cross-platform)
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+
+      # Probe sccache; if startup fails, fall back to plain rustc (no hard CI failure).
+      - name: Probe sccache & set RUSTC_WRAPPER
         run: |
-          set -e
-          # fetch base branch
-          git fetch origin "$BASE_REF" --depth=1
-          # try to extract previous api.json
-          if git show "origin/$BASE_REF:docs/api/api.json" > docs/api/api.prev.json 2>/dev/null; then
-            echo "Previous API spec found"
-             echo "PREV_EXISTS=true" >> $GITHUB_ENV
+          if sccache --start-server >/dev/null 2>&1; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
           else
-            echo "No previous API spec found"
-            echo "PREV_EXISTS=false" >> $GITHUB_ENV
+            echo "sccache failed, falling back to plain rustc"
           fi
 
-      - name: Generate new API spec
+      - name: Save committed spec & generate fresh spec
         run: |
-          set -e
-          make openapi OPENAPI_OUT=docs/api/api.new.json
-          if [ ! -f docs/api/api.new.json ]; then
-            echo "Error: make openapi did not generate docs/api/api.new.json"
-            exit 1
+          cp docs/api/api.json /tmp/api.committed.json
+          make openapi
+
+      # ── Phase 1: Spec freshness ───────────────────────────────────────
+
+      - name: Check spec is up to date
+        id: freshness
+        run: |
+          # Normalize both files (sorted keys, consistent formatting) to avoid false positives
+          # from non-deterministic JSON serialization order.
+          python3 -c "import json,sys; json.dump(json.load(open(sys.argv[1])),open(sys.argv[2],'w'),sort_keys=True,indent=2)" \
+            /tmp/api.committed.json /tmp/api.committed.norm.json
+          python3 -c "import json,sys; json.dump(json.load(open(sys.argv[1])),open(sys.argv[2],'w'),sort_keys=True,indent=2)" \
+            docs/api/api.json /tmp/api.generated.norm.json
+
+          if diff -q /tmp/api.committed.norm.json /tmp/api.generated.norm.json >/dev/null 2>&1; then
+            echo "stale=false" >> $GITHUB_OUTPUT
+            echo "✅ docs/api/api.json is up to date"
+          else
+            echo "stale=true" >> $GITHUB_OUTPUT
+            echo "::error::docs/api/api.json is out of date. Run 'make openapi' and commit the result."
+            echo ""
+            echo "=== Diff (committed vs generated, normalized) ==="
+            diff -u /tmp/api.committed.norm.json /tmp/api.generated.norm.json | head -200 || true
           fi
+
+      # ── Phase 2: Breaking change detection ─────────────────────────────
 
       - name: Download oasdiff
+        if: steps.fetch_prev.outputs.exists == 'true'
         env:
           OASDIFF_VERSION: "1.11.10"
           OASDIFF_SHA256: "6d5880efb3422401f14c85f3c1347d6c41de3e4ea7c04e3ca7dc5c8f452e8ba2"
@@ -74,9 +147,129 @@ jobs:
           sudo mv /tmp/oasdiff /usr/local/bin/oasdiff
           chmod +x /usr/local/bin/oasdiff
 
-      - name: Check OpenAPI breaking changes
-        if: env.PREV_EXISTS == 'true'
+      - name: Check breaking changes
+        id: breaking_check
+        if: steps.fetch_prev.outputs.exists == 'true'
         run: |
-          echo "Checking OpenAPI compatibility against previous version..."
-          # Compare old -> new (base branch to PR branch)
-          oasdiff breaking docs/api/api.prev.json docs/api/api.new.json
+          echo "Comparing base branch spec against generated spec..."
+
+          # Without --fail-on: exit 0 = success (output may list breaking changes or be empty),
+          # non-zero = tooling/parse error.
+          set +e
+          oasdiff breaking /tmp/api.base.json docs/api/api.json --format text > /tmp/breaking_text.txt 2>&1
+          OASDIFF_EXIT=$?
+          set -e
+
+          if [ $OASDIFF_EXIT -ne 0 ]; then
+            echo "::error::oasdiff failed with exit code $OASDIFF_EXIT (tooling error, not a breaking-change result)"
+            cat /tmp/breaking_text.txt
+            exit 1
+          fi
+
+          oasdiff summary /tmp/api.base.json docs/api/api.json --format yaml > /tmp/summary.txt 2>&1 || true
+
+          if grep -q '[^[:space:]]' /tmp/breaking_text.txt; then
+            echo "has_breaking=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Breaking changes detected:"
+            cat /tmp/breaking_text.txt
+          else
+            echo "has_breaking=false" >> $GITHUB_OUTPUT
+            echo "✅ No breaking changes detected"
+          fi
+
+          {
+            echo 'report<<EOF'
+            cat /tmp/breaking_text.txt
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
+          {
+            echo 'summary<<EOF'
+            cat /tmp/summary.txt
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
+      # ── Enforce ─────────────────────────────────────────────────────
+
+      - name: Enforce contract checks
+        if: |
+          steps.freshness.outputs.stale == 'true' ||
+          (steps.breaking_check.outputs.has_breaking == 'true' && steps.check_label.outputs.bypass != 'true')
+        env:
+          FRESHNESS_STALE: ${{ steps.freshness.outputs.stale }}
+          BREAKING_HAS: ${{ steps.breaking_check.outputs.has_breaking }}
+          BYPASS: ${{ steps.check_label.outputs.bypass }}
+        run: |
+          FAILED=false
+
+          if [ "$FRESHNESS_STALE" == "true" ]; then
+            echo "::error title=OpenAPI spec out of date::docs/api/api.json does not match the spec generated from code."
+            echo ""
+            echo "  To fix: run 'make openapi' locally and commit the updated docs/api/api.json."
+            echo ""
+            FAILED=true
+          fi
+
+          if [ "$BREAKING_HAS" == "true" ] && [ "$BYPASS" != "true" ]; then
+            echo "::error title=Breaking API changes::This PR introduces breaking changes to the OpenAPI contract."
+            echo ""
+            echo "Breaking changes:"
+            cat /tmp/breaking_text.txt
+            echo ""
+            echo "  To proceed, either:"
+            echo "    1. Fix the breaking changes to maintain backward compatibility."
+            echo "    2. Have a maintainer add the 'breaking-api-acknowledged' label to this PR."
+            echo ""
+            echo "  Note: Breaking API changes require a changelog update and may require a major version bump."
+            FAILED=true
+          fi
+
+          if [ "$FAILED" == "true" ]; then
+            exit 1
+          fi
+
+      # ── Summary ────────────────────────────────────────────────────────
+
+      - name: Summary
+        if: always()
+        env:
+          FRESHNESS_STALE: ${{ steps.freshness.outputs.stale }}
+          FRESHNESS_CONCLUSION: ${{ steps.freshness.conclusion }}
+          BREAKING_HAS: ${{ steps.breaking_check.outputs.has_breaking }}
+          BREAKING_CONCLUSION: ${{ steps.breaking_check.conclusion }}
+          BREAKING_REPORT: ${{ steps.breaking_check.outputs.report }}
+          BYPASS: ${{ steps.check_label.outputs.bypass }}
+          PREV_EXISTS: ${{ steps.fetch_prev.outputs.exists }}
+        run: |
+          echo "## API Contract Check Summary" >> $GITHUB_STEP_SUMMARY
+
+          # Phase 1: Freshness
+          if [ "$FRESHNESS_STALE" == "true" ]; then
+            echo "🔴 **docs/api/api.json is out of date** — run \`make openapi\` and commit" >> $GITHUB_STEP_SUMMARY
+          elif [ "$FRESHNESS_CONCLUSION" == "success" ]; then
+            echo "✅ **docs/api/api.json is up to date**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Spec freshness check did not complete**" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Phase 2: Breaking changes
+          if [ "$PREV_EXISTS" != "true" ]; then
+            echo "ℹ️ No base branch spec found — breaking change check skipped" >> $GITHUB_STEP_SUMMARY
+          elif [ "$BREAKING_CONCLUSION" != "success" ]; then
+            echo "⚠️ **Breaking change check did not complete**" >> $GITHUB_STEP_SUMMARY
+          elif [ "$BREAKING_HAS" == "true" ]; then
+            if [ "$BYPASS" == "true" ]; then
+              echo "⚠️ **Breaking changes detected but acknowledged** via \`breaking-api-acknowledged\` label" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "🔴 **Breaking changes detected** — PR cannot be merged until addressed" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Breaking Changes" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "$BREAKING_REPORT" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **No breaking changes detected**" >> $GITHUB_STEP_SUMMARY
+          fi
