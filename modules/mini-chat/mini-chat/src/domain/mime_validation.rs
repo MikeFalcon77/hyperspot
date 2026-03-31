@@ -283,6 +283,48 @@ pub fn infer_mime_from_extension(filename: &str) -> Option<&'static str> {
     }
 }
 
+/// Maximum filename length in characters to match the `VARCHAR(255)` DB column.
+const MAX_FILENAME_CHARS: usize = 255;
+
+/// Truncate a filename to at most 255 **characters** (not bytes), preserving the
+/// file extension so MIME inference and LLM context remain intact.
+///
+/// If the filename has an extension (determined via `rsplit_once('.')`), the stem
+/// is shortened to make room for `.{ext}` within the 255-char budget.
+#[must_use]
+pub fn truncate_filename(filename: &str) -> String {
+    let char_count = filename.chars().count();
+    if char_count <= MAX_FILENAME_CHARS {
+        return filename.to_owned();
+    }
+
+    let Some((stem, ext)) = filename
+        .rsplit_once('.')
+        .filter(|(stem, ext)| !stem.is_empty() && !ext.is_empty())
+    else {
+        // No meaningful extension (no dot, dotfile like ".bashrc", or trailing
+        // dot like "file.") — truncate the whole string to 255 characters.
+        return filename.chars().take(MAX_FILENAME_CHARS).collect();
+    };
+
+    let ext_chars = ext.chars().count();
+    let dot_plus_ext = 1 + ext_chars;
+
+    if dot_plus_ext >= MAX_FILENAME_CHARS {
+        // Extension is so long there is no room for the stem — fall back to
+        // keeping the last 255 characters of the original filename as-is.
+        return filename
+            .char_indices()
+            .rev()
+            .nth(MAX_FILENAME_CHARS - 1)
+            .map_or_else(|| filename.to_owned(), |(i, _)| filename[i..].to_owned());
+    }
+
+    let max_stem_chars = MAX_FILENAME_CHARS - dot_plus_ext;
+    let truncated_stem: String = stem.chars().take(max_stem_chars).collect();
+    format!("{truncated_stem}.{ext}")
+}
+
 /// Remap `text/csv` to `text/plain` so it passes [`validate_mime`] and is indexed
 /// as plain text by the provider. Returns `None` for non-CSV content types.
 #[must_use]
@@ -539,5 +581,88 @@ mod tests {
     fn pdf_resolves_to_file_search_purpose() {
         let purposes = resolve_purposes(MIME_PDF);
         assert_eq!(purposes, vec![AttachmentPurpose::FileSearch]);
+    }
+
+    // ── truncate_filename tests ─────────────────────────────────────────
+
+    #[test]
+    #[allow(
+        clippy::non_ascii_literal,
+        clippy::manual_str_repeat,
+        clippy::manual_repeat_n
+    )]
+    fn truncate_filename_cases() {
+        let long_a = "a".repeat(260);
+        let emoji_stem: String = std::iter::repeat('🎉').take(260).collect();
+        let cjk_stem: String = std::iter::repeat('中').take(256).collect();
+        let long_no_ext = "x".repeat(300);
+        let long_ext = "x".repeat(300);
+        let multi_dot_stem = "a".repeat(260);
+
+        // (input, expected_len, expected_suffix)
+        let cases: Vec<(String, usize, &str)> = vec![
+            // Short filename — unchanged
+            ("report.pdf".into(), 10, "report.pdf"),
+            // Exactly 255 chars — unchanged
+            (format!("{}.pdf", "a".repeat(251)), 255, ".pdf"),
+            // ASCII overflow — stem truncated, extension kept
+            (format!("{long_a}.pdf"), 255, ".pdf"),
+            // Emoji overflow — 4-byte chars, extension kept
+            (format!("{emoji_stem}.pdf"), 255, ".pdf"),
+            // CJK boundary — 3-byte chars, extension kept
+            (format!("{cjk_stem}.txt"), 255, ".txt"),
+            // No extension — plain truncation
+            (long_no_ext, 255, ""),
+            // Empty filename
+            (String::new(), 0, ""),
+            // Dotfile short — unchanged
+            (".hidden".into(), 7, ".hidden"),
+            // Multiple dots — last extension preserved
+            (format!("{multi_dot_stem}.tar.gz"), 255, ".gz"),
+            // Degenerate long extension — keeps trailing 255 chars
+            (format!("a.{long_ext}"), 255, ""),
+            // Long dotfile — treated as extensionless, plain truncation
+            (format!(".{}", "x".repeat(300)), 255, ""),
+            // Trailing dot — treated as extensionless, plain truncation
+            (format!("{}.", "y".repeat(300)), 255, ""),
+        ];
+
+        for (i, (input, expected_len, suffix)) in cases.iter().enumerate() {
+            let result = truncate_filename(input);
+            assert_eq!(
+                result.chars().count(),
+                *expected_len,
+                "case {i}: expected {expected_len} chars, got {} for input len {}",
+                result.chars().count(),
+                input.chars().count(),
+            );
+            if !suffix.is_empty() {
+                assert!(
+                    result.ends_with(suffix),
+                    "case {i}: expected suffix {suffix:?}, got {result:?}",
+                );
+            }
+            // Verify the result is always <= 255 chars
+            assert!(
+                result.chars().count() <= 255,
+                "case {i}: result exceeds 255 chars",
+            );
+            // Verify stem has correct length when extension is preserved
+            if !suffix.is_empty() && *expected_len == 255 {
+                assert_eq!(
+                    result.chars().count(),
+                    255,
+                    "case {i}: truncated result should be exactly 255 chars",
+                );
+            }
+        }
+
+        // Extra: verify exact stem length for the emoji case
+        let emoji_result = truncate_filename(&format!(
+            "{}.pdf",
+            std::iter::repeat('🎉').take(260).collect::<String>()
+        ));
+        let stem = &emoji_result[..emoji_result.rfind('.').unwrap()];
+        assert_eq!(stem.chars().count(), 251, "emoji stem should be 251 chars");
     }
 }

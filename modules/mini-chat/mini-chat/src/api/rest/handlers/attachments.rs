@@ -11,7 +11,8 @@ use modkit_security::SecurityContext;
 
 use crate::api::rest::dto::AttachmentDetailDto;
 use crate::domain::mime_validation::{
-    MIME_OCTET_STREAM, infer_mime_from_extension, normalize_mime, remap_csv_to_plain, validate_mime,
+    MIME_OCTET_STREAM, infer_mime_from_extension, normalize_mime, remap_csv_to_plain,
+    truncate_filename, validate_mime,
 };
 use crate::module::AppServices;
 
@@ -159,12 +160,9 @@ pub(crate) async fn upload_attachment(
     let filename = field
         .file_name()
         .map_or_else(|| "upload".to_owned(), ToString::to_string);
-    // Truncate to 255 chars (DB column is VARCHAR(255)).
-    let filename = if filename.len() > 255 {
-        filename[..255].to_owned()
-    } else {
-        filename
-    };
+    // Truncate to 255 characters (DB column is VARCHAR(255)),
+    // preserving the file extension for MIME inference and LLM clarity.
+    let filename = truncate_filename(&filename);
     let raw_ct = field
         .content_type()
         .map(ToString::to_string)
