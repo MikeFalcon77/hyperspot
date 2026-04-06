@@ -602,10 +602,12 @@ ci_docs: lychee
 # Run CI pipeline locally, requires docker
 ci: fmt clippy test-no-macros test-macros test-db deny test-users-info-pg lychee dylint dylint-test
 
-# Build the hyperspot-server release binary using the stable toolchain.
-# Feature set is read from config/e2e-features.txt when present.
+# Build the hyperspot-server release binary using the stable toolchain,
+# then split debug symbols into a separate file and strip the binary.
+# Platform detection and tool invocation is handled by the xtask crate.
 build:
 	cargo +stable build --release --bin hyperspot-server $(E2E_ARGS)
+	cargo xtask split-debug hyperspot-server
 
 # Run all necessary quality checks and tests and then build the release binary
 all: build check test-sqlite e2e-local openapi

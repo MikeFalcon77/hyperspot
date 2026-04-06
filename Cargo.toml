@@ -18,12 +18,13 @@ codegen-units = 16
 [profile.release]
 codegen-units = 1
 panic = "unwind"
-debug = 1
+debug = "line-tables-only"
 
 [workspace]
 members = [
     "apps/hyperspot-server",
     "apps/gts-docs-validator",
+    "xtask",
     "libs/modkit",
     "libs/modkit-macros",
     "libs/modkit-macros-tests",
