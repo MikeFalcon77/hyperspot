@@ -1,6 +1,6 @@
 use std::{future::Future, marker::PhantomData, pin::Pin, sync::Arc};
 
-use crate::secure::{DbConn, DbTx};
+use crate::secure::{DbConn, DbTx, TxConfig};
 use crate::{Db, DbError};
 
 /// Thin, reusable DB entrypoint for application services.
@@ -74,5 +74,26 @@ where
             + Send,
     {
         self.db.transaction_ref_mapped(f).await
+    }
+
+    /// Execute a closure inside a database transaction with custom configuration.
+    ///
+    /// This variant allows specifying isolation level and access mode via [`TxConfig`].
+    /// Use this for operations requiring stronger isolation guarantees (e.g.,
+    /// `SERIALIZABLE` for hierarchy mutations).
+    ///
+    /// # Errors
+    ///
+    /// Returns `E` if:
+    /// - starting the transaction fails (mapped from `DbError`)
+    /// - the closure returns an error
+    /// - commit fails (mapped from `DbError`)
+    pub async fn transaction_with_config<T, F>(&self, config: TxConfig, f: F) -> Result<T, E>
+    where
+        T: Send + 'static,
+        F: for<'a> FnOnce(&'a DbTx<'a>) -> Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>
+            + Send,
+    {
+        self.db.transaction_ref_mapped_with_config(config, f).await
     }
 }

@@ -293,6 +293,63 @@ impl Db {
         }
     }
 
+    /// Execute a closure inside a database transaction with custom configuration
+    /// (isolation level, access mode), mapping infrastructure errors into `E`.
+    ///
+    /// This is the preferred building block for service-facing entrypoints (like `DBProvider`)
+    /// that must return **domain** errors and need non-default transaction settings
+    /// (e.g., `SERIALIZABLE` isolation).
+    ///
+    /// # Security
+    ///
+    /// The task-local guard is enforced for the duration of the closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns `E` if:
+    /// - starting the transaction fails (mapped from `DbError`)
+    /// - the closure returns an error
+    /// - commit fails (mapped from `DbError`)
+    pub async fn transaction_ref_mapped_with_config<F, T, E>(
+        &self,
+        config: TxConfig,
+        f: F,
+    ) -> Result<T, E>
+    where
+        E: From<DbError> + Send + 'static,
+        F: for<'a> FnOnce(&'a DbTx<'a>) -> Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>
+            + Send,
+        T: Send + 'static,
+    {
+        use sea_orm::{AccessMode, IsolationLevel};
+
+        let isolation: Option<IsolationLevel> = config.isolation.map(Into::into);
+        let access_mode: Option<AccessMode> = config.access_mode.map(Into::into);
+
+        let txn = self
+            .handle
+            .sea_internal_ref()
+            .begin_with_config(isolation, access_mode)
+            .await
+            .map_err(DbError::from)
+            .map_err(E::from)?;
+        let tx = DbTx { tx: &txn };
+
+        // Run the closure with the transaction guard set
+        let res = with_tx_guard(f(&tx)).await;
+
+        match res {
+            Ok(v) => {
+                txn.commit().await.map_err(DbError::from).map_err(E::from)?;
+                Ok(v)
+            }
+            Err(e) => {
+                _ = txn.rollback().await;
+                Err(e)
+            }
+        }
+    }
+
     /// Execute a closure inside a database transaction.
     ///
     /// # Security

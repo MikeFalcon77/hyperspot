@@ -1,7 +1,8 @@
+use sea_orm::sea_query::{Alias, Query};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, sea_query::Expr};
 
 use crate::secure::{AccessScope, ScopableEntity};
-use modkit_security::access_scope::{ScopeConstraint, ScopeFilter, ScopeValue};
+use modkit_security::access_scope::{ScopeConstraint, ScopeFilter, ScopeValue, rg_tables};
 
 /// Convert a [`ScopeValue`] to a `sea_query::SimpleExpr` for SQL binding.
 fn scope_value_to_sea_expr(v: &ScopeValue) -> sea_orm::sea_query::SimpleExpr {
@@ -101,6 +102,44 @@ where
             ScopeFilter::In(inf) => {
                 let sea_values = scope_values_to_sea_values(inf.values());
                 and_cond = and_cond.add(col.is_in(sea_values));
+            }
+            ScopeFilter::InGroup(gf) => {
+                // col IN (SELECT resource_id FROM resource_group_membership
+                //          WHERE group_id IN (...))
+                let group_values = scope_values_to_sea_values(gf.group_ids());
+                let subquery = Query::select()
+                    .column(Alias::new(rg_tables::MEMBERSHIP_RESOURCE_ID))
+                    .from(Alias::new(rg_tables::MEMBERSHIP_TABLE))
+                    .and_where(
+                        Expr::col(Alias::new(rg_tables::MEMBERSHIP_GROUP_ID)).is_in(group_values),
+                    )
+                    .to_owned();
+                and_cond = and_cond.add(col.into_expr().in_subquery(subquery));
+            }
+            ScopeFilter::InGroupSubtree(sf) => {
+                // col IN (SELECT resource_id FROM resource_group_membership
+                //          WHERE group_id IN (
+                //            SELECT descendant_id FROM resource_group_closure
+                //            WHERE ancestor_id IN (...)
+                //          ))
+                let ancestor_values = scope_values_to_sea_values(sf.ancestor_ids());
+                let closure_subquery = Query::select()
+                    .column(Alias::new(rg_tables::CLOSURE_DESCENDANT_ID))
+                    .from(Alias::new(rg_tables::CLOSURE_TABLE))
+                    .and_where(
+                        Expr::col(Alias::new(rg_tables::CLOSURE_ANCESTOR_ID))
+                            .is_in(ancestor_values),
+                    )
+                    .to_owned();
+                let membership_subquery = Query::select()
+                    .column(Alias::new(rg_tables::MEMBERSHIP_RESOURCE_ID))
+                    .from(Alias::new(rg_tables::MEMBERSHIP_TABLE))
+                    .and_where(
+                        Expr::col(Alias::new(rg_tables::MEMBERSHIP_GROUP_ID))
+                            .in_subquery(closure_subquery),
+                    )
+                    .to_owned();
+                and_cond = and_cond.add(col.into_expr().in_subquery(membership_subquery));
             }
         }
     }
@@ -247,6 +286,78 @@ mod tests {
         assert!(
             !cond_str.contains("Value(Bool(Some(false)))"),
             "Expected a real condition, got deny-all: {cond_str}"
+        );
+    }
+
+    #[test]
+    fn test_in_group_filter_produces_subquery_condition() {
+        let group_id = uuid::Uuid::new_v4();
+        let scope =
+            AccessScope::from_constraints(vec![ScopeConstraint::new(vec![ScopeFilter::in_group(
+                pep_properties::RESOURCE_ID,
+                vec![ScopeValue::Uuid(group_id)],
+            )])]);
+        let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);
+        let cond_str = format!("{cond:?}");
+        // Should NOT be deny-all
+        assert!(
+            !cond_str.contains("Value(Bool(Some(false)))"),
+            "InGroup should produce a real condition, got: {cond_str}"
+        );
+        // Verify the condition references the membership table and columns
+        assert!(
+            cond_str.contains("resource_group_membership"),
+            "InGroup condition must reference resource_group_membership table, got: {cond_str}"
+        );
+        assert!(
+            cond_str.contains("group_id"),
+            "InGroup condition must filter by group_id, got: {cond_str}"
+        );
+        assert!(
+            cond_str.contains("resource_id"),
+            "InGroup condition must join on resource_id, got: {cond_str}"
+        );
+    }
+
+    #[test]
+    fn test_in_group_subtree_filter_produces_subquery_condition() {
+        let ancestor_id = uuid::Uuid::new_v4();
+        let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
+            ScopeFilter::in_group_subtree(
+                pep_properties::RESOURCE_ID,
+                vec![ScopeValue::Uuid(ancestor_id)],
+            ),
+        ])]);
+        let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);
+        let cond_str = format!("{cond:?}");
+        assert!(
+            !cond_str.contains("Value(Bool(Some(false)))"),
+            "InGroupSubtree should produce a real condition, got: {cond_str}"
+        );
+        // Verify subtree condition references hierarchy tables
+        assert!(
+            cond_str.contains("resource_group_membership"),
+            "InGroupSubtree condition must reference resource_group_membership table, got: {cond_str}"
+        );
+        assert!(
+            cond_str.contains("resource_id"),
+            "InGroupSubtree condition must join on resource_id, got: {cond_str}"
+        );
+    }
+
+    #[test]
+    fn test_tenant_plus_in_group_produces_and_condition() {
+        let tid = uuid::Uuid::new_v4();
+        let gid = uuid::Uuid::new_v4();
+        let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
+            ScopeFilter::in_uuids(pep_properties::OWNER_TENANT_ID, vec![tid]),
+            ScopeFilter::in_group(pep_properties::RESOURCE_ID, vec![ScopeValue::Uuid(gid)]),
+        ])]);
+        let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);
+        let cond_str = format!("{cond:?}");
+        assert!(
+            !cond_str.contains("Value(Bool(Some(false)))"),
+            "Combined tenant+group should produce a real condition, got: {cond_str}"
         );
     }
 

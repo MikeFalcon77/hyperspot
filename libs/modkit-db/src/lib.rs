@@ -77,6 +77,7 @@ pub use sea_orm_migration;
 pub mod advisory_locks;
 pub mod config;
 pub mod contention;
+pub mod deadlock;
 pub mod manager;
 pub mod migration_runner;
 pub mod odata;
