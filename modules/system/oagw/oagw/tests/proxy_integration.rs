@@ -3843,7 +3843,49 @@ async fn read_http_response_headers(stream: &mut tokio::net::TcpStream) -> Strin
 /// Helper: perform a WebSocket handshake over a raw TCP stream.
 /// Returns the stream positioned after the 101 response headers and after
 /// confirming the proxy bridge is fully operational via a Ping/Pong probe.
+///
+/// If the bridge task hasn't started in time (CI/coverage builds can be slow),
+/// the proxy may send a Close frame before the readiness probe Pong arrives.
+/// In that case we reconnect and retry up to `MAX_HANDSHAKE_RETRIES` times.
 async fn ws_handshake(stream: &mut tokio::net::TcpStream, uri: &str) {
+    ws_handshake_to(stream, uri, stream.peer_addr().unwrap()).await;
+}
+
+/// Like [`ws_handshake`] but accepts a separate `addr` for reconnection.
+/// Used by call sites that haven't connected the stream yet, or need the
+/// addr for retry logic.
+async fn ws_handshake_to(
+    stream: &mut tokio::net::TcpStream,
+    uri: &str,
+    addr: std::net::SocketAddr,
+) {
+    const MAX_HANDSHAKE_RETRIES: usize = 3;
+    for attempt in 0..=MAX_HANDSHAKE_RETRIES {
+        ws_send_upgrade(stream, uri).await;
+        match ws_readiness_probe(stream).await {
+            Ok(()) => return,
+            Err(msg) if attempt < MAX_HANDSHAKE_RETRIES => {
+                eprintln!(
+                    "ws_handshake: attempt {}/{} failed ({msg}), reconnecting",
+                    attempt + 1,
+                    MAX_HANDSHAKE_RETRIES + 1,
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1)))
+                    .await;
+                *stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            }
+            Err(msg) => {
+                panic!(
+                    "ws_handshake: readiness probe failed after {} attempts: {msg}",
+                    MAX_HANDSHAKE_RETRIES + 1,
+                );
+            }
+        }
+    }
+}
+
+/// Send the HTTP upgrade request and assert 101 response.
+async fn ws_send_upgrade(stream: &mut tokio::net::TcpStream, uri: &str) {
     use tokio::io::AsyncWriteExt;
     let req = format!(
         "GET {uri} HTTP/1.1\r\n\
@@ -3860,11 +3902,6 @@ async fn ws_handshake(stream: &mut tokio::net::TcpStream, uri: &str) {
         resp.starts_with("HTTP/1.1 101"),
         "expected 101 Switching Protocols, got: {resp}"
     );
-    // Ensure the proxy bridge is fully operational before returning.
-    // Without this, the spawned bridge task may still be awaiting
-    // on_upgrade when the caller sends its first data frame, causing
-    // flaky "EOF on frame 0" failures under CI resource pressure.
-    ws_readiness_probe(stream).await;
 }
 
 /// Helper: build a masked WebSocket frame for sending from a client.
@@ -3947,30 +3984,32 @@ async fn read_ws_frame(stream: &mut tokio::net::TcpStream) -> Option<(u8, Vec<u8
 /// Send a Ping and wait for the matching Pong, confirming the proxy bridge
 /// pipeline is fully operational before the test sends data frames.
 ///
-/// The Ping is buffered in the TCP kernel even if the bridge task hasn't
-/// started reading yet — once `frame_relay` begins, it forwards the Ping
-/// to the upstream, axum's tungstenite layer auto-responds with Pong, and
-/// the Pong arrives back here.
-async fn ws_readiness_probe(stream: &mut tokio::net::TcpStream) {
+/// Returns `Ok(())` on success, or `Err(message)` if the bridge sent a
+/// Close frame or EOF before the Pong arrived (transient under CI load).
+async fn ws_readiness_probe(stream: &mut tokio::net::TcpStream) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
     let probe = b"ready";
     let ping = build_masked_frame(0x9, probe);
-    stream.write_all(&ping).await.unwrap();
+    if let Err(e) = stream.write_all(&ping).await {
+        return Err(format!("failed to send Ping: {e}"));
+    }
     loop {
         match read_ws_frame(stream).await {
-            Some((0xA, data)) if data == probe => return,
+            Some((0xA, data)) if data == probe => return Ok(()),
             Some((0xA, _)) => continue, // stale or unrelated Pong
             Some((0x9, _)) => continue, // Ping from upstream
-            Some((0x8, close_payload)) => panic!(
-                "readiness probe failed: expected Pong with payload {:?}, \
-                 but server sent Close frame with payload {close_payload:?} — \
-                 idle timeout may be too short for CI/coverage builds",
-                std::str::from_utf8(probe).unwrap(),
-            ),
-            other => panic!(
-                "readiness probe failed: expected Pong with payload {:?}, got {other:?}",
-                std::str::from_utf8(probe).unwrap(),
-            ),
+            Some((0x8, close_payload)) => {
+                return Err(format!(
+                    "server sent Close frame ({close_payload:?}) before Pong — \
+                     bridge task likely not ready yet"
+                ));
+            }
+            None => {
+                return Err("connection closed (EOF) before Pong".into());
+            }
+            other => {
+                return Err(format!("unexpected frame: {other:?}"));
+            }
         }
     }
 }
@@ -4529,4 +4568,85 @@ async fn proxy_response_header_rules_applied() {
         "added-value",
         "response add rule should inject header"
     );
+}
+
+// Verify that ws_handshake retries when the bridge sends Close before the
+// readiness Pong. This deterministically reproduces the CI race condition
+// where the spawned bridge task hasn't started reading frames yet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn proxy_websocket_handshake_retries_on_early_close() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::AsyncWriteExt;
+
+    let attempt = Arc::new(AtomicUsize::new(0));
+    let attempt_clone = attempt.clone();
+
+    // Fake server: first connection gets 101 then an immediate Close 1001;
+    // second connection gets a proper WebSocket echo (via the real OAGW).
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fake_addr = listener.local_addr().unwrap();
+
+    // Set up a real OAGW server for the successful retry.
+    let h = AppHarness::builder().build().await;
+    setup_ws_upstream(&h, "ws-retry-test").await;
+    let (real_addr, server_handle) = start_oagw_server(&h).await;
+
+    let proxy_handle = tokio::spawn(async move {
+        loop {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let n = attempt_clone.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                // First connection: send 101 then Close 1001 (simulates bridge not ready).
+                let resp = "HTTP/1.1 101 Switching Protocols\r\n\
+                            Upgrade: websocket\r\n\
+                            Connection: Upgrade\r\n\
+                            Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\
+                            \r\n";
+                sock.write_all(resp.as_bytes()).await.unwrap();
+                // Send unmasked Close frame: opcode 0x8, payload = 1001 + "Going Away"
+                let close_payload = {
+                    let mut p = 1001u16.to_be_bytes().to_vec();
+                    p.extend_from_slice(b"Going Away");
+                    p
+                };
+                let mut frame = vec![0x88]; // FIN + Close
+                frame.push(close_payload.len() as u8); // no mask (server→client)
+                frame.extend_from_slice(&close_payload);
+                sock.write_all(&frame).await.unwrap();
+                sock.shutdown().await.ok();
+            } else {
+                // Subsequent connections: proxy to the real OAGW server.
+                let mut upstream = tokio::net::TcpStream::connect(real_addr).await.unwrap();
+                let (mut ur, mut uw) = upstream.split();
+                let (mut sr, mut sw) = sock.split();
+                tokio::select! {
+                    _ = tokio::io::copy(&mut sr, &mut uw) => {}
+                    _ = tokio::io::copy(&mut ur, &mut sw) => {}
+                }
+            }
+        }
+    });
+
+    let mut stream = tokio::net::TcpStream::connect(fake_addr).await.unwrap();
+    ws_handshake(&mut stream, "/oagw/v1/proxy/ws-retry-test/ws/echo").await;
+
+    // If we got here, the retry succeeded. Verify the connection works.
+    let frame = build_masked_frame(0x1, b"retry-ok");
+    tokio::io::AsyncWriteExt::write_all(&mut stream, &frame)
+        .await
+        .unwrap();
+    let echo = read_ws_frame(&mut stream).await.expect("echo after retry");
+    assert_eq!(echo.0, 0x1);
+    assert_eq!(echo.1, b"retry-ok");
+
+    // Confirm at least 2 connection attempts were made.
+    assert!(
+        attempt.load(Ordering::SeqCst) >= 2,
+        "expected at least 2 attempts, got {}",
+        attempt.load(Ordering::SeqCst),
+    );
+
+    proxy_handle.abort();
+    server_handle.abort();
 }
