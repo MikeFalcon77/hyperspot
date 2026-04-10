@@ -1695,10 +1695,18 @@ dependencies = [
 name = "cf-modkit-service-hub"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "bytes",
+ "cf-modkit",
+ "cf-modkit-http",
+ "futures-core",
  "http",
+ "parking_lot",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
