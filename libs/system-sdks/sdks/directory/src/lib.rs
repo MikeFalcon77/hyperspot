@@ -9,6 +9,8 @@ mod api;
 #[cfg(feature = "grpc")]
 mod grpc;
 
-pub use api::{DirectoryClient, RegisterInstanceInfo, ServiceEndpoint, ServiceInstanceInfo};
+pub use api::{
+    DirectoryClient, GrpcServiceInfo, RegisterInstanceInfo, ServiceEndpoint, ServiceInstanceInfo,
+};
 #[cfg(feature = "grpc")]
 pub use grpc::*;

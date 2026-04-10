@@ -44,6 +44,7 @@ members = [
     "libs/modkit-node-info",
     "libs/modkit-transport-grpc",
     "libs/modkit-utils",
+    "libs/modkit-service-hub",
     "libs/system-sdks",
     "libs/system-sdks/sdks/directory",
     "modules/credstore/credstore-sdk",
@@ -236,6 +237,7 @@ modkit-sdk = { package = "cf-modkit-sdk", version = "0.6.4", path = "libs/modkit
 modkit-security = { package = "cf-modkit-security", version = "0.7.0", path = "libs/modkit-security" }
 modkit-transport-grpc = { package = "cf-modkit-transport-grpc", version = "0.6.3", path = "libs/modkit-transport-grpc" }
 modkit-utils = { package = "cf-modkit-utils", version = "0.6.3", path = "libs/modkit-utils" }
+modkit-service-hub = { package = "cf-modkit-service-hub", version = "0.1.0", path = "libs/modkit-service-hub" }
 
 cf-system-sdks = { version = "0.1.34", path = "libs/system-sdks" }
 cf-system-sdk-directory = { version = "0.1.34", path = "libs/system-sdks/sdks/directory" }
