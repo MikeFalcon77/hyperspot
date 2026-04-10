@@ -19,5 +19,14 @@ thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 http = { workspace = true }
+modkit = { workspace = true }
+modkit-http = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+bytes = { workspace = true }
+futures-core = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
