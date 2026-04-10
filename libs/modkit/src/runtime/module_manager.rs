@@ -88,11 +88,18 @@ pub struct InstanceRuntimeState {
 #[derive(Debug)]
 #[must_use]
 pub struct ModuleInstance {
+    /// Module name this instance belongs to
     pub module: String,
+    /// Unique identifier for this instance
     pub instance_id: Uuid,
+    /// Optional control endpoint for lifecycle management
     pub control: Option<Endpoint>,
+    /// Map of gRPC service name to endpoint
     pub grpc_services: HashMap<String, Endpoint>,
+    /// Optional version string
     pub version: Option<String>,
+    /// Optional REST endpoint (not all modules expose REST)
+    pub rest_endpoint: Option<Endpoint>,
     inner: Arc<parking_lot::RwLock<InstanceRuntimeState>>,
 }
 
@@ -104,6 +111,7 @@ impl Clone for ModuleInstance {
             control: self.control.clone(),
             grpc_services: self.grpc_services.clone(),
             version: self.version.clone(),
+            rest_endpoint: self.rest_endpoint.clone(),
             inner: Arc::clone(&self.inner),
         }
     }
@@ -117,6 +125,7 @@ impl ModuleInstance {
             control: None,
             grpc_services: HashMap::new(),
             version: None,
+            rest_endpoint: None,
             inner: Arc::new(parking_lot::RwLock::new(InstanceRuntimeState {
                 last_heartbeat: Instant::now(),
                 state: InstanceState::Registered,
@@ -136,6 +145,12 @@ impl ModuleInstance {
 
     pub fn with_grpc_service(mut self, name: impl Into<String>, ep: Endpoint) -> Self {
         self.grpc_services.insert(name.into(), ep);
+        self
+    }
+
+    /// Set the REST endpoint for this instance
+    pub fn with_rest_endpoint(mut self, ep: Endpoint) -> Self {
+        self.rest_endpoint = Some(ep);
         self
     }
 
@@ -356,6 +371,49 @@ impl ModuleManager {
         *counter = (*counter + 1) % len;
 
         candidates.get(idx).cloned()
+    }
+
+    /// Pick a module instance that has a REST endpoint, using round-robin selection.
+    /// Returns the instance and a reference to its REST endpoint, preferring healthy/ready instances.
+    #[must_use]
+    pub fn pick_rest_module(&self, module_name: &str) -> Option<(Arc<ModuleInstance>, Endpoint)> {
+        let instances_entry = self.inner.get(module_name)?;
+        let instances = instances_entry.value();
+
+        // Collect healthy/ready instances that have a REST endpoint
+        let healthy: Vec<_> = instances
+            .iter()
+            .filter(|inst| {
+                inst.rest_endpoint.is_some()
+                    && matches!(inst.state(), InstanceState::Healthy | InstanceState::Ready)
+            })
+            .cloned()
+            .collect();
+
+        // Fall back to all instances with a REST endpoint if none are healthy
+        let candidates: Vec<_> = if healthy.is_empty() {
+            instances
+                .iter()
+                .filter(|inst| inst.rest_endpoint.is_some())
+                .cloned()
+                .collect()
+        } else {
+            healthy
+        };
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let len = candidates.len();
+        let rr_key = format!("rest:{module_name}");
+        let mut counter = self.rr_counters.entry(rr_key).or_insert(0);
+        let idx = *counter % len;
+        *counter = (*counter + 1) % len;
+
+        candidates
+            .get(idx)
+            .and_then(|inst| inst.rest_endpoint.clone().map(|ep| (inst.clone(), ep)))
     }
 
     /// Pick a service endpoint using round-robin, returning (module, instance, endpoint).
@@ -730,5 +788,83 @@ mod tests {
         assert_ne!(inst1.instance_id, inst2.instance_id);
         // Endpoints should differ
         assert_ne!(ep1, ep2);
+    }
+
+    #[test]
+    fn test_with_rest_endpoint() {
+        let instance_id = Uuid::new_v4();
+        let instance = ModuleInstance::new("billing", instance_id)
+            .with_rest_endpoint(Endpoint::http("0.0.0.0", 8080));
+
+        assert!(instance.rest_endpoint.is_some());
+        assert_eq!(
+            instance.rest_endpoint.as_ref().unwrap().uri,
+            "http://0.0.0.0:8080"
+        );
+    }
+
+    #[test]
+    fn test_pick_rest_module_none_available() {
+        let dir = ModuleManager::new();
+
+        // No instances at all
+        let result = dir.pick_rest_module("nonexistent");
+        assert!(result.is_none());
+
+        // Instance exists but has no REST endpoint
+        let id = Uuid::new_v4();
+        let inst = Arc::new(ModuleInstance::new("grpc_only", id));
+        dir.register_instance(inst);
+        dir.update_heartbeat("grpc_only", id, Instant::now());
+
+        let result = dir.pick_rest_module("grpc_only");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_pick_rest_module_found() {
+        let dir = ModuleManager::new();
+
+        let id = Uuid::new_v4();
+        let inst = Arc::new(
+            ModuleInstance::new("billing", id)
+                .with_rest_endpoint(Endpoint::http("billing-host", 8080)),
+        );
+        dir.register_instance(inst);
+        dir.update_heartbeat("billing", id, Instant::now());
+
+        let result = dir.pick_rest_module("billing");
+        assert!(result.is_some());
+
+        let (picked_inst, ep) = result.unwrap();
+        assert_eq!(picked_inst.instance_id, id);
+        assert_eq!(ep.uri, "http://billing-host:8080");
+    }
+
+    #[test]
+    fn test_pick_rest_module_round_robin() {
+        let dir = ModuleManager::new();
+
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let inst1 = Arc::new(
+            ModuleInstance::new("billing", id1).with_rest_endpoint(Endpoint::http("host1", 8080)),
+        );
+        let inst2 = Arc::new(
+            ModuleInstance::new("billing", id2).with_rest_endpoint(Endpoint::http("host2", 8080)),
+        );
+        dir.register_instance(inst1);
+        dir.register_instance(inst2);
+        dir.update_heartbeat("billing", id1, Instant::now());
+        dir.update_heartbeat("billing", id2, Instant::now());
+
+        let pick1 = dir.pick_rest_module("billing").unwrap();
+        let pick2 = dir.pick_rest_module("billing").unwrap();
+        let pick3 = dir.pick_rest_module("billing").unwrap();
+
+        // Round-robin: first and third should be the same
+        assert_eq!(pick1.0.instance_id, pick3.0.instance_id);
+        // First and second should differ
+        assert_ne!(pick1.0.instance_id, pick2.0.instance_id);
     }
 }

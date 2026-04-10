@@ -1,0 +1,33 @@
+[package]
+name = "cf-modkit-service-hub"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Service contract hub framework for ModKit — IR pipeline, resolution, and transport abstraction"
+rust-version.workspace = true
+
+[lib]
+name = "modkit_service_hub"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+http = { workspace = true }
+modkit = { workspace = true }
+modkit-http = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+bytes = { workspace = true }
+futures-core = { workspace = true }
+modkit-service-hub-macros.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

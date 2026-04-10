@@ -37,6 +37,12 @@ impl ServiceEndpoint {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GrpcServiceInfo {
+    pub service_name: String,
+    pub endpoint: ServiceEndpoint,
+}
+
 /// Information about a service instance
 #[derive(Debug, Clone)]
 pub struct ServiceInstanceInfo {
@@ -44,10 +50,12 @@ pub struct ServiceInstanceInfo {
     pub module: String,
     /// Unique instance identifier
     pub instance_id: String,
-    /// Primary endpoint for the instance
-    pub endpoint: ServiceEndpoint,
+    /// Published gRPC services for the instance
+    pub grpc_services: Vec<GrpcServiceInfo>,
     /// Optional version string
     pub version: Option<String>,
+    /// Optional REST endpoint for this instance (not all modules expose REST)
+    pub rest_endpoint: Option<ServiceEndpoint>,
 }
 
 /// Information for registering a new module instance
@@ -57,10 +65,12 @@ pub struct RegisterInstanceInfo {
     pub module: String,
     /// Unique instance identifier
     pub instance_id: String,
-    /// Map of gRPC service name to endpoint
-    pub grpc_services: Vec<(String, ServiceEndpoint)>,
+    /// Published gRPC services for the instance
+    pub grpc_services: Vec<GrpcServiceInfo>,
     /// Optional version string
     pub version: Option<String>,
+    /// Optional REST endpoint for this instance (not all modules expose REST)
+    pub rest_endpoint: Option<ServiceEndpoint>,
 }
 
 /// Directory API trait for service discovery and instance management
@@ -73,6 +83,10 @@ pub struct RegisterInstanceInfo {
 pub trait DirectoryClient: Send + Sync {
     /// Resolve a gRPC service by its logical name to an endpoint
     async fn resolve_grpc_service(&self, service_name: &str) -> Result<ServiceEndpoint>;
+
+    /// Resolve a REST endpoint for a module by its name.
+    /// Returns the base URL (e.g., `http://billing-service:8080`) for making REST calls.
+    async fn resolve_rest_service(&self, module_name: &str) -> Result<ServiceEndpoint>;
 
     /// List all service instances for a given module
     async fn list_instances(&self, module: &str) -> Result<Vec<ServiceInstanceInfo>>;
@@ -113,15 +127,33 @@ mod tests {
         let info = RegisterInstanceInfo {
             module: "test_module".to_owned(),
             instance_id: "instance1".to_owned(),
-            grpc_services: vec![(
-                "test.Service".to_owned(),
-                ServiceEndpoint::http("127.0.0.1", 8001),
-            )],
+            grpc_services: vec![GrpcServiceInfo {
+                service_name: "test.Service".to_owned(),
+                endpoint: ServiceEndpoint::http("127.0.0.1", 8001),
+            }],
             version: Some("1.0.0".to_owned()),
+            rest_endpoint: None,
         };
 
         assert_eq!(info.module, "test_module");
         assert_eq!(info.instance_id, "instance1");
         assert_eq!(info.grpc_services.len(), 1);
+        assert_eq!(info.grpc_services[0].service_name, "test.Service");
+        assert!(info.rest_endpoint.is_none());
+    }
+
+    #[test]
+    fn test_register_instance_info_with_rest_endpoint() {
+        let info = RegisterInstanceInfo {
+            module: "billing".to_owned(),
+            instance_id: "instance1".to_owned(),
+            grpc_services: vec![],
+            version: Some("2.0.0".to_owned()),
+            rest_endpoint: Some(ServiceEndpoint::http("billing-service", 8080)),
+        };
+
+        assert_eq!(info.module, "billing");
+        let rest_ep = info.rest_endpoint.as_ref().unwrap();
+        assert_eq!(rest_ep.uri, concat!("http", "://billing-service:8080"));
     }
 }

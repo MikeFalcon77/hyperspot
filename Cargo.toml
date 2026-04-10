@@ -44,6 +44,8 @@ members = [
     "libs/modkit-node-info",
     "libs/modkit-transport-grpc",
     "libs/modkit-utils",
+    "libs/modkit-service-hub",
+    "libs/modkit-service-hub-macros",
     "libs/system-sdks",
     "libs/system-sdks/sdks/directory",
     "modules/credstore/credstore-sdk",
@@ -86,6 +88,8 @@ members = [
     "modules/system/oagw/oagw-sdk",
     "modules/mini-chat/mini-chat-sdk",
     "modules/mini-chat/mini-chat",
+    "modules/service-hub-demo/service-hub-demo-sdk",
+    "modules/service-hub-demo/service-hub-demo",
 ]
 exclude = ["tools/fuzz"]
 resolver = "3"
@@ -236,6 +240,8 @@ modkit-sdk = { package = "cf-modkit-sdk", version = "0.6.4", path = "libs/modkit
 modkit-security = { package = "cf-modkit-security", version = "0.7.0", path = "libs/modkit-security" }
 modkit-transport-grpc = { package = "cf-modkit-transport-grpc", version = "0.6.3", path = "libs/modkit-transport-grpc" }
 modkit-utils = { package = "cf-modkit-utils", version = "0.6.3", path = "libs/modkit-utils" }
+modkit-service-hub = { package = "cf-modkit-service-hub", version = "0.1.0", path = "libs/modkit-service-hub" }
+modkit-service-hub-macros = { package = "cf-modkit-service-hub-macros", version = "0.1.0", path = "libs/modkit-service-hub-macros" }
 
 cf-system-sdks = { version = "0.1.34", path = "libs/system-sdks" }
 cf-system-sdk-directory = { version = "0.1.34", path = "libs/system-sdks/sdks/directory" }
@@ -252,6 +258,9 @@ credstore-sdk = { package = "cf-credstore-sdk", version = "0.1.18", path = "modu
 
 # mini-chat
 mini-chat-sdk = { package = "cf-mini-chat-sdk", version = "0.10.0", path = "modules/mini-chat/mini-chat-sdk" }
+
+# service-hub-demo
+service-hub-demo-sdk = { package = "cf-service-hub-demo-sdk", version = "0.1.0", path = "modules/service-hub-demo/service-hub-demo-sdk" }
 
 # system modules
 grpc_hub = { package = "cf-grpc-hub", version = "0.2.0", path = "modules/system/grpc-hub" }
