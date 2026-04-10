@@ -1,0 +1,88 @@
+[package]
+name = "cf-modkit-contract"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "ModKit contract IR, binding metadata, validation, policy stack, and proc-macro re-exports"
+rust-version.workspace = true
+
+[lib]
+name = "modkit_contract"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+runtime-client = [
+    "canonical-errors",
+    "dep:modkit-http",
+    "dep:http-body",
+    "dep:http-body-util",
+    "dep:tokio",
+    "dep:bytes",
+    "dep:futures-util",
+    "dep:futures-core",
+    "dep:rand",
+    "dep:async-stream",
+]
+# Used by rest_contract codegen to gate the generated client struct.
+rest-client = ["runtime-client"]
+# Generate OpenAPI 3.1 specs from contract + binding IR.
+openapi = []
+# Axum router helper that publishes the OpenAPI spec at /.well-known/openapi.json.
+openapi-axum = ["openapi", "dep:axum"]
+# Conversion of `TransportError` into `modkit_canonical_errors::CanonicalError`.
+# Pull this in when SDKs want their `Result<_, CanonicalError>` to absorb
+# transport-layer failures via `?` without per-call mapping.
+canonical-errors = ["dep:modkit-canonical-errors"]
+# Runtime gRPC helpers (status mapping, bearer auth, retry plumbing).
+# Generated `<Trait>Client` structs from `#[modkit::grpc_contract]` need this.
+# Pulls in canonical-errors so the wire `Problem` envelope is the single
+# canonical type across REST + gRPC + SSE.
+grpc-client = [
+    "runtime-client",
+    "canonical-errors",
+    "dep:tonic",
+    "dep:modkit-security",
+    "dep:modkit-transport-grpc",
+]
+
+[dependencies]
+modkit-contract-macros.workspace = true
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+http.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+modkit-http = { workspace = true, optional = true }
+http-body = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["time", "macros"], optional = true }
+bytes = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+futures-core = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+async-stream = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+tonic = { workspace = true, features = ["transport"], optional = true }
+modkit-security = { workspace = true, optional = true }
+modkit-transport-grpc = { workspace = true, optional = true }
+modkit-canonical-errors = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+parking_lot.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+bytes.workspace = true
+axum.workspace = true
+modkit-http.workspace = true
+secrecy.workspace = true
+modkit-security.workspace = true
+tower.workspace = true

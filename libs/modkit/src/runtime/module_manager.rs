@@ -88,11 +88,18 @@ pub struct InstanceRuntimeState {
 #[derive(Debug)]
 #[must_use]
 pub struct ModuleInstance {
+    /// Module name this instance belongs to
     pub module: String,
+    /// Unique identifier for this instance
     pub instance_id: Uuid,
+    /// Optional control endpoint for lifecycle management
     pub control: Option<Endpoint>,
+    /// Map of gRPC service name to endpoint
     pub grpc_services: HashMap<String, Endpoint>,
+    /// Optional version string
     pub version: Option<String>,
+    /// Optional REST endpoint (not all modules expose REST)
+    pub rest_endpoint: Option<Endpoint>,
     inner: Arc<parking_lot::RwLock<InstanceRuntimeState>>,
 }
 
@@ -104,6 +111,7 @@ impl Clone for ModuleInstance {
             control: self.control.clone(),
             grpc_services: self.grpc_services.clone(),
             version: self.version.clone(),
+            rest_endpoint: self.rest_endpoint.clone(),
             inner: Arc::clone(&self.inner),
         }
     }
@@ -117,6 +125,7 @@ impl ModuleInstance {
             control: None,
             grpc_services: HashMap::new(),
             version: None,
+            rest_endpoint: None,
             inner: Arc::new(parking_lot::RwLock::new(InstanceRuntimeState {
                 last_heartbeat: Instant::now(),
                 state: InstanceState::Registered,
@@ -139,6 +148,12 @@ impl ModuleInstance {
         self
     }
 
+    /// Set the REST endpoint for this instance
+    pub fn with_rest_endpoint(mut self, ep: Endpoint) -> Self {
+        self.rest_endpoint = Some(ep);
+        self
+    }
+
     /// Get the current state of this instance
     #[must_use]
     pub fn state(&self) -> InstanceState {
@@ -152,13 +167,26 @@ impl ModuleInstance {
     }
 }
 
+/// Round-robin counter key. Typed instead of stringly-typed to keep the
+/// gRPC / REST / service buckets disjoint (a module named `"rest:foo"`
+/// can't collide with the REST counter for module `"foo"`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum RrKey {
+    /// Counter for `pick_instance_round_robin(module)`.
+    Module(String),
+    /// Counter for `pick_rest_module(module)`.
+    Rest(String),
+    /// Counter for `pick_service_round_robin(service_name)`.
+    Service(String),
+}
+
 /// Central registry that tracks all running module instances in the system.
 /// Provides discovery, health tracking, and round-robin load balancing.
 #[derive(Clone)]
 #[must_use]
 pub struct ModuleManager {
     inner: DashMap<String, Vec<Arc<ModuleInstance>>>,
-    rr_counters: DashMap<String, usize>,
+    rr_counters: DashMap<RrKey, usize>,
     hb_ttl: Duration,
     hb_grace: Duration,
 }
@@ -263,7 +291,9 @@ impl ModuleManager {
 
         if remove_module {
             self.inner.remove(module);
-            self.rr_counters.remove(module);
+            self.rr_counters
+                .remove(&RrKey::Module(module.to_owned()));
+            self.rr_counters.remove(&RrKey::Rest(module.to_owned()));
         }
     }
 
@@ -319,7 +349,8 @@ impl ModuleManager {
 
         for module in empty_modules {
             self.inner.remove(&module);
-            self.rr_counters.remove(&module);
+            self.rr_counters.remove(&RrKey::Module(module.clone()));
+            self.rr_counters.remove(&RrKey::Rest(module));
         }
     }
 
@@ -351,11 +382,69 @@ impl ModuleManager {
         }
 
         let len = candidates.len();
-        let mut counter = self.rr_counters.entry(module.to_owned()).or_insert(0);
+        let mut counter = self
+            .rr_counters
+            .entry(RrKey::Module(module.to_owned()))
+            .or_insert(0);
         let idx = *counter % len;
         *counter = (*counter + 1) % len;
 
         candidates.get(idx).cloned()
+    }
+
+    /// Pick a module instance that has a REST endpoint, using round-robin
+    /// selection. Returns the instance and a clone of its REST endpoint,
+    /// preferring healthy/ready instances.
+    #[must_use]
+    pub fn pick_rest_module(&self, module_name: &str) -> Option<(Arc<ModuleInstance>, Endpoint)> {
+        // Collect candidate `Arc<ModuleInstance>`s under the `self.inner` shard
+        // guard, then drop it before touching `self.rr_counters`. Holding two
+        // DashMap guards across an unrelated map access is a deadlock hazard
+        // and blocks writes to the `inner` shard for the duration.
+        let candidates: Vec<Arc<ModuleInstance>> = {
+            let instances_entry = self.inner.get(module_name)?;
+            let instances = instances_entry.value();
+
+            let healthy: Vec<Arc<ModuleInstance>> = instances
+                .iter()
+                .filter(|inst| {
+                    inst.rest_endpoint.is_some()
+                        && matches!(inst.state(), InstanceState::Healthy | InstanceState::Ready)
+                })
+                .cloned()
+                .collect();
+
+            if healthy.is_empty() {
+                instances
+                    .iter()
+                    .filter(|inst| inst.rest_endpoint.is_some())
+                    .cloned()
+                    .collect()
+            } else {
+                healthy
+            }
+        };
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let len = candidates.len();
+        let pick = {
+            let mut counter = self
+                .rr_counters
+                .entry(RrKey::Rest(module_name.to_owned()))
+                .or_insert(0);
+            let idx = *counter % len;
+            *counter = (*counter + 1) % len;
+            idx
+        };
+
+        let chosen = &candidates[pick];
+        chosen
+            .rest_endpoint
+            .clone()
+            .map(|ep| (Arc::clone(chosen), ep))
     }
 
     /// Pick a service endpoint using round-robin, returning (module, instance, endpoint).
@@ -385,8 +474,10 @@ impl ModuleManager {
 
         // Use a counter keyed by service name for round-robin
         let len = candidates.len();
-        let service_key = service_name.to_owned();
-        let mut counter = self.rr_counters.entry(service_key).or_insert(0);
+        let mut counter = self
+            .rr_counters
+            .entry(RrKey::Service(service_name.to_owned()))
+            .or_insert(0);
         let idx = *counter % len;
         *counter = (*counter + 1) % len;
 
@@ -730,5 +821,76 @@ mod tests {
         assert_ne!(inst1.instance_id, inst2.instance_id);
         // Endpoints should differ
         assert_ne!(ep1, ep2);
+    }
+
+    // Note: the builder `with_rest_endpoint` is exercised end-to-end by
+    // `test_pick_rest_module_found` and `test_register_instance_with_rest_endpoint`
+    // (in `directory.rs`). A standalone constructor-echo test was removed —
+    // it would still pass even if `with_rest_endpoint` stored the value
+    // under the wrong field, as long as the URL string round-tripped.
+
+    #[test]
+    fn test_pick_rest_module_none_available() {
+        let dir = ModuleManager::new();
+
+        // No instances at all
+        let result = dir.pick_rest_module("nonexistent");
+        assert!(result.is_none());
+
+        // Instance exists but has no REST endpoint
+        let id = Uuid::new_v4();
+        let inst = Arc::new(ModuleInstance::new("grpc_only", id));
+        dir.register_instance(inst);
+        dir.update_heartbeat("grpc_only", id, Instant::now());
+
+        let result = dir.pick_rest_module("grpc_only");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_pick_rest_module_found() {
+        let dir = ModuleManager::new();
+
+        let id = Uuid::new_v4();
+        let inst = Arc::new(
+            ModuleInstance::new("billing", id)
+                .with_rest_endpoint(Endpoint::http("billing-host", 8080)),
+        );
+        dir.register_instance(inst);
+        dir.update_heartbeat("billing", id, Instant::now());
+
+        let result = dir.pick_rest_module("billing");
+        assert!(result.is_some());
+
+        let (picked_inst, ep) = result.unwrap();
+        assert_eq!(picked_inst.instance_id, id);
+        assert_eq!(ep.uri, "http://billing-host:8080");
+    }
+
+    #[test]
+    fn test_pick_rest_module_round_robin() {
+        let dir = ModuleManager::new();
+
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let inst1 = Arc::new(
+            ModuleInstance::new("billing", id1).with_rest_endpoint(Endpoint::http("host1", 8080)),
+        );
+        let inst2 = Arc::new(
+            ModuleInstance::new("billing", id2).with_rest_endpoint(Endpoint::http("host2", 8080)),
+        );
+        dir.register_instance(inst1);
+        dir.register_instance(inst2);
+        dir.update_heartbeat("billing", id1, Instant::now());
+        dir.update_heartbeat("billing", id2, Instant::now());
+
+        let pick1 = dir.pick_rest_module("billing").unwrap();
+        let pick2 = dir.pick_rest_module("billing").unwrap();
+        let pick3 = dir.pick_rest_module("billing").unwrap();
+
+        // Round-robin: first and third should be the same
+        assert_eq!(pick1.0.instance_id, pick3.0.instance_id);
+        // First and second should differ
+        assert_ne!(pick1.0.instance_id, pick2.0.instance_id);
     }
 }

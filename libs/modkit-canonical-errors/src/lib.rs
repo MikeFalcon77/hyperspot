@@ -17,4 +17,4 @@ pub use context::{
 };
 pub use error::CanonicalError;
 pub use modkit_canonical_errors_macro::resource_error;
-pub use problem::Problem;
+pub use problem::{Problem, ProblemCategory};

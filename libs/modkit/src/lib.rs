@@ -95,6 +95,13 @@ pub use registry::ModuleRegistry;
 
 // Re-export the macros from the proc-macro crate
 pub use modkit_macros::{ExpandVars, lifecycle, module};
+pub use modkit_contract::{
+    ContractError, GrpcRepr, GrpcReprScalar, ProtoBridge, contract, grpc_contract, rest_contract,
+};
+
+pub mod contract_support {
+    pub use modkit_contract::*;
+}
 
 // Re-export var_expand module so derive-generated impls resolve via ::modkit::var_expand
 pub use modkit_utils::var_expand;
@@ -138,7 +145,7 @@ pub use domain::{DomainErrorMarker, DomainModel};
 // Directory API for service discovery
 pub mod directory;
 pub use directory::{
-    DirectoryClient, LocalDirectoryClient, RegisterInstanceInfo, ServiceEndpoint,
+    DirectoryClient, GrpcServiceInfo, LocalDirectoryClient, RegisterInstanceInfo, ServiceEndpoint,
     ServiceInstanceInfo,
 };
 
