@@ -87,6 +87,7 @@ members = [
     "modules/system/oagw/oagw-sdk",
     "modules/mini-chat/mini-chat-sdk",
     "modules/mini-chat/mini-chat",
+    "modules/service-hub-demo/service-hub-demo-sdk",
 ]
 exclude = ["tools/fuzz"]
 resolver = "3"
@@ -254,6 +255,9 @@ credstore-sdk = { package = "cf-credstore-sdk", version = "0.1.18", path = "modu
 
 # mini-chat
 mini-chat-sdk = { package = "cf-mini-chat-sdk", version = "0.10.0", path = "modules/mini-chat/mini-chat-sdk" }
+
+# service-hub-demo
+service-hub-demo-sdk = { package = "cf-service-hub-demo-sdk", version = "0.1.0", path = "modules/service-hub-demo/service-hub-demo-sdk" }
 
 # system modules
 grpc_hub = { package = "cf-grpc-hub", version = "0.2.0", path = "modules/system/grpc-hub" }

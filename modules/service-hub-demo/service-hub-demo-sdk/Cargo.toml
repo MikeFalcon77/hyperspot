@@ -1,0 +1,23 @@
+[package]
+name = "cf-service-hub-demo-sdk"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "SDK for the service-hub-demo module — PaymentService contract, models, and errors"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+modkit-service-hub.workspace = true
+modkit-canonical-errors.workspace = true
+modkit-canonical-errors-macro.workspace = true
+modkit-security.workspace = true
+async-trait.workspace = true
+serde = { workspace = true, features = ["derive"] }
+schemars.workspace = true
+uuid.workspace = true
+futures-core.workspace = true

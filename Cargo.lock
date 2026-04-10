@@ -2057,6 +2057,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-service-hub-demo-sdk"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cf-modkit-canonical-errors",
+ "cf-modkit-canonical-errors-macro",
+ "cf-modkit-security",
+ "cf-modkit-service-hub",
+ "futures-core",
+ "schemars 1.2.1",
+ "serde",
+ "uuid",
+]
+
+[[package]]
 name = "cf-simple-user-settings"
 version = "0.1.0"
 dependencies = [
