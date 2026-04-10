@@ -1692,6 +1692,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-modkit-service-hub"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cf-modkit-transport-grpc"
 version = "0.6.3"
 dependencies = [

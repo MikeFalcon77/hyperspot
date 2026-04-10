@@ -138,7 +138,7 @@ pub use domain::{DomainErrorMarker, DomainModel};
 // Directory API for service discovery
 pub mod directory;
 pub use directory::{
-    DirectoryClient, LocalDirectoryClient, RegisterInstanceInfo, ServiceEndpoint,
+    DirectoryClient, GrpcServiceInfo, LocalDirectoryClient, RegisterInstanceInfo, ServiceEndpoint,
     ServiceInstanceInfo,
 };
 

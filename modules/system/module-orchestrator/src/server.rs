@@ -9,7 +9,8 @@ use cf_system_sdks::directory::{
     DeregisterInstanceRequest, DirectoryClient, DirectoryService, DirectoryServiceServer,
     HeartbeatRequest, InstanceInfo, ListInstancesRequest, ListInstancesResponse,
     RegisterInstanceInfo, RegisterInstanceRequest, ResolveGrpcServiceRequest,
-    ResolveGrpcServiceResponse, ServiceEndpoint,
+    ResolveGrpcServiceResponse, ResolveRestServiceRequest, ResolveRestServiceResponse,
+    ServiceEndpoint,
 };
 
 /// gRPC service implementation of Directory Service
@@ -43,6 +44,23 @@ impl DirectoryService for DirectoryServiceImpl {
         }))
     }
 
+    async fn resolve_rest_service(
+        &self,
+        request: Request<ResolveRestServiceRequest>,
+    ) -> Result<Response<ResolveRestServiceResponse>, Status> {
+        let module_name = request.into_inner().module_name;
+
+        let endpoint = self
+            .api
+            .resolve_rest_service(&module_name)
+            .await
+            .map_err(|e| Status::not_found(e.to_string()))?;
+
+        Ok(Response::new(ResolveRestServiceResponse {
+            endpoint_uri: endpoint.uri,
+        }))
+    }
+
     async fn list_instances(
         &self,
         request: Request<ListInstancesRequest>,
@@ -61,8 +79,16 @@ impl DirectoryService for DirectoryServiceImpl {
                 .map(|i| InstanceInfo {
                     module_name: i.module,
                     instance_id: i.instance_id,
-                    endpoint_uri: i.endpoint.uri,
+                    grpc_services: i
+                        .grpc_services
+                        .into_iter()
+                        .map(|svc| cf_system_sdks::directory::GrpcServiceEndpoint {
+                            service_name: svc.service_name,
+                            endpoint_uri: svc.endpoint.uri,
+                        })
+                        .collect(),
                     version: i.version.unwrap_or_default(),
+                    rest_endpoint_uri: i.rest_endpoint.map(|ep| ep.uri),
                 })
                 .collect(),
         };
@@ -80,7 +106,10 @@ impl DirectoryService for DirectoryServiceImpl {
         let grpc_services = req
             .grpc_services
             .into_iter()
-            .map(|svc| (svc.service_name, ServiceEndpoint::new(svc.endpoint_uri)))
+            .map(|svc| cf_system_sdks::directory::GrpcServiceInfo {
+                service_name: svc.service_name,
+                endpoint: ServiceEndpoint::new(svc.endpoint_uri),
+            })
             .collect();
 
         let info = RegisterInstanceInfo {
@@ -92,6 +121,10 @@ impl DirectoryService for DirectoryServiceImpl {
             } else {
                 Some(req.version)
             },
+            rest_endpoint: req
+                .rest_endpoint_uri
+                .filter(|uri| !uri.is_empty())
+                .map(ServiceEndpoint::new),
         };
 
         self.api
