@@ -88,6 +88,7 @@ members = [
     "modules/mini-chat/mini-chat-sdk",
     "modules/mini-chat/mini-chat",
     "modules/service-hub-demo/service-hub-demo-sdk",
+    "modules/service-hub-demo/service-hub-demo",
 ]
 exclude = ["tools/fuzz"]
 resolver = "3"

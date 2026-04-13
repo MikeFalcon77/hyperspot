@@ -10,6 +10,7 @@ use futures_core::Stream;
 use modkit_canonical_errors::CanonicalError;
 use modkit_security::SecurityContext;
 
+use modkit_service_hub::descriptor::{MethodDescriptor, ServiceDescriptor};
 use modkit_service_hub::ir::contract::{
     FieldIr, Idempotency, InputShape, MethodIr, MethodKind, PrimitiveType, ServiceIr, TypeRef,
 };
@@ -56,6 +57,36 @@ pub trait PaymentService: Send + Sync {
         filter: ListPaymentsFilter,
     ) -> PaymentStream<PaymentSummary>;
 }
+
+/// Static descriptor for `PaymentService` — zero-allocation runtime metadata.
+pub static PAYMENT_SERVICE_DESCRIPTOR: ServiceDescriptor = ServiceDescriptor {
+    module: "service-hub-demo",
+    service: "PaymentService",
+    version: "v1",
+    methods: &[
+        MethodDescriptor {
+            name: "charge",
+            kind: MethodKind::Unary,
+            idempotency: Idempotency::NonIdempotentWrite,
+            input_type: "ChargeRequest",
+            output_type: "ChargeResponse",
+        },
+        MethodDescriptor {
+            name: "get_invoice",
+            kind: MethodKind::Unary,
+            idempotency: Idempotency::SafeRead,
+            input_type: "String",
+            output_type: "Invoice",
+        },
+        MethodDescriptor {
+            name: "list_payments",
+            kind: MethodKind::ServerStreaming,
+            idempotency: Idempotency::SafeRead,
+            input_type: "ListPaymentsFilter",
+            output_type: "PaymentSummary",
+        },
+    ],
+};
 
 /// Build the Contract IR for `PaymentService`.
 ///
