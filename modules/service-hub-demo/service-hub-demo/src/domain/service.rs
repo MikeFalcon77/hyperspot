@@ -104,18 +104,8 @@ impl PaymentDomainService {
             let payments = self.payments.read();
             payments
                 .values()
-                .filter(|r| {
-                    filter
-                        .status
-                        .as_ref()
-                        .is_none_or(|s| *s == r.status)
-                })
-                .filter(|r| {
-                    filter
-                        .currency
-                        .as_ref()
-                        .is_none_or(|c| *c == r.currency)
-                })
+                .filter(|r| filter.status.as_ref().is_none_or(|s| *s == r.status))
+                .filter(|r| filter.currency.as_ref().is_none_or(|c| *c == r.currency))
                 .map(|r| PaymentSummary {
                     payment_id: r.payment_id,
                     amount_cents: r.amount_cents,

@@ -376,10 +376,7 @@ impl ModuleManager {
     /// Pick a module instance that has a REST endpoint, using round-robin selection.
     /// Returns the instance and a reference to its REST endpoint, preferring healthy/ready instances.
     #[must_use]
-    pub fn pick_rest_module(
-        &self,
-        module_name: &str,
-    ) -> Option<(Arc<ModuleInstance>, Endpoint)> {
+    pub fn pick_rest_module(&self, module_name: &str) -> Option<(Arc<ModuleInstance>, Endpoint)> {
         let instances_entry = self.inner.get(module_name)?;
         let instances = instances_entry.value();
 
@@ -416,11 +413,7 @@ impl ModuleManager {
 
         candidates
             .get(idx)
-            .and_then(|inst| {
-                inst.rest_endpoint
-                    .clone()
-                    .map(|ep| (inst.clone(), ep))
-            })
+            .and_then(|inst| inst.rest_endpoint.clone().map(|ep| (inst.clone(), ep)))
     }
 
     /// Pick a service endpoint using round-robin, returning (module, instance, endpoint).
@@ -855,12 +848,10 @@ mod tests {
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
         let inst1 = Arc::new(
-            ModuleInstance::new("billing", id1)
-                .with_rest_endpoint(Endpoint::http("host1", 8080)),
+            ModuleInstance::new("billing", id1).with_rest_endpoint(Endpoint::http("host1", 8080)),
         );
         let inst2 = Arc::new(
-            ModuleInstance::new("billing", id2)
-                .with_rest_endpoint(Endpoint::http("host2", 8080)),
+            ModuleInstance::new("billing", id2).with_rest_endpoint(Endpoint::http("host2", 8080)),
         );
         dir.register_instance(inst1);
         dir.register_instance(inst2);

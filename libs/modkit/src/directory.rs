@@ -289,7 +289,10 @@ mod tests {
         assert_eq!(instances.len(), 1);
         assert!(instances[0].rest_endpoint.is_some());
         assert_eq!(instances[0].grpc_services.len(), 1);
-        assert_eq!(instances[0].grpc_services[0].service_name, "billing.Service");
+        assert_eq!(
+            instances[0].grpc_services[0].service_name,
+            "billing.Service"
+        );
         assert_eq!(
             instances[0].rest_endpoint.as_ref().unwrap().uri,
             "http://127.0.0.1:8080"

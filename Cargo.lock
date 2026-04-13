@@ -1792,6 +1792,7 @@ dependencies = [
  "bytes",
  "cf-modkit",
  "cf-modkit-http",
+ "cf-modkit-service-hub-macros",
  "futures-core",
  "http",
  "parking_lot",
@@ -1800,6 +1801,16 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "cf-modkit-service-hub-macros"
+version = "0.1.0"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2071,14 +2082,18 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
+ "axum",
  "cf-modkit",
  "cf-modkit-canonical-errors",
+ "cf-modkit-http",
  "cf-modkit-security",
  "cf-modkit-service-hub",
  "cf-service-hub-demo-sdk",
  "futures-core",
  "futures-util",
+ "http",
  "parking_lot",
+ "secrecy",
  "serde",
  "serde_json",
  "tokio",

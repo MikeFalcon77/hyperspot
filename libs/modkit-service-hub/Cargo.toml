@@ -27,6 +27,7 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 bytes = { workspace = true }
 futures-core = { workspace = true }
+modkit-service-hub-macros.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

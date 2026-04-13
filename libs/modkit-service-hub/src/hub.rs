@@ -97,11 +97,12 @@ impl ServiceHub {
         // Find the factory.
         let factory = {
             let factories = self.factories.read();
-            factories.get(type_key).cloned().ok_or_else(|| {
-                ServiceHubError::NoFactory {
+            factories
+                .get(type_key)
+                .cloned()
+                .ok_or_else(|| ServiceHubError::NoFactory {
                     type_key: type_key.to_owned(),
-                }
-            })?
+                })?
         };
 
         // Check if we already attempted resolution (avoids re-resolving on
@@ -111,9 +112,10 @@ impl ServiceHub {
             if resolved.contains_key(type_key) {
                 // Already resolved once — try the hub again (factory should
                 // have registered it).
-                return self.client_hub.get::<T>().map_err(|e| {
-                    ServiceHubError::ClientHub(e.to_string())
-                });
+                return self
+                    .client_hub
+                    .get::<T>()
+                    .map_err(|e| ServiceHubError::ClientHub(e.to_string()));
             }
         }
 
@@ -138,9 +140,9 @@ impl ServiceHub {
         self.resolved.write().insert(type_key, true);
 
         // Return from the hub.
-        self.client_hub.get::<T>().map_err(|e| {
-            ServiceHubError::ClientHub(e.to_string())
-        })
+        self.client_hub
+            .get::<T>()
+            .map_err(|e| ServiceHubError::ClientHub(e.to_string()))
     }
 }
 

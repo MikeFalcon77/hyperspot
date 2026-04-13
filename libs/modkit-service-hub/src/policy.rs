@@ -42,11 +42,7 @@ pub trait Policy: Send + Sync {
     /// # Errors
     ///
     /// Returning an error replaces the original transport result.
-    async fn on_response(
-        &self,
-        ctx: &PolicyContext,
-        success: bool,
-    ) -> Result<(), ServiceHubError>;
+    async fn on_response(&self, ctx: &PolicyContext, success: bool) -> Result<(), ServiceHubError>;
 }
 
 /// Ordered list of policies applied to every service call.
@@ -81,18 +77,21 @@ impl PolicyStack {
     ///
     /// Returns the first error from any policy hook, or the transport
     /// error if the call itself fails.
-    pub async fn execute<F, Fut, T>(
+    pub async fn execute<F, Fut, T, E>(
         &self,
         ctx: &PolicyContext,
         f: F,
-    ) -> Result<T, ServiceHubError>
+        map_policy_err: fn(ServiceHubError) -> E,
+    ) -> Result<T, E>
     where
         F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<T, ServiceHubError>>,
+        Fut: Future<Output = Result<T, E>>,
     {
         // Run on_request hooks in order.
         for policy in &self.policies {
-            policy.on_request(ctx).await?;
+            if let Err(e) = policy.on_request(ctx).await {
+                return Err(map_policy_err(e));
+            }
         }
 
         // Execute the transport call.
@@ -101,7 +100,9 @@ impl PolicyStack {
 
         // Run on_response hooks in reverse order.
         for policy in self.policies.iter().rev() {
-            policy.on_response(ctx, success).await?;
+            if let Err(e) = policy.on_response(ctx, success).await {
+                return Err(map_policy_err(e));
+            }
         }
 
         result
@@ -130,11 +131,7 @@ impl Policy for TracingPolicy {
         Ok(())
     }
 
-    async fn on_response(
-        &self,
-        ctx: &PolicyContext,
-        success: bool,
-    ) -> Result<(), ServiceHubError> {
+    async fn on_response(&self, ctx: &PolicyContext, success: bool) -> Result<(), ServiceHubError> {
         if success {
             tracing::info!(
                 service = ctx.service,
@@ -168,9 +165,7 @@ mod tests {
     #[async_trait]
     impl Policy for OrderRecorder {
         async fn on_request(&self, _ctx: &PolicyContext) -> Result<(), ServiceHubError> {
-            self.log
-                .lock()
-                .push(format!("on_request:{}", self.id));
+            self.log.lock().push(format!("on_request:{}", self.id));
             Ok(())
         }
 
@@ -215,22 +210,29 @@ mod tests {
         let call_count_inner = Arc::clone(&call_count);
 
         let result: Result<&str, ServiceHubError> = stack
-            .execute(&ctx, || async move {
-                call_count_inner.fetch_add(1, Ordering::Relaxed);
-                Ok("done")
-            })
+            .execute(
+                &ctx,
+                || async move {
+                    call_count_inner.fetch_add(1, Ordering::Relaxed);
+                    Ok("done")
+                },
+                std::convert::identity,
+            )
             .await;
 
         assert_eq!(result.unwrap(), "done");
         assert_eq!(call_count.load(Ordering::Relaxed), 1);
 
         let entries = log.lock().clone();
-        assert_eq!(entries, vec![
-            "on_request:1",
-            "on_request:2",
-            "on_response:2:true",
-            "on_response:1:true",
-        ]);
+        assert_eq!(
+            entries,
+            vec![
+                "on_request:1",
+                "on_request:2",
+                "on_response:2:true",
+                "on_response:1:true",
+            ]
+        );
     }
 
     struct FailPolicy;
@@ -238,9 +240,7 @@ mod tests {
     #[async_trait]
     impl Policy for FailPolicy {
         async fn on_request(&self, _ctx: &PolicyContext) -> Result<(), ServiceHubError> {
-            Err(ServiceHubError::Validation(
-                "blocked by policy".to_owned(),
-            ))
+            Err(ServiceHubError::Validation("blocked by policy".to_owned()))
         }
 
         async fn on_response(
@@ -266,7 +266,11 @@ mod tests {
 
         let ctx = test_ctx();
         let result: Result<&str, ServiceHubError> = stack
-            .execute(&ctx, || async { Ok("should not run") })
+            .execute(
+                &ctx,
+                || async { Ok("should not run") },
+                std::convert::identity,
+            )
             .await;
 
         assert!(result.is_err());

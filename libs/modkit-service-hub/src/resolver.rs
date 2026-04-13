@@ -175,7 +175,9 @@ impl Resolver for HybridResolver {
                 } else {
                     Err(ServiceHubError::ResolutionFailed {
                         service: descriptor.service.to_owned(),
-                        reason: format!("module '{module}' not found via directory or static config"),
+                        reason: format!(
+                            "module '{module}' not found via directory or static config"
+                        ),
                     })
                 }
             }
@@ -218,10 +220,7 @@ mod tests {
     #[tokio::test]
     async fn simple_resolver_static_found() {
         let mut endpoints = HashMap::new();
-        endpoints.insert(
-            "billing".to_owned(),
-            "http://billing:8080".to_owned(),
-        );
+        endpoints.insert("billing".to_owned(), "http://billing:8080".to_owned());
         let resolver = HybridResolver::new(endpoints);
 
         let target = resolver
@@ -239,10 +238,7 @@ mod tests {
     #[tokio::test]
     async fn simple_resolver_prefer_local_fallback() {
         let mut endpoints = HashMap::new();
-        endpoints.insert(
-            "billing".to_owned(),
-            "http://billing:8080".to_owned(),
-        );
+        endpoints.insert("billing".to_owned(), "http://billing:8080".to_owned());
         // Do NOT register "billing" locally — should fall back to static.
         let resolver = HybridResolver::new(endpoints);
 
@@ -267,10 +263,7 @@ mod tests {
     #[tokio::test]
     async fn simple_resolver_remote_only_static() {
         let mut endpoints = HashMap::new();
-        endpoints.insert(
-            "billing".to_owned(),
-            "http://billing:9090".to_owned(),
-        );
+        endpoints.insert("billing".to_owned(), "http://billing:9090".to_owned());
         let resolver = HybridResolver::new(endpoints);
 
         let target = resolver

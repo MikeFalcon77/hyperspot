@@ -15,6 +15,7 @@ pub mod resolver;
 pub mod transport;
 
 pub use contract_trait::ServiceContract;
+pub use modkit_service_hub_macros::service_contract;
 pub use descriptor::{MethodDescriptor, ServiceDescriptor};
 pub use error::ServiceHubError;
 pub use factory::ServiceClientFactory;

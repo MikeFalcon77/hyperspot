@@ -41,4 +41,5 @@ pub enum ServiceHubError {
     /// Timeout exceeded.
     #[error("timeout after {0:?}")]
     Timeout(std::time::Duration),
+
 }

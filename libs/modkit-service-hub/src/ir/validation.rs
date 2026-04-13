@@ -393,9 +393,11 @@ mod tests {
             idempotency: Idempotency::NonIdempotentWrite,
         });
         let errors = validate_contract(&contract).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("duplicate method name")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("duplicate method name"))
+        );
     }
 
     #[test]
@@ -412,9 +414,11 @@ mod tests {
         // Remove the "get_invoice" binding.
         binding.methods.retain(|m| m.method_name != "get_invoice");
         let errors = validate_http_binding(&contract, &binding).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("missing binding for contract method")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("missing binding for contract method"))
+        );
     }
 
     #[test]
@@ -428,9 +432,11 @@ mod tests {
             field_bindings: vec![HttpFieldBinding::Body],
         });
         let errors = validate_http_binding(&contract, &binding).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("binding for unknown method")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("binding for unknown method"))
+        );
     }
 
     #[test]
@@ -445,9 +451,11 @@ mod tests {
         });
 
         let errors = validate_http_binding(&contract, &binding).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("duplicate binding for contract method")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("duplicate binding for contract method"))
+        );
     }
 
     #[test]
@@ -461,9 +469,11 @@ mod tests {
             }
         }
         let errors = validate_http_binding(&contract, &binding).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("must not have Body field binding")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("must not have Body field binding"))
+        );
     }
 
     #[test]
@@ -477,9 +487,10 @@ mod tests {
             }
         }
         let errors = validate_http_binding(&contract, &binding).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("has no corresponding Path field binding")));
+        assert!(errors.iter().any(|e| {
+            e.message
+                .contains("has no corresponding Path field binding")
+        }));
     }
 
     #[test]
@@ -520,9 +531,11 @@ mod tests {
         let mut contract = sample_contract();
         contract.methods.clear();
         let errors = validate_contract(&contract).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("at least one method")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("at least one method"))
+        );
     }
 
     #[test]
@@ -530,9 +543,11 @@ mod tests {
         let mut contract = sample_contract();
         contract.methods[0].name = String::new();
         let errors = validate_contract(&contract).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("method name must not be empty")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("method name must not be empty"))
+        );
     }
 
     #[test]
@@ -541,9 +556,11 @@ mod tests {
         let mut binding = sample_binding();
         binding.base_path = String::new();
         let errors = validate_http_binding(&contract, &binding).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("base_path must not be empty")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("base_path must not be empty"))
+        );
     }
 
     #[test]
@@ -559,9 +576,11 @@ mod tests {
             }
         }
         let errors = validate_http_binding(&contract, &binding).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("not found in contract method input")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("not found in contract method input"))
+        );
     }
 
     #[test]
@@ -615,9 +634,11 @@ mod tests {
             }],
         };
         let errors = validate_http_binding(&contract, &binding).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("must not have Body field binding")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("must not have Body field binding"))
+        );
     }
 
     #[test]

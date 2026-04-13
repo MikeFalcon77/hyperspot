@@ -58,7 +58,7 @@ impl Module for ServiceHubDemoModule {
         // 3. Build policy stack.
         let mut policy_stack = PolicyStack::new();
         policy_stack.push(Arc::new(TracingPolicy));
-        let _policy_stack = Arc::new(policy_stack);
+        let policy_stack = Arc::new(policy_stack);
 
         // 4. Build resolver (local + static config).
         let config: ServiceHubDemoConfig = ctx.config_or_default()?;
@@ -71,6 +71,7 @@ impl Module for ServiceHubDemoModule {
         // 6. Register factory.
         service_hub.register_factory(Arc::new(PaymentServiceFactory {
             local_service: Some(domain_svc.clone()),
+            policy_stack: Arc::clone(&policy_stack),
         }));
 
         // 7. Register ServiceHub in ClientHub for consumers.
@@ -78,7 +79,7 @@ impl Module for ServiceHubDemoModule {
 
         // 8. Direct-register local client for in-process consumers.
         let local_client: Arc<dyn PaymentService> =
-            Arc::new(PaymentLocalClient::new(domain_svc));
+            Arc::new(PaymentLocalClient::new(domain_svc, policy_stack));
         ctx.client_hub()
             .register::<dyn PaymentService>(local_client);
 

@@ -7,16 +7,23 @@ use modkit::ClientHub;
 use modkit_service_hub::descriptor::ServiceDescriptor;
 use modkit_service_hub::error::ServiceHubError;
 use modkit_service_hub::factory::ServiceClientFactory;
+use modkit_service_hub::policy::PolicyStack;
 use modkit_service_hub::transport::TransportBinding;
-use service_hub_demo_sdk::contract::{PaymentService, PAYMENT_SERVICE_DESCRIPTOR};
+use service_hub_demo_sdk::contract::{PAYMENT_SERVICE_DESCRIPTOR, PaymentService};
 
+use modkit_http::HttpClient;
+
+use crate::binding::payment_service_http_binding;
 use crate::client::local::PaymentLocalClient;
+use crate::client::remote::PaymentHttpClient;
 use crate::domain::service::PaymentDomainService;
 
 /// Factory that creates `PaymentService` clients for local or HTTP transport.
 pub struct PaymentServiceFactory {
     /// Local domain service (if module is in-process).
     pub local_service: Option<Arc<PaymentDomainService>>,
+    /// Policy stack applied to each call.
+    pub policy_stack: Arc<PolicyStack>,
 }
 
 #[async_trait]
@@ -43,13 +50,22 @@ impl ServiceClientFactory for PaymentServiceFactory {
                     }
                 })?;
                 let client: Arc<dyn PaymentService> =
-                    Arc::new(PaymentLocalClient::new(Arc::clone(svc)));
+                    Arc::new(PaymentLocalClient::new(Arc::clone(svc), Arc::clone(&self.policy_stack)));
                 hub.register::<dyn PaymentService>(client);
                 Ok(())
             }
-            TransportBinding::Http { .. } => Err(ServiceHubError::Transport(
-                "HTTP transport not yet implemented (Phase F)".into(),
-            )),
+            TransportBinding::Http { base_url } => {
+                let http = HttpClient::builder()
+                    .build()
+                    .map_err(|e| ServiceHubError::Transport(Box::new(e)))?;
+                let client: Arc<dyn PaymentService> = Arc::new(PaymentHttpClient::new(
+                    http,
+                    base_url.clone(),
+                    Arc::new(payment_service_http_binding()),
+                ));
+                hub.register::<dyn PaymentService>(client);
+                Ok(())
+            }
         }
     }
 }

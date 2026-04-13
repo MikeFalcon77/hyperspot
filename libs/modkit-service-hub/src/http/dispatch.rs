@@ -28,12 +28,18 @@ pub fn build_url(
     for binding in &method_binding.field_bindings {
         match binding {
             HttpFieldBinding::Path { field, param } => {
-                let value = field_as_string(fields, field)?;
+                let value = field_as_string(fields, field)?.ok_or_else(|| {
+                    ServiceHubError::Transport(
+                        format!("required path parameter '{field}' is missing or null").into(),
+                    )
+                })?;
                 path = path.replace(&format!("{{{param}}}"), &value);
             }
             HttpFieldBinding::Query { field, param } => {
-                let value = field_as_string(fields, field)?;
-                query_pairs.push((param.clone(), value));
+                // Optional: skip if field is absent or null.
+                if let Some(value) = field_as_string(fields, field)? {
+                    query_pairs.push((param.clone(), value));
+                }
             }
             HttpFieldBinding::Body | HttpFieldBinding::Header { .. } => {
                 // Handled at the call site, not in URL construction.
@@ -72,25 +78,26 @@ pub fn to_http_method(method: HttpMethod) -> http::Method {
 }
 
 /// Extract a field value from a JSON object as a string suitable for URL embedding.
+///
+/// Returns `Ok(Some(value))` if the field exists and is a scalar,
+/// `Ok(None)` if the field is absent or null (for optional params),
+/// or an error if the field has a non-scalar type.
 fn field_as_string(
     fields: &serde_json::Value,
     field_name: &str,
-) -> Result<String, ServiceHubError> {
-    let value = fields.get(field_name).ok_or_else(|| {
-        ServiceHubError::Transport(
-            format!("missing field '{field_name}' in request for URL construction").into(),
-        )
-    })?;
+) -> Result<Option<String>, ServiceHubError> {
+    let Some(value) = fields.get(field_name) else {
+        return Ok(None);
+    };
 
     // Convert to a URL-safe string representation.
     match value {
-        serde_json::Value::String(s) => Ok(s.clone()),
-        serde_json::Value::Number(n) => Ok(n.to_string()),
-        serde_json::Value::Bool(b) => Ok(b.to_string()),
-        serde_json::Value::Null => Ok(String::new()),
+        serde_json::Value::String(s) => Ok(Some(s.clone())),
+        serde_json::Value::Number(n) => Ok(Some(n.to_string())),
+        serde_json::Value::Bool(b) => Ok(Some(b.to_string())),
+        serde_json::Value::Null => Ok(None),
         _ => Err(ServiceHubError::Transport(
-            format!("field '{field_name}' has a non-scalar type and cannot be used in URL")
-                .into(),
+            format!("field '{field_name}' has a non-scalar type and cannot be used in URL").into(),
         )),
     }
 }
@@ -133,13 +140,7 @@ mod tests {
         };
 
         let fields = json!({ "invoice_id": "inv-123" });
-        let url = build_url(
-            "http://billing:8080",
-            "/api/v1",
-            &binding,
-            &fields,
-        )
-        .unwrap();
+        let url = build_url("http://billing:8080", "/api/v1", &binding, &fields).unwrap();
 
         assert_eq!(url, "http://billing:8080/api/v1/invoices/inv-123");
     }
@@ -163,15 +164,12 @@ mod tests {
         };
 
         let fields = json!({ "status": "paid", "limit": 50 });
-        let url = build_url(
-            "http://billing:8080",
-            "/api/v1",
-            &binding,
-            &fields,
-        )
-        .unwrap();
+        let url = build_url("http://billing:8080", "/api/v1", &binding, &fields).unwrap();
 
-        assert_eq!(url, "http://billing:8080/api/v1/invoices?status=paid&limit=50");
+        assert_eq!(
+            url,
+            "http://billing:8080/api/v1/invoices?status=paid&limit=50"
+        );
     }
 
     #[test]
@@ -193,13 +191,7 @@ mod tests {
         };
 
         let fields = json!({ "invoice_id": "inv-456", "page": 2 });
-        let url = build_url(
-            "http://billing:8080",
-            "/api/v1",
-            &binding,
-            &fields,
-        )
-        .unwrap();
+        let url = build_url("http://billing:8080", "/api/v1", &binding, &fields).unwrap();
 
         assert_eq!(
             url,
@@ -220,13 +212,7 @@ mod tests {
         };
 
         let fields = json!({});
-        let err = build_url(
-            "http://billing:8080",
-            "/api/v1",
-            &binding,
-            &fields,
-        )
-        .unwrap_err();
+        let err = build_url("http://billing:8080", "/api/v1", &binding, &fields).unwrap_err();
 
         assert!(matches!(err, ServiceHubError::Transport(_)));
     }
@@ -241,13 +227,7 @@ mod tests {
         };
 
         let fields = json!({ "amount": 100 });
-        let url = build_url(
-            "http://billing:8080",
-            "/api/v1",
-            &binding,
-            &fields,
-        )
-        .unwrap();
+        let url = build_url("http://billing:8080", "/api/v1", &binding, &fields).unwrap();
 
         assert_eq!(url, "http://billing:8080/api/v1/payments/charge");
     }
@@ -270,13 +250,7 @@ mod tests {
         };
 
         let fields = json!({});
-        let url = build_url(
-            "http://billing:8080/",
-            "/api/v1/",
-            &binding,
-            &fields,
-        )
-        .unwrap();
+        let url = build_url("http://billing:8080/", "/api/v1/", &binding, &fields).unwrap();
 
         assert_eq!(url, "http://billing:8080/api/v1/health");
     }
@@ -294,14 +268,49 @@ mod tests {
         };
 
         let fields = json!({ "q": "hello world&more" });
-        let url = build_url(
-            "http://svc:8080",
-            "/api",
-            &binding,
-            &fields,
-        )
-        .unwrap();
+        let url = build_url("http://svc:8080", "/api", &binding, &fields).unwrap();
 
         assert_eq!(url, "http://svc:8080/api/search?q=hello%20world%26more");
+    }
+
+    #[test]
+    fn build_url_optional_query_params_skipped_when_absent() {
+        let binding = HttpMethodBindingIr {
+            method_name: "list".to_owned(),
+            http_method: HttpMethod::Get,
+            path_template: "/items".to_owned(),
+            field_bindings: vec![
+                HttpFieldBinding::Query {
+                    field: "status".to_owned(),
+                    param: "status".to_owned(),
+                },
+                HttpFieldBinding::Query {
+                    field: "currency".to_owned(),
+                    param: "currency".to_owned(),
+                },
+            ],
+        };
+
+        // Only "status" provided, "currency" absent → skip it.
+        let fields = json!({ "status": "pending" });
+        let url = build_url("http://svc:8080", "/api", &binding, &fields).unwrap();
+        assert_eq!(url, "http://svc:8080/api/items?status=pending");
+    }
+
+    #[test]
+    fn build_url_null_query_param_skipped() {
+        let binding = HttpMethodBindingIr {
+            method_name: "list".to_owned(),
+            http_method: HttpMethod::Get,
+            path_template: "/items".to_owned(),
+            field_bindings: vec![HttpFieldBinding::Query {
+                field: "filter".to_owned(),
+                param: "filter".to_owned(),
+            }],
+        };
+
+        let fields = json!({ "filter": null });
+        let url = build_url("http://svc:8080", "/api", &binding, &fields).unwrap();
+        assert_eq!(url, "http://svc:8080/api/items");
     }
 }

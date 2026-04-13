@@ -17,6 +17,7 @@ modkit-service-hub.workspace = true
 modkit.workspace = true
 modkit-canonical-errors.workspace = true
 modkit-security.workspace = true
+modkit-http.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 serde.workspace = true
@@ -25,8 +26,11 @@ parking_lot.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
 futures-core.workspace = true
+futures-util.workspace = true
+secrecy.workspace = true
 async-stream = "0.3"
+axum.workspace = true
+http.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-futures-util.workspace = true
