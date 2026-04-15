@@ -15,7 +15,7 @@ STANDARDS ALIGNMENT:
   =============================================================================
   -->
 
-- [ ] `p1` - **ID**: `cpt-cf-design-cyber-loom`
+- [ ] `p1` - **ID**: `cpt-cf-design-cyber-flight-control`
 
 ## Table of Contents
 
@@ -122,6 +122,7 @@ OoP module lifecycle, discovery coordination, and gateway registration. The arch
 
 | Layer                 | Responsibility                                                                  | Technology                                                      |
 |-----------------------|---------------------------------------------------------------------------------|-----------------------------------------------------------------|
+| Edge (§ 3.10)         | Edge mode selection: Embedded (Mode A) or External (Mode B) gateway + identity  | api-gateway, identity-broker, GatewayProvider adapters          |
 | Gateway               | TLS termination, JWT auth, public API routing                                   | Axum (built-in) / Kong / Tyk / Envoy                            |
 | Module HTTP           | Per-module HTTP server, SecurityContext reconstruction, OperationBuilder routes | Axum, Tower middleware                                          |
 | Module Domain         | Business logic, ClientHub calls, plugin resolution via scoped ClientHub         | Pure Rust, ModKit traits                                        |
@@ -168,6 +169,26 @@ Abstractions (GatewayProvider, REST codegen) expose the smallest viable trait su
 should require implementing 2-3 methods, not dozens.
 
 **ADRs**: `cpt-cf-adr-gateway-abstraction`
+
+#### Gateway Minimal
+
+- [ ] `p1` - **ID**: `cpt-cf-principle-gateway-minimal`
+
+The built-in api-gateway handles HTTP edge basics only: routing, CORS, rate limiting, auth delegation, SecurityContext
+propagation. It MUST NOT implement login orchestration, social provider integration, token issuance, or advanced API
+management features. Login boundary is a separate subsystem (identity broker).
+
+**ADRs**: `cpt-cf-adr-edge-architecture`
+
+#### Vendor-Independent Internal Contract
+
+- [ ] `p1` - **ID**: `cpt-cf-principle-vendor-independent-contract`
+
+`SecurityContext` is the canonical internal identity representation. No Tyk/Kong/GitHub/Keycloak-specific claims may
+appear in the SecurityContext or be required by any internal module. External identity providers integrate via the
+identity broker, which maps external identities into platform-internal tokens before they reach the auth pipeline.
+
+**ADRs**: `cpt-cf-adr-edge-architecture`, `cpt-cf-adr-auth-edge-only`
 
 ### 2.2 Constraints
 
@@ -293,6 +314,9 @@ What is **missing** and needs to be added:
     - When all critical deps resolved: set readiness = true.
     - In Profile 1: no-op (topo-sort guarantees deps are already in-process).
 - Register the module's REST endpoint and OpenAPI spec with DirectoryService.
+- **Initialize `InternalCredential`** from configuration (bootstrap token from env, SA token from projected volume) and
+  attach to all system-level outgoing calls automatically.
+- **Install `InternalAuthMiddleware`** on the HTTP server to validate incoming system calls.
 - Attach SecurityContext reconstruction middleware to the HTTP server.
 - Send heartbeats to DirectoryService (already implemented).
 - Deregister from DirectoryService on graceful shutdown.
@@ -303,13 +327,16 @@ What is **missing** and needs to be added:
 - Does NOT validate JWTs (that is the gateway's job).
 - Does NOT manage module business logic (delegates to the Module trait).
 - Does NOT implement service discovery (delegates to DirectoryService).
-- Does NOT require module developers to write any retry, probe, or registration code — all handled by the runtime.
+- Does NOT require module developers to write any retry, probe, registration, or internal auth code — all handled by the
+  runtime.
 
 ##### Related components (by ID)
 
 - `cpt-cf-component-directory-rest` — calls to register/resolve REST endpoints
 - `cpt-cf-component-gateway-provider` — calls to register/deregister public routes
 - `cpt-cf-component-secctx-http` — uses SecurityContext HTTP middleware
+- `cpt-cf-component-internal-auth` — initializes internal credential, attaches to system calls
+- `cpt-cf-component-edge-architecture` — edge mode determines how api-gateway is deployed and used
 
 #### DirectoryService REST Extension
 
@@ -506,6 +533,84 @@ SecurityContext must cross process boundaries with the original bearer token int
 
 - `cpt-cf-component-oop-bootstrap` — installs the Axum middleware
 - `cpt-cf-component-rest-client-gen` — generated clients call `attach_secctx_http`
+
+#### Internal Module Authentication
+
+- [ ] `p1` - **ID**: `cpt-cf-component-internal-auth`
+
+##### Why this component exists
+
+ADR-0002 covers user-initiated traffic (JWT → SecurityContext). But system-level calls — registration with
+DirectoryService, heartbeats, background inter-module calls — have no user context. Without authentication, any process
+that can reach DirectoryService can register as a module or deregister others.
+
+##### Current state
+
+No internal authentication exists. The OoP bootstrap connects to DirectoryService via gRPC without any credential. In
+Profile 1 (Embedded), this is not a problem (same process). In Profiles 2 and 3, it is an open attack surface.
+
+##### Design
+
+The component provides a profile-specific credential abstraction:
+
+```rust
+pub enum InternalCredential {
+    /// Profile 1: no auth needed (in-process)
+    None,
+    /// Profile 2 single-node: ephemeral random token from Platform Host
+    BootstrapToken(SecretString),
+    /// Profile 3: k8s ServiceAccount JWT (auto-mounted, auto-rotated)
+    KubeServiceAccountToken { token_path: PathBuf, audience: String },
+    /// Profile 2 multi-node (P2): mTLS client certificate
+    MtlsIdentity { cert: PathBuf, key: PathBuf, ca: PathBuf },
+}
+```
+
+**Profile 2 (single-node)** — Bootstrap Token:
+
+1. Platform Host generates a cryptographically random 256-bit token at startup (in-memory only).
+2. Passes it to spawned workers via `MODKIT_INTERNAL_TOKEN` env var.
+3. Workers attach it to all system calls: gRPC metadata `x-modkit-internal-token`, HTTP header
+   `X-ModKit-Internal-Token`.
+4. Flight Control validates: known token → accept; unknown → `UNAUTHENTICATED`.
+
+**Profile 3 (K8s)** — ServiceAccount Tokens:
+
+1. Each module pod has a projected SA token with audience `modkit-internal` (auto-mounted by kubelet).
+2. Module reads the token from the projected volume at startup and on rotation.
+3. Attaches it to system calls as `Authorization: Bearer <sa-token>`.
+4. Flight Control validates via k8s TokenReview API (cached, configurable TTL).
+5. Response includes module identity: `{namespace, serviceAccountName, podName}`.
+
+**Dual-layer requests**: a single request may carry both SecurityContext (user identity) and internal credential (module
+identity). They serve different purposes and travel in different headers.
+
+| Call type                            | Auth layer          | Header                                                    |
+|--------------------------------------|---------------------|-----------------------------------------------------------|
+| User-propagated (module → module)    | SecurityContext     | `Authorization` + `x-secctx-bin`                          |
+| System (module → Flight Control)     | Internal credential | `x-modkit-internal-token` or `Authorization: Bearer <sa>` |
+| Both (system call on behalf of user) | Both layers         | All headers present                                       |
+
+##### Responsibility scope
+
+- Define the `InternalCredential` enum and `attach_internal_auth` / `validate_internal_auth` helpers.
+- Profile 2: generate bootstrap token in Platform Host, pass via env, validate in Flight Control.
+- Profile 3: read projected SA token, attach to calls, validate via TokenReview in Flight Control.
+- Provide `InternalAuthMiddleware` for both gRPC (tonic interceptor) and HTTP (Axum middleware) that validates incoming
+  system calls.
+- All logic lives in ModKit runtime — module developers do not interact with internal auth.
+
+##### Responsibility boundaries
+
+- Does NOT replace SecurityContext propagation (ADR-0002) — those are complementary layers.
+- Does NOT manage k8s ServiceAccount creation (that's the Helm chart / operator's job).
+- Does NOT implement mTLS (P2 scope for multi-node Profile 2).
+
+##### Related components (by ID)
+
+- `cpt-cf-component-oop-bootstrap` — initializes `InternalCredential` at startup, attaches to all system calls
+- `cpt-cf-component-secctx-http` — coexists on the same requests (different headers, different purpose)
+- `cpt-cf-component-k8s-packaging` — Helm charts configure SA token projection and `MODKIT_INTERNAL_TOKEN` env
 
 #### Plugin Transport Abstraction (P2)
 
@@ -1042,6 +1147,7 @@ conventions into reusable named templates.
 | Health probes      | `/healthz` (liveness), `/readyz` (readiness) — provided by ModKit runtime | `health.liveness.*`, `health.readiness.*`         |
 | Module config      | `MODKIT_MODULE_CONFIG` from ConfigMap                                     | `moduleConfig` (arbitrary map → JSON)             |
 | Directory endpoint | `MODKIT_DIRECTORY_ENDPOINT` env var                                       | `global.directoryEndpoint`                        |
+| Internal auth      | Projected SA token volume (audience: `modkit-internal`) for Profile 3     | `internalAuth.audience`, `internalAuth.tokenPath` |
 | Resources          | requests/limits block                                                     | `resources.requests.*`, `resources.limits.*`      |
 | Labels             | `app.kubernetes.io/*` standard labels                                     | Automatic from chart metadata                     |
 | Image pull secrets | Global pull secrets for private registries                                | `global.imagePullSecrets`                         |
@@ -1169,6 +1275,219 @@ chart change detected
 Published charts include the resolved `modkit-common` library, so users install from the OCI registry without needing
 the monorepo.
 
+### 3.10 Edge Architecture
+
+- [ ] `p1` (Mode A), `p2` (Mode B) - **ID**: `cpt-cf-component-edge-architecture`
+
+#### Edge Modes
+
+The platform supports two edge configurations. Internal modules see the same `SecurityContext` in both — the edge mode
+is transparent to application code.
+
+**Mode A — Embedded Edge** (on-prem baseline, P1):
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Platform (self-contained)                  │
+│                                                               │
+│  External Client                                              │
+│       │                                                       │
+│       ▼                                                       │
+│  ┌──────────────┐    Bearer    ┌──────────────┐              │
+│  │  api-gateway  │────────────►│authn-resolver │              │
+│  │  (minimal)    │             │  (plugins)    │              │
+│  │               │◄────────────│              │              │
+│  │  routing      │ SecurityCtx └──────────────┘              │
+│  │  CORS         │                                            │
+│  │  rate limit   │    ┌───────────────────────┐              │
+│  │  auth deleg.  │    │  identity-broker (P2)  │              │
+│  └───────┬──────┘    │  login flows, social   │              │
+│          │            │  token issuance        │              │
+│          ▼            └───────────────────────┘              │
+│  ┌──────────────┐                                            │
+│  │  Modules      │  ← see only SecurityContext               │
+│  └──────────────┘                                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Mode B — External Edge** (enterprise / k8s, P2):
+
+```
+  External Client
+       │
+       ▼
+┌──────────────────┐
+│  Tyk / Kong /     │  external gateway
+│  Envoy / Ingress  │  (TLS, rate limit, IdP integration)
+└──────┬───────────┘
+       │
+       ├── B1: pass-through (platform token already present)
+       │
+       └── B2: token exchange
+           │  POST /auth/exchange { external_credential }
+           │       → { platform_token }
+           │
+       ▼
+┌─────────────────────────────────────────────────┐
+│                    Platform                       │
+│                                                   │
+│  ┌──────────────┐         ┌──────────────┐       │
+│  │  api-gateway  │────────►│authn-resolver │       │
+│  │  (optional in │         │              │       │
+│  │   Mode B)     │         └──────────────┘       │
+│  └───────┬──────┘                                 │
+│          ▼                                         │
+│  ┌──────────────┐                                 │
+│  │  Modules      │  ← same SecurityContext as A   │
+│  └──────────────┘                                 │
+└─────────────────────────────────────────────────┘
+```
+
+#### Component Boundaries
+
+| Concern                                                          | Component                           | Scope                                          |
+|------------------------------------------------------------------|-------------------------------------|------------------------------------------------|
+| HTTP routing, CORS, rate limiting                                | api-gateway                         | Minimal HTTP edge basics                       |
+| Bearer extraction, SecurityContext propagation                   | api-gateway (auth middleware)       | Delegates to authn-resolver                    |
+| Token validation                                                 | authn-resolver (plugins)            | Platform tokens + configurable trusted issuers |
+| Authorization (ABAC/RBAC)                                        | authz-resolver (plugins)            | Policy evaluation                              |
+| Login orchestration (OAuth2/OIDC flows, social login, callbacks) | identity-broker (P2, future module) | Separate from gateway and authn                |
+| Identity binding (external ID → `subject_id`)                    | identity-broker (P2)                | External-to-internal identity mapping          |
+| Tenant resolution (`subject_id` → `tenant_id`, membership)       | identity-broker (P2)                | Tenant lifecycle                               |
+| Platform token issuance                                          | identity-broker (P2)                | Issues tokens that authn-resolver validates    |
+| Token exchange (external credential → platform token)            | identity-broker (P2)                | Mode B2 integration endpoint                   |
+| External gateway route registration                              | GatewayProvider adapters (ADR-0005) | Kong/Tyk admin API calls                       |
+
+#### api-gateway — Explicit Scope Constraint
+
+The built-in api-gateway handles **HTTP edge basics only**:
+
+| Does                                                        | Does NOT                                                 |
+|-------------------------------------------------------------|----------------------------------------------------------|
+| HTTP routing (OperationBuilder routes)                      | Login orchestration (OAuth2 callbacks, redirect flows)   |
+| CORS configuration                                          | Social provider integration (GitHub, Google, etc.)       |
+| Basic rate limiting                                         | Token issuance or signing                                |
+| Auth middleware (Bearer → authn-resolver → SecurityContext) | Account linking or user provisioning                     |
+| SecurityContext propagation to modules                      | API analytics or usage metering                          |
+| OpenAPI aggregation and serving                             | Advanced traffic policies (circuit breaker, canary, A/B) |
+| Reverse-proxy to OoP modules (Profile 2)                    | External IdP-specific protocol handling                  |
+
+This constraint is **architectural, not temporary**. The platform is not building a Tyk/Kong competitor.
+
+#### Identity Broker / Login Service (P2)
+
+- [ ] `p2` - **ID**: `cpt-cf-component-identity-broker`
+
+##### Why this component exists
+
+Login orchestration (OAuth2 authorization code flow, PKCE, social login callbacks, account linking, session management)
+is a fundamentally different concern from HTTP routing or token validation. Today authn-resolver validates tokens but
+does not manage interactive login flows. api-gateway routes traffic but should not orchestrate multi-step auth flows. A
+dedicated subsystem is needed.
+
+##### Responsibility scope
+
+- **External auth boundary**: handle login via multiple backends — built-in social login (GitHub, Google),
+  Keycloak-backed login, external broker exchange (Tyk Identity Broker, Kong OIDC plugin output).
+- **Identity binding**: map external identity (GitHub user ID, OIDC subject) to platform `subject_id`. Handle
+  first-login provisioning and account linking.
+- **Tenant resolution**: resolve `subject_id` to `tenant_id`, manage tenant membership and invites.
+- **Platform credential issuance**: issue platform-internal tokens that authn-resolver can validate. This is the only
+  component that creates tokens — api-gateway and authn-resolver do not.
+- **Token exchange endpoint** (for Mode B2): accept an externally-authenticated credential (e.g., Tyk-validated JWT) and
+  return a platform token. This allows external gateways to integrate without the platform parsing vendor-specific
+  claims.
+
+##### Responsibility boundaries
+
+- Does NOT handle HTTP routing (that's api-gateway).
+- Does NOT validate tokens on every request (that's authn-resolver).
+- Does NOT evaluate authorization policies (that's authz-resolver).
+- Does NOT replace external IdPs — it integrates with them.
+
+#### Sequence: Mode A — Embedded Edge (Login + API Call)
+
+```mermaid
+sequenceDiagram
+    participant User as End User
+    participant Broker as Identity Broker
+    participant GW as api-gateway
+    participant AuthN as authn-resolver
+    participant Mod as Application Module
+
+    Note over User,Broker: Login flow (once)
+    User->>Broker: GET /login/github
+    Broker->>Broker: OAuth2 flow with GitHub
+    Broker->>Broker: identity binding (GitHub ID → subject_id)
+    Broker-->>User: platform_token (JWT)
+
+    Note over User,Mod: API call (every request)
+    User->>GW: GET /api/data + Authorization: Bearer <platform_token>
+    GW->>AuthN: authenticate(platform_token)
+    AuthN-->>GW: SecurityContext
+    GW->>Mod: GET /api/data + SecurityContext headers
+    Mod-->>GW: 200 + response
+    GW-->>User: 200 + response
+```
+
+#### Sequence: Mode B1 — External Edge, Pass-Through
+
+```mermaid
+sequenceDiagram
+    participant User as End User
+    participant ExtGW as Tyk / Kong
+    participant GW as api-gateway (optional)
+    participant AuthN as authn-resolver
+    participant Mod as Application Module
+
+    Note over User,ExtGW: User already has platform_token<br/>(issued by identity-broker or previous login)
+    User->>ExtGW: GET /api/data + Authorization: Bearer <platform_token>
+    ExtGW->>ExtGW: rate limit, TLS termination
+    ExtGW->>GW: pass-through platform_token
+    GW->>AuthN: authenticate(platform_token)
+    AuthN-->>GW: SecurityContext
+    GW->>Mod: GET /api/data + SecurityContext headers
+    Mod-->>GW: 200
+    GW-->>ExtGW: 200
+    ExtGW-->>User: 200
+```
+
+#### Sequence: Mode B2 — External Edge, Token Exchange
+
+```mermaid
+sequenceDiagram
+    participant User as End User
+    participant ExtGW as Tyk / Kong
+    participant Broker as Identity Broker
+    participant GW as api-gateway
+    participant AuthN as authn-resolver
+    participant Mod as Application Module
+
+    Note over User,ExtGW: Login via external IdP
+    User->>ExtGW: login via Tyk Identity Broker / Kong OIDC
+    ExtGW->>ExtGW: authenticate user (external IdP)
+    ExtGW->>Broker: POST /auth/exchange { provider: "tyk", credential: <tyk_jwt> }
+    Broker->>Broker: validate external credential, identity binding
+    Broker-->>ExtGW: { platform_token }
+
+    Note over User,Mod: API call
+    User->>ExtGW: GET /api/data + Authorization: Bearer <platform_token>
+    ExtGW->>GW: pass-through platform_token
+    GW->>AuthN: authenticate(platform_token)
+    AuthN-->>GW: SecurityContext
+    GW->>Mod: GET /api/data + SecurityContext headers
+    Mod-->>User: 200
+```
+
+#### The Invariant
+
+Regardless of edge mode, the following is always true:
+
+- `authn-resolver` validates **only** platform tokens (+ explicitly configured trusted issuers)
+- Modules receive `SecurityContext` with `subject_id`, `tenant_id`, scopes — **never** raw external provider tokens
+- No Tyk/Kong/GitHub-specific claims appear in `SecurityContext`
+- Switching from Mode A to Mode B (or vice versa) requires **zero changes** to application modules
+
 ## 4. Additional context
 
 ### REST Client Generation — Build Flow
@@ -1267,18 +1586,23 @@ The Platform Host process contains at minimum:
 
 ## 5. Traceability
 
-| PRD Requirement                    | Design Component                                                      | Priority |
-|------------------------------------|-----------------------------------------------------------------------|----------|
-| `cpt-cf-fr-developer-transparency` | `cpt-cf-component-oop-bootstrap`                                      | P1       |
-| `cpt-cf-fr-eventual-readiness`     | `cpt-cf-component-oop-bootstrap`                                      | P1       |
-| `cpt-cf-fr-client-transparency`    | `cpt-cf-component-rest-client-gen`, `cpt-cf-component-directory-rest` | P1       |
-| `cpt-cf-fr-rest-primary`           | `cpt-cf-component-oop-bootstrap`                                      | P1       |
-| `cpt-cf-fr-direct-communication`   | `cpt-cf-component-directory-rest`, `cpt-cf-component-rest-client-gen` | P1       |
-| `cpt-cf-fr-secctx-propagation`     | `cpt-cf-component-secctx-http`                                        | P1       |
-| `cpt-cf-fr-api-visibility`         | `cpt-cf-component-gateway-provider`                                   | P1       |
-| `cpt-cf-fr-plugin-transparency`    | `cpt-cf-component-plugin-transport`                                   | P2       |
-| `cpt-cf-fr-plugin-macro`           | `cpt-cf-component-plugin-transport`                                   | P2       |
-| Profile 3 (K8s Native)             | `cpt-cf-component-k8s-packaging`                                      | P1       |
+| PRD Requirement                    | Design Component                                                          | Priority |
+|------------------------------------|---------------------------------------------------------------------------|----------|
+| `cpt-cf-fr-developer-transparency` | `cpt-cf-component-oop-bootstrap`                                          | P1       |
+| `cpt-cf-fr-eventual-readiness`     | `cpt-cf-component-oop-bootstrap`                                          | P1       |
+| `cpt-cf-fr-client-transparency`    | `cpt-cf-component-rest-client-gen`, `cpt-cf-component-directory-rest`     | P1       |
+| `cpt-cf-fr-rest-primary`           | `cpt-cf-component-oop-bootstrap`                                          | P1       |
+| `cpt-cf-fr-direct-communication`   | `cpt-cf-component-directory-rest`, `cpt-cf-component-rest-client-gen`     | P1       |
+| `cpt-cf-fr-secctx-propagation`     | `cpt-cf-component-secctx-http`                                            | P1       |
+| `cpt-cf-fr-api-visibility`         | `cpt-cf-component-gateway-provider`                                       | P1       |
+| `cpt-cf-fr-plugin-transparency`    | `cpt-cf-component-plugin-transport`                                       | P2       |
+| `cpt-cf-fr-plugin-macro`           | `cpt-cf-component-plugin-transport`                                       | P2       |
+| Profile 3 (K8s Native)             | `cpt-cf-component-k8s-packaging`                                          | P1       |
+| `cpt-cf-fr-internal-auth`          | `cpt-cf-component-internal-auth`, `cpt-cf-component-oop-bootstrap`        | P1       |
+| `cpt-cf-fr-edge-modes`             | `cpt-cf-component-edge-architecture`, `cpt-cf-component-gateway-provider` | P1/P2    |
+| `cpt-cf-fr-gateway-minimal`        | `cpt-cf-component-edge-architecture`                                      | P1       |
+| `cpt-cf-fr-identity-broker`        | `cpt-cf-component-identity-broker`                                        | P2       |
+| `cpt-cf-fr-token-exchange`         | `cpt-cf-component-identity-broker`                                        | P2       |
 
 - **PRD**: [PRD.md](./PRD.md)
 - **ADRs**: [ADR/](./ADR/)

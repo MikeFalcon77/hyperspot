@@ -13,14 +13,21 @@ date: 2026-04-07
 
 ## Context and Problem Statement
 
-When a module runs out-of-process, external HTTP requests pass through a gateway before reaching the module. Should each OoP module independently validate the JWT, or should the gateway validate once and propagate a trusted SecurityContext? Duplicating JWT validation at every hop wastes CPU (asymmetric crypto is expensive) and increases latency, but skipping it means OoP modules must fully trust the transport between the gateway and themselves.
+When a module runs out-of-process, external HTTP requests pass through a gateway before reaching the module. Should each
+OoP module independently validate the JWT, or should the gateway validate once and propagate a trusted SecurityContext?
+Duplicating JWT validation at every hop wastes CPU (asymmetric crypto is expensive) and increases latency, but skipping
+it means OoP modules must fully trust the transport between the gateway and themselves.
 
 ## Decision Drivers
 
-* Performance: JWT signature verification (RS256/ES256) costs 0.5–2 ms per validation. Doing it at every hop in a multi-module call chain adds up.
-* Simplicity: A single validation point means only the gateway needs access to the JWKS/public keys. OoP modules do not need to refresh key material.
-* Industry alignment: Envoy, Istio, Kong, and AWS API Gateway all follow the "validate at the edge, propagate internally" pattern.
-* Security: The internal transport (UDS on same-host, k8s pod network, or mTLS for multi-host) must be trustworthy. If an attacker can inject traffic into the internal network, they can forge SecurityContext headers.
+* Performance: JWT signature verification (RS256/ES256) costs 0.5–2 ms per validation. Doing it at every hop in a
+  multi-module call chain adds up.
+* Simplicity: A single validation point means only the gateway needs access to the JWKS/public keys. OoP modules do not
+  need to refresh key material.
+* Industry alignment: Envoy, Istio, Kong, and AWS API Gateway all follow the "validate at the edge, propagate
+  internally" pattern.
+* Security: The internal transport (UDS on same-host, k8s pod network, or mTLS for multi-host) must be trustworthy. If
+  an attacker can inject traffic into the internal network, they can forge SecurityContext headers.
 
 ## Considered Options
 
@@ -30,21 +37,29 @@ When a module runs out-of-process, external HTTP requests pass through a gateway
 
 ## Decision Outcome
 
-Chosen option: "Auth at edge only", because it eliminates redundant crypto operations, simplifies module code (no JWKS management), and aligns with the dominant industry pattern. The security trade-off is acceptable because the internal transport is trusted by design (UDS, k8s network policy, or mTLS).
+Chosen option: "Auth at edge only", because it eliminates redundant crypto operations, simplifies module code (no JWKS
+management), and aligns with the dominant industry pattern. The security trade-off is acceptable because the internal
+transport is trusted by design (UDS, k8s network policy, or mTLS).
 
 ### Consequences
 
-* OoP modules MUST NOT be exposed directly to untrusted networks without a gateway in front. This is a hard architectural constraint.
-* The gateway (built-in api-gateway or external Kong/Tyk) MUST populate both `Authorization: Bearer <jwt>` and `x-secctx-bin: <base64(postcard(SecurityContext))>` headers before forwarding to OoP Workers.
-* OoP Workers MUST install the `secctx_middleware` that reconstructs SecurityContext from these headers without re-validating the JWT signature.
-* For Profile 2 multi-host (P2), the transport between hosts MUST use mTLS to prevent SecurityContext spoofing over untrusted network segments.
+* OoP modules MUST NOT be exposed directly to untrusted networks without a gateway in front. This is a hard
+  architectural constraint.
+* The gateway (built-in api-gateway or external Kong/Tyk) MUST populate both `Authorization: Bearer <jwt>` and
+  `x-secctx-bin: <base64(postcard(SecurityContext))>` headers before forwarding to OoP Workers.
+* OoP Workers MUST install the `secctx_middleware` that reconstructs SecurityContext from these headers without
+  re-validating the JWT signature.
+* For Profile 2 multi-host (P2), the transport between hosts MUST use mTLS to prevent SecurityContext spoofing over
+  untrusted network segments.
 * Module developers do not need to handle authentication — it is fully transparent via middleware.
 
 ### Confirmation
 
-* Integration test: send a request through the gateway to an OoP module; assert `authn-resolver` is called exactly once in the entire chain.
+* Integration test: send a request through the gateway to an OoP module; assert `authn-resolver` is called exactly once
+  in the entire chain.
 * Security review: verify that the OoP Worker does not have code paths that validate JWT signatures.
-* Architecture review: verify that all deployment profiles place a trusted boundary (UDS, k8s network policy, mTLS) between the gateway and OoP modules.
+* Architecture review: verify that all deployment profiles place a trusted boundary (UDS, k8s network policy, mTLS)
+  between the gateway and OoP modules.
 
 ## Pros and Cons of the Options
 
@@ -82,9 +97,13 @@ Gateway validates; modules optionally re-validate based on config flag.
 
 ## More Information
 
-The SecurityContext HTTP propagation mechanism is defined in DESIGN.md § 3.2 (`cpt-cf-component-secctx-http`). The two-header approach (`Authorization` + `x-secctx-bin`) preserves the original JWT for delegation to external services while carrying the pre-parsed SecurityContext for internal use.
+The SecurityContext HTTP propagation mechanism is defined in DESIGN.md § 3.2 (`cpt-cf-component-secctx-http`). The
+two-header approach (`Authorization` + `x-secctx-bin`) preserves the original JWT for delegation to external services
+while carrying the pre-parsed SecurityContext for internal use.
 
-The existing `bearer_token` field on SecurityContext is `#[serde(skip)]`, which means standard serialization (including `postcard`) excludes it. The two-header approach works around this constraint without modifying the SecurityContext struct's serialization behavior.
+The existing `bearer_token` field on SecurityContext is `#[serde(skip)]`, which means standard serialization (including
+`postcard`) excludes it. The two-header approach works around this constraint without modifying the SecurityContext
+struct's serialization behavior.
 
 ## Traceability
 

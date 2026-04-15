@@ -13,39 +13,60 @@ date: 2026-04-07
 
 ## Context and Problem Statement
 
-The current `api-gateway` module is an in-process Axum module that directly aggregates routes from other in-process modules. In Profile 2 (Host + Workers), it must also reverse-proxy to OoP modules. In Profile 3 (K8s Native), the built-in gateway is replaced entirely by an external gateway (Kong, Tyk, Envoy). How should modules register their public routes when the gateway implementation varies by deployment profile? Should modules call `api-gateway` directly, or should there be an abstraction?
+The current `api-gateway` module is an in-process Axum module that directly aggregates routes from other in-process
+modules. In Profile 2 (Host + Workers), it must also reverse-proxy to OoP modules. In Profile 3 (K8s Native), the
+built-in gateway is replaced entirely by an external gateway (Kong, Tyk, Envoy). How should modules register their
+public routes when the gateway implementation varies by deployment profile? Should modules call `api-gateway` directly,
+or should there be an abstraction?
 
 ## Decision Drivers
 
-* Profile 3 requires an external gateway: the built-in api-gateway cannot serve as the k8s ingress controller. Modules must be able to register routes with Kong/Tyk.
-* Profile 1 and 2 use the built-in gateway: the existing api-gateway should continue to work without changes for on-premise deployments.
-* Minimal trait surface: the abstraction should be simple enough that adding a new gateway implementation requires only 2-3 methods.
-* Vendor neutrality: the framework should not be locked to a specific external gateway. Operators should be able to swap Kong for Tyk without module changes.
-* Module developer transparency: modules should not know or care which gateway is active. They call `GatewayProvider::register_routes()` and the framework handles the rest.
+* Profile 3 requires an external gateway: the built-in api-gateway cannot serve as the k8s ingress controller. Modules
+  must be able to register routes with Kong/Tyk.
+* Profile 1 and 2 use the built-in gateway: the existing api-gateway should continue to work without changes for
+  on-premise deployments.
+* Minimal trait surface: the abstraction should be simple enough that adding a new gateway implementation requires only
+  2-3 methods.
+* Vendor neutrality: the framework should not be locked to a specific external gateway. Operators should be able to swap
+  Kong for Tyk without module changes.
+* Module developer transparency: modules should not know or care which gateway is active. They call
+  `GatewayProvider::register_routes()` and the framework handles the rest.
 
 ## Considered Options
 
-* **Option A**: Abstract trait with pluggable implementations — `GatewayProvider` trait with `ModKitGatewayProvider` (built-in) and future `KongGatewayProvider`, `TykGatewayProvider`.
-* **Option B**: CRD-only for k8s, direct api-gateway for on-premise — no abstraction; two completely separate code paths.
+* **Option A**: Abstract trait with pluggable implementations — `GatewayProvider` trait with `ModKitGatewayProvider` (
+  built-in) and future `KongGatewayProvider`, `TykGatewayProvider`.
+* **Option B**: CRD-only for k8s, direct api-gateway for on-premise — no abstraction; two completely separate code
+  paths.
 * **Option C**: Keep api-gateway for all profiles — extend the built-in gateway to work in k8s as an ingress controller.
 
 ## Decision Outcome
 
-Chosen option: "Abstract trait with pluggable implementations", because it provides a clean separation between the route registration intent (what modules do) and the registration mechanism (what the gateway does), while keeping the trait surface minimal and allowing new implementations to be added without framework changes.
+Chosen option: "Abstract trait with pluggable implementations", because it provides a clean separation between the route
+registration intent (what modules do) and the registration mechanism (what the gateway does), while keeping the trait
+surface minimal and allowing new implementations to be added without framework changes.
 
 ### Consequences
 
-* A `GatewayProvider` trait must be defined with three methods: `register_routes`, `deregister_routes`, and `health_check`.
-* `ModKitGatewayProvider` must be implemented as the first provider. It adds reverse-proxy routes to the built-in api-gateway, using `modkit-http` to forward requests to OoP Workers.
-* The OoP bootstrap must accept a `GatewayProvider` instance (injected at startup based on config/profile) and call `register_routes` after the HTTP server starts.
-* In Profile 3, the operator configures a `KongGatewayProvider` (or similar) via the platform config. The framework provides the trait; the k8s-specific adapter is a separate crate.
-* Modules that only expose internal APIs (no public routes) skip gateway registration entirely. The `api_visibility` metadata on OperationBuilder routes determines this.
-* The `GatewayProvider` trait is async (network I/O is required for external gateway admin APIs), which constrains it to be used via `Box<dyn GatewayProvider>` or `Arc<dyn GatewayProvider>` rather than static dispatch.
+* A `GatewayProvider` trait must be defined with three methods: `register_routes`, `deregister_routes`, and
+  `health_check`.
+* `ModKitGatewayProvider` must be implemented as the first provider. It adds reverse-proxy routes to the built-in
+  api-gateway, using `modkit-http` to forward requests to OoP Workers.
+* The OoP bootstrap must accept a `GatewayProvider` instance (injected at startup based on config/profile) and call
+  `register_routes` after the HTTP server starts.
+* In Profile 3, the operator configures a `KongGatewayProvider` (or similar) via the platform config. The framework
+  provides the trait; the k8s-specific adapter is a separate crate.
+* Modules that only expose internal APIs (no public routes) skip gateway registration entirely. The `api_visibility`
+  metadata on OperationBuilder routes determines this.
+* The `GatewayProvider` trait is async (network I/O is required for external gateway admin APIs), which constrains it to
+  be used via `Box<dyn GatewayProvider>` or `Arc<dyn GatewayProvider>` rather than static dispatch.
 
 ### Confirmation
 
-* Code review: verify that `GatewayProvider` trait exists and is used in OoP bootstrap instead of direct api-gateway calls.
-* Integration test (Profile 2): OoP module registers routes via `ModKitGatewayProvider`; requests through api-gateway reach the OoP module.
+* Code review: verify that `GatewayProvider` trait exists and is used in OoP bootstrap instead of direct api-gateway
+  calls.
+* Integration test (Profile 2): OoP module registers routes via `ModKitGatewayProvider`; requests through api-gateway
+  reach the OoP module.
 * Architecture review: verify that no module directly imports api-gateway internals for route registration.
 
 ## Pros and Cons of the Options
@@ -77,22 +98,27 @@ Extend the built-in api-gateway to work as a k8s ingress controller (expose it a
 
 * Good, because single gateway implementation across all profiles.
 * Good, because no abstraction needed — all modules talk to the same gateway.
-* Bad, because building a production-grade k8s ingress controller is a massive engineering effort (TLS management, rate limiting, WAF, etc.).
+* Bad, because building a production-grade k8s ingress controller is a massive engineering effort (TLS management, rate
+  limiting, WAF, etc.).
 * Bad, because competes with mature solutions (Kong, Envoy, Traefik) that have years of production hardening.
 * Bad, because operators who already have an API gateway in their k8s cluster would need to run two gateways.
 * Bad, because locks the platform to the built-in gateway with no escape hatch.
 
 ## More Information
 
-The `GatewayProvider` trait definition is specified in DESIGN.md § 3.2 (`cpt-cf-component-gateway-provider`) and § 3.3 (`cpt-cf-interface-gateway-trait`).
+The `GatewayProvider` trait definition is specified in DESIGN.md § 3.2 (`cpt-cf-component-gateway-provider`) and § 3.3 (
+`cpt-cf-interface-gateway-trait`).
 
 The `ModKitGatewayProvider` implementation for Profile 2 works as follows:
+
 1. Receives `register_routes(module, openapi, endpoint)`.
 2. Parses the OpenAPI spec to extract public route paths.
-3. Adds reverse-proxy routes to the api-gateway Axum router, where each route forwards to `endpoint + path` via `modkit-http`.
+3. Adds reverse-proxy routes to the api-gateway Axum router, where each route forwards to `endpoint + path` via
+   `modkit-http`.
 4. On `deregister_routes(module)`, removes the reverse-proxy routes.
 
 Future `KongGatewayProvider` implementation for Profile 3:
+
 1. Receives `register_routes(module, openapi, endpoint)`.
 2. Creates a Kong Service pointing to the module's k8s Service URL.
 3. Creates Kong Routes for each public API path from the OpenAPI spec.

@@ -13,49 +13,75 @@ date: 2026-04-07
 
 ## Context and Problem Statement
 
-In Profile 1 (Embedded), module startup order is guaranteed by topological sort on the `deps` declared in the `#[modkit::module(deps = [...])]` macro. By the time module B calls `register_clients()`, its dependency A has already started. In Profiles 2 and 3 (OoP, K8s), modules run as independent processes/pods that start in arbitrary order. There is no global orchestrator that enforces topo-sort across process boundaries. How should modules handle missing dependencies at startup, and who is responsible for the retry/registration logic?
+In Profile 1 (Embedded), module startup order is guaranteed by topological sort on the `deps` declared in the
+`#[modkit::module(deps = [...])]` macro. By the time module B calls `register_clients()`, its dependency A has already
+started. In Profiles 2 and 3 (OoP, K8s), modules run as independent processes/pods that start in arbitrary order. There
+is no global orchestrator that enforces topo-sort across process boundaries. How should modules handle missing
+dependencies at startup, and who is responsible for the retry/registration logic?
 
 ## Decision Drivers
 
-* **Kubernetes-native**: k8s expects pods to start independently and express readiness via probes. Init containers that block on other services are fragile (DNS not yet propagated, rolling update ordering, etc.) and go against k8s declarative model.
-* **No single point of failure**: blocking on Flight Control at startup makes it a hard dependency — if it restarts, all modules that haven't registered yet are stuck.
-* **Developer transparency**: module developers should not write retry loops or health-check polling. The `deps` declaration in the macro is sufficient — the runtime handles the rest.
-* **Profile compatibility**: the solution must work identically across Profile 1 (topo-sort, instant), Profile 2 (local processes, fast), and Profile 3 (k8s pods, eventual).
-* **Existing `deps` metadata**: the `deps` field on `ModuleEntry` already declares the dependency graph. This metadata should drive readiness semantics in all profiles, not just topo-sort in Profile 1.
+* **Kubernetes-native**: k8s expects pods to start independently and express readiness via probes. Init containers that
+  block on other services are fragile (DNS not yet propagated, rolling update ordering, etc.) and go against k8s
+  declarative model.
+* **No single point of failure**: blocking on Flight Control at startup makes it a hard dependency — if it restarts, all
+  modules that haven't registered yet are stuck.
+* **Developer transparency**: module developers should not write retry loops or health-check polling. The `deps`
+  declaration in the macro is sufficient — the runtime handles the rest.
+* **Profile compatibility**: the solution must work identically across Profile 1 (topo-sort, instant), Profile 2 (local
+  processes, fast), and Profile 3 (k8s pods, eventual).
+* **Existing `deps` metadata**: the `deps` field on `ModuleEntry` already declares the dependency graph. This metadata
+  should drive readiness semantics in all profiles, not just topo-sort in Profile 1.
 
 ## Considered Options
 
-* **Option A**: Init containers wait for Flight Control; topo-sort equivalent via deployment ordering (Helm hooks / Argo sync-waves).
+* **Option A**: Init containers wait for Flight Control; topo-sort equivalent via deployment ordering (Helm hooks / Argo
+  sync-waves).
 * **Option B**: Central dependency checker in Flight Control that signals "you may start" to each module.
-* **Option C**: Eventual readiness — modules start immediately, self-register with retry, readiness probe gates traffic until critical deps are resolved. All retry/probe logic lives in ModKit runtime.
+* **Option C**: Eventual readiness — modules start immediately, self-register with retry, readiness probe gates traffic
+  until critical deps are resolved. All retry/probe logic lives in ModKit runtime.
 
 ## Decision Outcome
 
-Chosen option: "Eventual readiness with ModKit runtime-managed self-registration and probes", because it is kubernetes-native, has no single point of failure, requires zero boilerplate from module developers, and reuses the existing `deps` metadata for readiness gating.
+Chosen option: "Eventual readiness with ModKit runtime-managed self-registration and probes", because it is
+kubernetes-native, has no single point of failure, requires zero boilerplate from module developers, and reuses the
+existing `deps` metadata for readiness gating.
 
 ### Consequences
 
-* The ModKit OoP runtime (`modkit::bootstrap::oop`) must manage a background task that retries registration with Flight Control (DirectoryService) using exponential backoff. Module code does not participate in this.
-* The ModKit OoP runtime must provide built-in HTTP endpoints for liveness (`/healthz`) and readiness (`/readyz`) probes. These are framework-level, not module-level — the module does not implement them.
+* The ModKit OoP runtime (`modkit::bootstrap::oop`) must manage a background task that retries registration with Flight
+  Control (DirectoryService) using exponential backoff. Module code does not participate in this.
+* The ModKit OoP runtime must provide built-in HTTP endpoints for liveness (`/healthz`) and readiness (`/readyz`)probes.
+  These are framework-level, not module-level — the module does not implement them.
 * Liveness returns `200 OK` as soon as the HTTP server is listening (process is alive, not deadlocked).
-* Readiness returns `200 OK` only when all critical dependencies declared in `deps` are resolvable via DirectoryService. Until then, it returns `503 Service Unavailable` with a JSON body listing unresolved deps.
+* Readiness returns `200 OK` only when all critical dependencies declared in `deps` are resolvable via DirectoryService.
+  Until then, it returns `503 Service Unavailable` with a JSON body listing unresolved deps.
 * Modules with no `deps` (e.g., Flight Control itself, types-registry) become ready immediately after `start()`.
-* The Helm chart library (`modkit-common`) configures liveness/readiness probes to `/healthz` and `/readyz` by default. No init containers are generated.
-* In Profile 1, topo-sort remains the primary mechanism. The readiness probes still exist but are trivially satisfied (all deps are in-process and already started).
-* In Profile 2 (Host+Workers), Flight Control starts first (it has no deps), then spawns workers. Workers retry registration until Flight Control is reachable (typically immediate since it starts first). Deps resolve quickly because the host can start workers in topo order, but correctness does not depend on this ordering.
-* Generated REST clients must handle `503` from not-yet-ready targets gracefully — retry with backoff, surface `ServiceUnavailable` to caller.
+* The Helm chart library (`modkit-common`) configures liveness/readiness probes to `/healthz` and `/readyz` by default.
+  No init containers are generated.
+* In Profile 1, topo-sort remains the primary mechanism. The readiness probes still exist but are trivially satisfied (
+  all deps are in-process and already started).
+* In Profile 2 (Host+Workers), Flight Control starts first (it has no deps), then spawns workers. Workers retry
+  registration until Flight Control is reachable (typically immediate since it starts first). Deps resolve quickly
+  because the host can start workers in topo order, but correctness does not depend on this ordering.
+* Generated REST clients must handle `503` from not-yet-ready targets gracefully — retry with backoff, surface
+  `ServiceUnavailable` to caller.
 
 ### Confirmation
 
-* Integration test (Profile 3): start module A (depends on B) and module B simultaneously. Verify A's `/readyz` returns 503 until B is registered in DirectoryService, then 200.
-* Integration test (Profile 2): kill Flight Control while a worker is running. Verify worker continues serving existing requests (liveness OK) and re-registers when Flight Control restarts.
-* Code review: verify that no module source code contains retry loops for registration or dependency resolution — all such logic is in `modkit::bootstrap::oop`.
+* Integration test (Profile 3): start module A (depends on B) and module B simultaneously. Verify A's `/readyz` returns
+  503 until B is registered in DirectoryService, then 200.
+* Integration test (Profile 2): kill Flight Control while a worker is running. Verify worker continues serving existing
+  requests (liveness OK) and re-registers when Flight Control restarts.
+* Code review: verify that no module source code contains retry loops for registration or dependency resolution — all
+  such logic is in `modkit::bootstrap::oop`.
 
 ## Pros and Cons of the Options
 
 ### Option A: Init Containers + Deployment Ordering
 
-Helm charts generate init containers that poll Flight Control's `/health`. Argo CD sync-waves or Helm hooks enforce Flight Control → system modules → app modules ordering.
+Helm charts generate init containers that poll Flight Control's `/health`. Argo CD sync-waves or Helm hooks enforce
+Flight Control → system modules → app modules ordering.
 
 * Good, because familiar k8s pattern — ops engineers understand init containers.
 * Good, because guarantees Flight Control is ready before any module starts.
@@ -67,19 +93,23 @@ Helm charts generate init containers that poll Flight Control's `/health`. Argo 
 
 ### Option B: Central Dependency Checker in Flight Control
 
-Flight Control knows the full dependency graph. Modules connect to Flight Control on startup and block until Flight Control signals "your deps are ready, proceed".
+Flight Control knows the full dependency graph. Modules connect to Flight Control on startup and block until Flight
+Control signals "your deps are ready, proceed".
 
 * Good, because exact ordering — replicates Profile 1's topo-sort semantically.
 * Good, because centralized visibility into the full startup graph.
 * Bad, because Flight Control becomes a hard SPOF — if it's slow or restarting, all modules are blocked.
 * Bad, because requires a new protocol (modules must connect, wait for signal, then proceed).
 * Bad, because contradicts k8s declarative model — modules should not need a "start signal" from an external authority.
-* Bad, because circular dependency risk — Flight Control itself may depend on types-registry, which depends on Flight Control being ready to register.
-* Bad, because complicates rolling updates — restarting Flight Control blocks all modules that happen to restart simultaneously.
+* Bad, because circular dependency risk — Flight Control itself may depend on types-registry, which depends on Flight
+  Control being ready to register.
+* Bad, because complicates rolling updates — restarting Flight Control blocks all modules that happen to restart
+  simultaneously.
 
 ### Option C: Eventual Readiness (chosen)
 
-Modules start immediately and unconditionally. The ModKit runtime manages self-registration (background retry) and readiness probes (dep resolution check). No blocking, no central coordinator.
+Modules start immediately and unconditionally. The ModKit runtime manages self-registration (background retry) and
+readiness probes (dep resolution check). No blocking, no central coordinator.
 
 * Good, because fully kubernetes-native — works with any k8s distribution, no special operators or ordering.
 * Good, because no SPOF — Flight Control restart does not block modules; they re-register when it's back.
@@ -87,8 +117,10 @@ Modules start immediately and unconditionally. The ModKit runtime manages self-r
 * Good, because works identically in Profile 2 and 3 — same runtime code, different transport.
 * Good, because naturally resilient to rolling updates, node failures, pod evictions.
 * Good, because readiness probe semantics map directly to k8s traffic routing — no traffic until deps ready.
-* Neutral, because there is a startup window where the module is alive but not ready — this is expected and correct k8s behavior.
-* Bad, because eventual consistency means first requests may see 503 if a dep is slow to start — acceptable for distributed systems, but different from Profile 1's instant availability.
+* Neutral, because there is a startup window where the module is alive but not ready — this is expected and correct k8s
+  behavior.
+* Bad, because eventual consistency means first requests may see 503 if a dep is slow to start — acceptable for
+  distributed systems, but different from Profile 1's instant availability.
 
 ## More Information
 
@@ -127,12 +159,17 @@ The OoP bootstrap (`modkit::bootstrap::oop`) gains these framework-managed behav
 ### Health Endpoint Responses
 
 **`/healthz` (liveness)**:
+
 ```json
-{ "status": "alive" }
+{
+  "status": "alive"
+}
 ```
+
 Always 200 once HTTP server is up.
 
 **`/readyz` (readiness)** — not ready:
+
 ```json
 {
   "status": "starting",
@@ -143,9 +180,11 @@ Always 200 once HTTP server is up.
   "registered": false
 }
 ```
+
 Returns 503.
 
 **`/readyz` (readiness)** — ready:
+
 ```json
 {
   "status": "ready",
@@ -156,17 +195,18 @@ Returns 503.
   "registered": true
 }
 ```
+
 Returns 200.
 
 ### Interaction with Existing `deps` Macro
 
 The `deps` field semantics expand per profile:
 
-| Profile | `deps` used for | Blocking? |
-|---------|----------------|-----------|
-| Profile 1 (Embedded) | Topo-sort startup order | Yes (sequential, in-process) |
-| Profile 2 (Host+Workers) | Readiness gating + topo-hint for spawn order | No (eventual, spawn order is best-effort) |
-| Profile 3 (K8s Native) | Readiness gating only | No (eventual, k8s schedules independently) |
+| Profile                  | `deps` used for                              | Blocking?                                  |
+|--------------------------|----------------------------------------------|--------------------------------------------|
+| Profile 1 (Embedded)     | Topo-sort startup order                      | Yes (sequential, in-process)               |
+| Profile 2 (Host+Workers) | Readiness gating + topo-hint for spawn order | No (eventual, spawn order is best-effort)  |
+| Profile 3 (K8s Native)   | Readiness gating only                        | No (eventual, k8s schedules independently) |
 
 ## Traceability
 
@@ -175,7 +215,10 @@ The `deps` field semantics expand per profile:
 
 This decision directly addresses the following requirements or design elements:
 
-* `cpt-cf-fr-developer-transparency` — Module developers declare `deps` once; the runtime handles readiness in all profiles.
-* `cpt-cf-nfr-graceful-degradation` — Modules with unresolved deps return 503 via readiness probe; callers get clear ServiceUnavailable errors.
+* `cpt-cf-fr-developer-transparency` — Module developers declare `deps` once; the runtime handles readiness in all
+  profiles.
+* `cpt-cf-nfr-graceful-degradation` — Modules with unresolved deps return 503 via readiness probe; callers get clear
+  ServiceUnavailable errors.
 * `cpt-cf-component-oop-bootstrap` — The OoP bootstrap component implements all retry, registration, and probe logic.
-* `cpt-cf-component-k8s-packaging` — Helm charts configure probes to `/healthz` and `/readyz` via `modkit-common` library chart.
+* `cpt-cf-component-k8s-packaging` — Helm charts configure probes to `/healthz` and `/readyz` via `modkit-common`library
+  chart.

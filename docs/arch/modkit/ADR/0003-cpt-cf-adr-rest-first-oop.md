@@ -13,46 +13,66 @@ date: 2026-04-07
 
 ## Context and Problem Statement
 
-Earlier ModKit OoP designs (see RESTOverGRPC.MD gist) proposed a REST-over-gRPC bridge pattern where OoP modules would expose gRPC only, and a `RestBridge` layer would translate REST calls into `UnaryRequest`/`UnaryResponse` proto messages. This approach required every OoP module to depend on tonic and proto definitions, added a translation layer that obscured errors, and made debugging with standard HTTP tools (curl, Postman) difficult. Should OoP modules communicate via a gRPC bridge, native REST, or a sidecar proxy?
+Earlier ModKit OoP designs (see RESTOverGRPC.MD gist) proposed a REST-over-gRPC bridge pattern where OoP modules would
+expose gRPC only, and a `RestBridge` layer would translate REST calls into `UnaryRequest`/`UnaryResponse` proto
+messages. This approach required every OoP module to depend on tonic and proto definitions, added a translation layer
+that obscured errors, and made debugging with standard HTTP tools (curl, Postman) difficult. Should OoP modules
+communicate via a gRPC bridge, native REST, or a sidecar proxy?
 
 ## Decision Drivers
 
-* Debuggability: REST requests are inspectable with curl, browser devtools, and standard HTTP tooling. gRPC requires specialized tools (grpcurl, Postman gRPC).
-* Language flexibility: Future non-Rust OoP modules can serve REST without adopting tonic/proto. REST is the universal interop protocol.
-* Existing investment: OperationBuilder already generates REST routes and OpenAPI specs. Modules already define their public API as REST endpoints.
-* Proto dependency: The gRPC bridge approach requires `UnaryRequest`/`UnaryResponse` proto definitions and a custom codec, adding build complexity.
-* Industry alignment: Kubernetes services, API gateways (Kong, Tyk, Envoy), and most microservice frameworks (Spring Boot, Express, Actix-web) use REST/HTTP as the default inter-service protocol.
+* Debuggability: REST requests are inspectable with curl, browser devtools, and standard HTTP tooling. gRPC requires
+  specialized tools (grpcurl, Postman gRPC).
+* Language flexibility: Future non-Rust OoP modules can serve REST without adopting tonic/proto. REST is the universal
+  interop protocol.
+* Existing investment: OperationBuilder already generates REST routes and OpenAPI specs. Modules already define their
+  public API as REST endpoints.
+* Proto dependency: The gRPC bridge approach requires `UnaryRequest`/`UnaryResponse` proto definitions and a custom
+  codec, adding build complexity.
+* Industry alignment: Kubernetes services, API gateways (Kong, Tyk, Envoy), and most microservice frameworks (Spring
+  Boot, Express, Actix-web) use REST/HTTP as the default inter-service protocol.
 
 ## Considered Options
 
 * **Option A**: REST-over-gRPC bridge — OoP modules expose gRPC; a bridge translates REST ↔ gRPC.
 * **Option B**: Native REST — each OoP module runs its own Axum HTTP server with the full ModKit middleware stack.
-* **Option C**: Sidecar proxy (Dapr-style) — a sidecar process handles inter-module communication; modules talk to localhost sidecar.
+* **Option C**: Sidecar proxy (Dapr-style) — a sidecar process handles inter-module communication; modules talk to
+  localhost sidecar.
 
 ## Decision Outcome
 
-Chosen option: "Native REST", because it leverages the existing OperationBuilder/Axum investment, requires no proto dependency for REST modules, is debuggable with standard tools, and aligns with how the industry builds microservices. gRPC remains available as an opt-in for performance-critical internal paths but is not required for standard module communication.
+Chosen option: "Native REST", because it leverages the existing OperationBuilder/Axum investment, requires no proto
+dependency for REST modules, is debuggable with standard tools, and aligns with how the industry builds microservices.
+gRPC remains available as an opt-in for performance-critical internal paths but is not required for standard module
+communication.
 
 ### Consequences
 
-* The `UnaryRequest`/`UnaryResponse` proto pattern from the earlier design is not adopted. No REST-to-gRPC translation layer is needed.
-* The OoP bootstrap (`libs/modkit/src/bootstrap/oop.rs`) must be extended to start an Axum HTTP server from the module's OperationBuilder routes.
+* The `UnaryRequest`/`UnaryResponse` proto pattern from the earlier design is not adopted. No REST-to-gRPC translation
+  layer is needed.
+* The OoP bootstrap (`libs/modkit/src/bootstrap/oop.rs`) must be extended to start an Axum HTTP server from the module's
+  OperationBuilder routes.
 * Each OoP Worker serves its own `/openapi.json` endpoint, enabling the gateway to aggregate specs.
-* Generated REST clients (`cpt-cf-component-rest-client-gen`) target HTTP endpoints, not gRPC. This simplifies the codegen since OpenAPI (not proto) is the source of truth.
-* gRPC remains available via grpc-hub for modules that explicitly opt in (e.g., `DirectoryService`). The two protocols coexist without conflict.
-* Latency for REST calls is slightly higher than gRPC (HTTP/1.1 headers vs. HTTP/2 binary framing), but within the 5 ms p95 budget for typical payloads.
+* Generated REST clients (`cpt-cf-component-rest-client-gen`) target HTTP endpoints, not gRPC. This simplifies the
+  codegen since OpenAPI (not proto) is the source of truth.
+* gRPC remains available via grpc-hub for modules that explicitly opt in (e.g., `DirectoryService`). The two protocols
+  coexist without conflict.
+* Latency for REST calls is slightly higher than gRPC (HTTP/1.1 headers vs. HTTP/2 binary framing), but within the 5 ms
+  p95 budget for typical payloads.
 
 ### Confirmation
 
 * Code review: verify that OoP bootstrap starts an Axum HTTP server, not a gRPC-only server.
 * Architecture review: verify that no `UnaryRequest`/`UnaryResponse` proto types exist in the codebase.
-* Integration test: an OoP module serves a REST endpoint that is callable with curl and returns a valid OpenAPI-documented response.
+* Integration test: an OoP module serves a REST endpoint that is callable with curl and returns a valid
+  OpenAPI-documented response.
 
 ## Pros and Cons of the Options
 
 ### Option A: REST-over-gRPC Bridge
 
-OoP modules expose gRPC only. A `RestBridge` component translates between REST and a generic `UnaryRequest`/`UnaryResponse` proto.
+OoP modules expose gRPC only. A `RestBridge` component translates between REST and a generic `UnaryRequest`/
+`UnaryResponse` proto.
 
 * Good, because gRPC HTTP/2 binary framing is efficient for large payloads and streaming.
 * Good, because a single gRPC port per module simplifies networking.
@@ -64,7 +84,8 @@ OoP modules expose gRPC only. A `RestBridge` component translates between REST a
 
 ### Option B: Native REST
 
-Each OoP module runs its own Axum HTTP server. The module's `register_rest()` / OperationBuilder routes are served directly.
+Each OoP module runs its own Axum HTTP server. The module's `register_rest()` / OperationBuilder routes are served
+directly.
 
 * Good, because leverages the existing OperationBuilder/Axum/Tower middleware investment — no new abstractions.
 * Good, because debuggable with curl, browser devtools, Postman, and any HTTP client.
@@ -85,11 +106,13 @@ A sidecar process runs alongside each module, handling service discovery, retrie
 * Bad, because introduces latency (module → sidecar → target sidecar → target module = 2 extra hops).
 * Bad, because the sidecar must be built and maintained — significant engineering investment.
 * Bad, because on-premise Windows deployments complicate sidecar lifecycle management.
-* Bad, because Dapr-style sidecars are a heavy dependency for a framework that already has modkit-http and Tower middleware.
+* Bad, because Dapr-style sidecars are a heavy dependency for a framework that already has modkit-http and Tower
+  middleware.
 
 ## More Information
 
-The earlier gRPC bridge design is documented in the RESTOverGRPC.MD gist. Key patterns from that design that are **not adopted**:
+The earlier gRPC bridge design is documented in the RESTOverGRPC.MD gist. Key patterns from that design that are **not
+adopted**:
 
 - `RestBridge` component and `RestInvoke` gRPC service
 - `UnaryRequest` / `UnaryResponse` proto messages
