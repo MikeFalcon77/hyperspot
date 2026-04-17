@@ -45,12 +45,24 @@ pub struct GrpcHubConfig {
     /// Listen address for the gRPC server.
     /// Defaults to `0.0.0.0:50051` if not specified.
     pub listen_addr: String,
+
+    /// The address that gRPC Hub advertises to the directory service for discovery.
+    ///
+    /// Accepted forms:
+    /// - `host:<u16>` — literal host and port (`:0` is treated as "use the
+    ///   actual bound port").
+    /// - `host` (no `:`) — the actual bound port is appended at serve time.
+    ///
+    /// The address is parsed and validated during module `init`; an
+    /// unparsable port segment (e.g. `host:abc`) causes `init` to fail.
+    pub advertise_addr: Option<String>,
 }
 
 impl Default for GrpcHubConfig {
     fn default() -> Self {
         Self {
             listen_addr: DEFAULT_LISTEN_ADDR.to_string(),
+            advertise_addr: None,
         }
     }
 }
@@ -65,6 +77,23 @@ pub(crate) enum ListenConfig {
     NamedPipe(String),
 }
 
+/// Parse and validate a user-supplied advertise address.
+///
+/// # Errors
+/// Returns an error when the input contains a `:` but the trailing
+/// segment cannot be parsed as a `u16` (e.g. `"host:abc"`).
+fn parse_advertise_addr(advertise_addr: &str) -> anyhow::Result<(String, Option<u16>)> {
+    if let Some((host, port_str)) = advertise_addr.rsplit_once(':') {
+        let port = port_str
+            .parse::<u16>()
+            .with_context(|| format!("invalid port in advertise_addr '{advertise_addr}'"))?;
+
+        Ok((host.to_owned(), if port == 0 { None } else { Some(port) }))
+    } else {
+        Ok((advertise_addr.to_owned(), None))
+    }
+}
+
 /// The gRPC Hub module.
 /// This module is responsible for hosting the gRPC server and managing the gRPC services.
 #[modkit::module(
@@ -74,6 +103,7 @@ pub(crate) enum ListenConfig {
 )]
 pub struct GrpcHub {
     pub(crate) listen_cfg: RwLock<ListenConfig>,
+    pub(crate) advertise_addr: OnceLock<(String, Option<u16>)>,
     pub(crate) installer_store: OnceLock<Arc<GrpcInstallerStore>>,
     pub(crate) client_hub: OnceLock<Arc<ClientHub>>,
     pub(crate) instance_id: OnceLock<String>,
@@ -84,6 +114,7 @@ impl Default for GrpcHub {
     fn default() -> Self {
         Self {
             listen_cfg: RwLock::new(ListenConfig::Tcp(DEFAULT_LISTEN_ADDR)),
+            advertise_addr: OnceLock::new(),
             installer_store: OnceLock::new(),
             client_hub: OnceLock::new(),
             instance_id: OnceLock::new(),
@@ -127,6 +158,23 @@ impl GrpcHub {
     /// Set the bound endpoint after the server has started listening.
     fn set_bound_endpoint(&self, endpoint: String) {
         *self.bound_endpoint.write() = Some(endpoint);
+    }
+
+    /// Pick the endpoint to register with Directory for a TCP listener.
+    ///
+    /// Returns `None` when the bound address is unspecified (e.g. `0.0.0.0`)
+    /// and no explicit `advertise_addr` is configured — in that case the
+    /// endpoint is not routable and registration must be skipped.
+    fn tcp_directory_endpoint(&self, bound_addr: SocketAddr) -> Option<String> {
+        if let Some((host, port)) = self.advertise_addr.get() {
+            let resolved = format!("{}:{}", host, port.unwrap_or(bound_addr.port()));
+
+            Some(format!("http://{resolved}"))
+        } else if !bound_addr.ip().is_unspecified() {
+            Some(format!("http://{bound_addr}"))
+        } else {
+            None
+        }
     }
 
     /// Resolve `DirectoryClient` lazily from the stored `ClientHub`.
@@ -362,11 +410,19 @@ impl GrpcHub {
     ) -> anyhow::Result<()> {
         let listener = TcpListener::bind(addr).await?;
         let bound_addr = listener.local_addr()?;
-        let endpoint = format!("http://{bound_addr}");
         tracing::info!(%bound_addr, transport = "tcp", "gRPC hub listening");
 
-        self.set_bound_endpoint(endpoint.clone());
-        self.register_modules(modules, &endpoint).await?;
+        self.set_bound_endpoint(format!("http://{bound_addr}"));
+
+        if let Some(endpoint) = self.tcp_directory_endpoint(bound_addr) {
+            self.register_modules(modules, &endpoint).await?;
+        } else {
+            tracing::warn!(
+                %bound_addr,
+                "listen_addr is unspecified and no advertise_addr configured; skipping Directory registration"
+            );
+        }
+
         ready.notify();
 
         let incoming = TcpListenerStream::new(listener);
@@ -540,10 +596,19 @@ impl Module for GrpcHub {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
         // Load typed configuration
         let cfg: GrpcHubConfig = ctx.config_or_default()?;
-        tracing::debug!(listen_addr = %cfg.listen_addr, "Loaded gRPC hub configuration");
+
+        tracing::debug!(?cfg, "Loaded gRPC hub configuration");
 
         // Parse listen_addr into appropriate transport type
         self.apply_listen_config(&cfg.listen_addr)?;
+
+        if let Some(advertise_addr) = cfg.advertise_addr {
+            let parsed = parse_advertise_addr(&advertise_addr)?;
+
+            self.advertise_addr
+                .set(parsed)
+                .map_err(|_| anyhow::anyhow!("advertise_addr already set (init called twice?)"))?;
+        }
 
         // Store ClientHub reference for lazy DirectoryClient resolution during serve phase.
         self.client_hub
@@ -636,6 +701,40 @@ mod tests {
                 routes.add_service(ServiceBImpl);
             }),
         }
+    }
+
+    #[test]
+    fn test_advertise_addr_parse_and_resolve_substitutes_ephemeral_port() {
+        // `:0` means "use the bound port" at serve time.
+        assert_eq!(
+            parse_advertise_addr("myhost:0").unwrap(),
+            ("myhost".into(), None)
+        );
+        assert_eq!(
+            parse_advertise_addr("127.0.0.1:0").unwrap(),
+            ("127.0.0.1".into(), None)
+        );
+        assert_eq!(
+            parse_advertise_addr("[::1]:0").unwrap(),
+            ("[::1]".into(), None)
+        );
+
+        // A literal non-zero port is advertised as-is.
+        assert_eq!(
+            parse_advertise_addr("myhost:50051").unwrap(),
+            ("myhost".into(), Some(50051))
+        );
+
+        // No `:` — the bound port is appended at serve time.
+        assert_eq!(
+            parse_advertise_addr("myhost").unwrap(),
+            ("myhost".into(), None)
+        );
+    }
+
+    #[test]
+    fn test_advertise_addr_parse_rejects_unparsable_port() {
+        assert!(parse_advertise_addr("myhost:abc").is_err());
     }
 
     #[tokio::test]
