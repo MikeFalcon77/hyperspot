@@ -63,6 +63,21 @@ impl TenantResolverPluginClient for Service {
         }
     }
 
+    async fn get_root_tenant(
+        &self,
+        ctx: &SecurityContext,
+    ) -> Result<TenantInfo, TenantResolverError> {
+        // In single-tenant mode the sole tenant IS the root by definition.
+        let ctx_tenant = TenantId(ctx.subject_tenant_id());
+        if ctx_tenant.is_nil() {
+            return Err(TenantResolverError::Internal(
+                "single-tenant-tr-plugin: no root tenant -- security context has nil tenant id"
+                    .to_owned(),
+            ));
+        }
+        Ok(build_tenant_info(ctx_tenant))
+    }
+
     async fn get_tenants(
         &self,
         ctx: &SecurityContext,

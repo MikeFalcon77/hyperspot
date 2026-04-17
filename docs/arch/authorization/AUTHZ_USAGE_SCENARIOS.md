@@ -11,7 +11,7 @@ All examples use a Task Management domain:
 - **Resource:** `tasks` table with `id`, `owner_tenant_id`, `owner_id`, `title`, `status`
 - **Owner:** `owner_id` references the subject (user) who owns/is assigned the task
 - **Resource Groups:** Projects (tasks belong to projects)
-- **Tenant Model:** Hierarchical multi-tenancy — see [TENANT_MODEL.md](./TENANT_MODEL.md) for details on topology, barriers, and closure tables
+- **Tenant Model:** Hierarchical multi-tenancy on a single-root tree — see [TENANT_MODEL.md](./TENANT_MODEL.md) for details on topology, barriers, and closure tables
 
 ---
 

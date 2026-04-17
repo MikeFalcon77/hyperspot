@@ -248,16 +248,18 @@ modules:
       priority: 20
       # Tenant tree configuration (example: company with 2 divisions, each with departments)
       tenants:
-        # Default tenant for auth-disabled mode (must match DEFAULT_TENANT_ID in modkit-security)
+        # Root tenant — structural anchor, also used by auth-disabled mode
+        # (must match DEFAULT_TENANT_ID in modkit-security). The tenant tree
+        # has exactly one root.
         - id: "00000000-df51-5b42-9538-d2b56b7ee953"
           name: "default"
           parent_id: null
           status: active
 
-        # Root tenant (company level)
+        # Business sub-root (company level) under the structural root
         - id: "00000000-0000-0000-0000-000000000001"
           name: "company-root"
-          parent_id: null
+          parent_id: "00000000-df51-5b42-9538-d2b56b7ee953"
           status: active
 
         # Division 1: Engineering

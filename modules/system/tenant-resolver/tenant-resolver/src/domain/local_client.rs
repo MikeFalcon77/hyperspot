@@ -46,6 +46,16 @@ impl TenantResolverClient for TenantResolverLocalClient {
             .map_err(|e| log_and_convert("get_tenant", e))
     }
 
+    async fn get_root_tenant(
+        &self,
+        ctx: &SecurityContext,
+    ) -> Result<TenantInfo, TenantResolverError> {
+        self.svc
+            .get_root_tenant(ctx)
+            .await
+            .map_err(|e| log_and_convert("get_root_tenant", e))
+    }
+
     async fn get_tenants(
         &self,
         ctx: &SecurityContext,

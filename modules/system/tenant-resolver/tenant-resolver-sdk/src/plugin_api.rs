@@ -46,6 +46,27 @@ pub trait TenantResolverPluginClient: Send + Sync {
         id: TenantId,
     ) -> Result<TenantInfo, TenantResolverError>;
 
+    /// Get the root tenant (the unique tenant with no parent).
+    ///
+    /// Plugins MUST expose exactly one tenant with `parent_id == None` and
+    /// return it here. It is up to the plugin whether to enforce this
+    /// invariant at load time or at runtime.
+    ///
+    /// # Errors
+    ///
+    /// - `Internal` if the plugin cannot determine the root tenant at call
+    ///   time (e.g., the invariant is enforced at runtime and the data
+    ///   source is currently inconsistent, or the context lacks the
+    ///   information needed to derive it)
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - Security context
+    async fn get_root_tenant(
+        &self,
+        ctx: &SecurityContext,
+    ) -> Result<TenantInfo, TenantResolverError>;
+
     /// Get multiple tenants by IDs (batch).
     ///
     /// Returns only found tenants - missing IDs are silently skipped.

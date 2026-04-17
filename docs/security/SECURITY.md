@@ -154,7 +154,7 @@ Constraints **OR** across alternatives, **AND** predicates within each constrain
 
 > Source: [`TENANT_MODEL.md`](../arch/authorization/TENANT_MODEL.md) · [`modules/system/tenant-resolver/`](../../modules/system/tenant-resolver/)
 
-Hierarchical multi-tenancy with a **forest topology** (multiple independent trees, no synthetic super-root):
+Hierarchical multi-tenancy with a **single-root tree topology** (exactly one tenant with no parent; all others descend from it):
 
 - **Isolation by default** — every resource carries `owner_tenant_id` as the primary partition key; tenants cannot access each other's data.
 - **Hierarchical access** — parent tenants may access child data. Subject tenant (home identity) and context tenant (operational scope) are distinguished, enabling scoped admin patterns.

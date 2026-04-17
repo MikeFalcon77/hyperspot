@@ -130,6 +130,22 @@ impl Service {
         plugin.get_tenant(ctx, id).await.map_err(DomainError::from)
     }
 
+    /// Get the root tenant (the unique tenant with no parent).
+    ///
+    /// This forwards to the selected plugin's `get_root_tenant`; the
+    /// single-root invariant is enforced by plugins themselves (e.g. the
+    /// static plugin validates its config during `Service::from_config`).
+    ///
+    /// # Errors
+    ///
+    /// - Plugin resolution errors
+    /// - Any error surfaced by the plugin
+    #[tracing::instrument(skip_all)]
+    pub async fn get_root_tenant(&self, ctx: &SecurityContext) -> Result<TenantInfo, DomainError> {
+        let plugin = self.get_plugin().await?;
+        plugin.get_root_tenant(ctx).await.map_err(DomainError::from)
+    }
+
     /// Get multiple tenants by IDs (batch).
     ///
     /// Returns only found tenants - missing IDs are silently skipped.

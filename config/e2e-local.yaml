@@ -123,15 +123,16 @@ modules:
       vendor: "hyperspot"
       priority: 20
       tenants:
-        # Root tenant used by oagw + credstore e2e tests
+        # Root tenant used by oagw + credstore e2e tests. The tenant tree has
+        # exactly one root; the hierarchy sub-root below hangs off this anchor.
         - id: "00000000-df51-5b42-9538-d2b56b7ee953"
           name: "e2e-root"
           parent_id: null
           status: active
-        # Hierarchy tenants
+        # Hierarchy sub-root
         - id: "00000000-0000-0000-0000-000000000001"
           name: "hierarchy-root"
-          parent_id: null
+          parent_id: "00000000-df51-5b42-9538-d2b56b7ee953"
           status: active
         - id: "00000000-0000-0000-0000-000000000002"
           name: "hierarchy-l1a"

@@ -26,6 +26,13 @@ impl TenantResolverPluginClient for Service {
             .ok_or(TenantResolverError::TenantNotFound { tenant_id: id })
     }
 
+    async fn get_root_tenant(
+        &self,
+        _ctx: &SecurityContext,
+    ) -> Result<TenantInfo, TenantResolverError> {
+        Ok(self.root.clone())
+    }
+
     async fn get_tenants(
         &self,
         _ctx: &SecurityContext,

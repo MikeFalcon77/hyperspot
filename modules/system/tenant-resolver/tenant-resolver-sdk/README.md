@@ -31,6 +31,14 @@ let tenant = resolver.get_tenant(&ctx, tenant_id).await?;
 println!("Name: {}, Status: {:?}", tenant.name, tenant.status);
 ```
 
+### Get Root Tenant
+
+```rust
+// The unique tenant with no parent (single-root tree).
+let root = resolver.get_root_tenant(&ctx).await?;
+println!("Root: {} ({})", root.id, root.name);
+```
+
 ### Batch Get
 
 ```rust
@@ -82,7 +90,7 @@ pub struct TenantInfo {
     pub name: String,              // Human-readable name
     pub status: TenantStatus,      // Active, Suspended, or Deleted
     pub tenant_type: Option<String>, // Classification
-    pub parent_id: Option<TenantId>, // None for root tenants
+    pub parent_id: Option<TenantId>, // None for the root tenant (single-root tree)
     pub self_managed: bool,        // Barrier flag
 }
 ```

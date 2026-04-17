@@ -21,12 +21,24 @@ pub struct Service {
 
     /// Children index: `parent_id` -> list of child tenant IDs.
     pub(super) children: HashMap<TenantId, Vec<TenantId>>,
+
+    /// Cached root tenant (the unique tenant with `parent_id == None`).
+    pub(super) root: TenantInfo,
 }
 
 impl Service {
     /// Creates a new service from configuration.
-    #[must_use]
-    pub fn from_config(cfg: &StaticTrPluginConfig) -> Self {
+    ///
+    /// Validates the single-root tree invariant up front and fails fast on
+    /// invalid configurations (zero or multiple roots, dangling `parent_id`
+    /// references).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StaticTrPluginConfig::validate`] errors.
+    pub fn from_config(cfg: &StaticTrPluginConfig) -> anyhow::Result<Self> {
+        cfg.validate()?;
+
         let tenants: HashMap<TenantId, TenantInfo> = cfg
             .tenants
             .iter()
@@ -53,7 +65,23 @@ impl Service {
             }
         }
 
-        Self { tenants, children }
+        // validate() has already guaranteed that exactly one tenant has
+        // parent_id == None, so this search always finds it.
+        let root = tenants
+            .values()
+            .find(|t| t.parent_id.is_none())
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "static-tr-plugin: internal error -- validate() succeeded but no root found"
+                )
+            })?;
+
+        Ok(Self {
+            tenants,
+            children,
+            root,
+        })
     }
 
     /// Check if a tenant matches the status filter.

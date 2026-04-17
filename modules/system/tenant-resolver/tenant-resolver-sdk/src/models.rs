@@ -43,7 +43,7 @@ pub struct TenantInfo {
     /// Tenant type classification.
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub tenant_type: Option<String>,
-    /// Parent tenant ID. `None` for root tenants.
+    /// Parent tenant ID. `None` for the root tenant (single-root tree: exactly one such tenant).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<TenantId>,
     /// Whether this tenant is self-managed (barrier).
@@ -67,7 +67,7 @@ pub struct TenantRef {
     /// Tenant type classification.
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub tenant_type: Option<String>,
-    /// Parent tenant ID. `None` for root tenants.
+    /// Parent tenant ID. `None` for the root tenant (single-root tree: exactly one such tenant).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<TenantId>,
     /// Whether this tenant is self-managed (barrier).
@@ -278,7 +278,7 @@ pub struct GetAncestorsResponse {
     /// The requested tenant (without name).
     pub tenant: TenantRef,
     /// Parent chain ordered from direct parent to root.
-    /// Empty if the tenant is a root tenant.
+    /// Empty if the tenant is the root tenant.
     pub ancestors: Vec<TenantRef>,
 }
 

@@ -269,6 +269,30 @@ impl TenantResolverClient for MockTenantResolverClient {
         })
     }
 
+    async fn get_root_tenant(
+        &self,
+        _ctx: &SecurityContext,
+    ) -> Result<TenantInfo, TenantResolverError> {
+        // The SDK contract says `get_root_tenant` MUST return a tenant with
+        // `parent_id == None`. If no configured tenant has `parent_id == None`
+        // we surface an Internal error instead of silently synthesizing one,
+        // so tests that expect a root tenant fail loudly when the mock is
+        // set up without one.
+        self.tenants
+            .values()
+            .find(|(info, _)| info.parent_id.is_none())
+            .map(|(info, _)| TenantInfo {
+                parent_id: None,
+                ..info.clone()
+            })
+            .ok_or_else(|| {
+                TenantResolverError::Internal(
+                    "MockTenantResolverClient: no configured tenant has parent_id = None"
+                        .to_owned(),
+                )
+            })
+    }
+
     async fn get_tenants(
         &self,
         ctx: &SecurityContext,

@@ -47,16 +47,15 @@ const TENANT_D: &str = "44444444-4444-4444-4444-444444444444";
 // ==================== from_config tests ====================
 
 #[test]
-fn from_config_empty() {
+fn from_config_empty_rejects() {
+    // Zero roots violates the single-root invariant.
     let cfg = StaticTrPluginConfig::default();
-    let service = Service::from_config(&cfg);
-
-    assert!(service.tenants.is_empty());
-    assert!(service.children.is_empty());
+    assert!(Service::from_config(&cfg).is_err());
 }
 
 #[test]
-fn from_config_with_tenants_only() {
+fn from_config_multiple_roots_rejects() {
+    // Two tenants with no parent violates the single-root invariant.
     let cfg = StaticTrPluginConfig {
         tenants: vec![
             tenant(TENANT_A, "Tenant A", TenantStatus::Active),
@@ -64,10 +63,21 @@ fn from_config_with_tenants_only() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    assert!(Service::from_config(&cfg).is_err());
+}
+
+#[test]
+fn from_config_single_root_with_child() {
+    let cfg = StaticTrPluginConfig {
+        tenants: vec![
+            tenant(TENANT_A, "Tenant A", TenantStatus::Active),
+            tenant_with_parent(TENANT_B, "Tenant B", TENANT_A),
+        ],
+        ..Default::default()
+    };
+    let service = Service::from_config(&cfg).expect("valid config");
 
     assert_eq!(service.tenants.len(), 2);
-    assert!(service.children.is_empty()); // No parent-child relationships
 
     let a = service
         .tenants
@@ -77,6 +87,7 @@ fn from_config_with_tenants_only() {
     assert_eq!(a.status, TenantStatus::Active);
     assert!(a.parent_id.is_none());
     assert!(!a.self_managed);
+    assert_eq!(service.root.id, a.id);
 }
 
 #[test]
@@ -90,7 +101,7 @@ fn from_config_with_hierarchy() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
     assert_eq!(service.tenants.len(), 3);
 
@@ -119,7 +130,7 @@ fn collect_ancestors_root_tenant() {
         tenants: vec![tenant(TENANT_A, "Root", TenantStatus::Active)],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
 
     let ancestors = service.collect_ancestors(a_id, BarrierMode::Respect);
@@ -137,7 +148,7 @@ fn collect_ancestors_linear_hierarchy() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
     let b_id = TenantId(Uuid::parse_str(TENANT_B).unwrap());
@@ -166,7 +177,7 @@ fn collect_ancestors_with_barrier() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
     let b_id = TenantId(Uuid::parse_str(TENANT_B).unwrap());
@@ -195,7 +206,7 @@ fn collect_ancestors_starting_tenant_is_barrier() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
     let b_id = TenantId(Uuid::parse_str(TENANT_B).unwrap());
@@ -218,7 +229,7 @@ fn collect_descendants_no_children() {
         tenants: vec![tenant(TENANT_A, "Root", TenantStatus::Active)],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
 
     let descendants = service.collect_descendants(a_id, &[], BarrierMode::Respect, None);
@@ -236,7 +247,7 @@ fn collect_descendants_linear_hierarchy() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
     let b_id = TenantId(Uuid::parse_str(TENANT_B).unwrap());
@@ -266,7 +277,7 @@ fn collect_descendants_with_barrier() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
     let b_id = TenantId(Uuid::parse_str(TENANT_B).unwrap());
@@ -296,7 +307,7 @@ fn collect_descendants_mixed_barrier() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
     let d_id = TenantId(Uuid::parse_str(TENANT_D).unwrap());
@@ -315,7 +326,7 @@ fn is_ancestor_of_self() {
         tenants: vec![tenant(TENANT_A, "Root", TenantStatus::Active)],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
 
     // Self is NOT an ancestor of self
@@ -335,7 +346,7 @@ fn is_ancestor_of_direct_parent() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
     let b_id = TenantId(Uuid::parse_str(TENANT_B).unwrap());
@@ -363,7 +374,7 @@ fn is_ancestor_of_grandparent() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
     let c_id = TenantId(Uuid::parse_str(TENANT_C).unwrap());
@@ -386,7 +397,7 @@ fn is_ancestor_of_with_barrier() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
     let b_id = TenantId(Uuid::parse_str(TENANT_B).unwrap());
@@ -426,7 +437,7 @@ fn is_ancestor_of_direct_barrier_child() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
     let b_id = TenantId(Uuid::parse_str(TENANT_B).unwrap());
@@ -459,7 +470,7 @@ fn is_ancestor_of_nonexistent() {
         tenants: vec![tenant(TENANT_A, "Root", TenantStatus::Active)],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
     let nonexistent = TenantId(Uuid::parse_str(TENANT_B).unwrap());
@@ -477,106 +488,37 @@ fn is_ancestor_of_nonexistent() {
     ));
 }
 
-#[test]
-fn collect_ancestors_cycle_terminates() {
-    // Create a cycle: A -> B -> A (via parent_id)
-    let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
-    let b_id = TenantId(Uuid::parse_str(TENANT_B).unwrap());
+// Cycle termination used to be tested here, but `StaticTrPluginConfig::validate`
+// now rejects disconnected cycles at load time (see `validate_rejects_disconnected_cycle`
+// in config_tests.rs), so no cycle-shaped `Service` can be built through
+// `Service::from_config`. The `visited` guards in `collect_ancestors` and
+// `is_ancestor_of` remain as defense-in-depth but are unreachable from the
+// public API.
 
+#[test]
+fn is_ancestor_of_unrelated() {
+    // A is the root; B and C are siblings under A (unrelated to each other).
     let cfg = StaticTrPluginConfig {
         tenants: vec![
-            TenantConfig {
-                id: a_id.0,
-                name: "A".to_owned(),
-                status: TenantStatus::Active,
-                tenant_type: None,
-                parent_id: Some(b_id.0),
-                self_managed: false,
-            },
-            TenantConfig {
-                id: b_id.0,
-                name: "B".to_owned(),
-                status: TenantStatus::Active,
-                tenant_type: None,
-                parent_id: Some(a_id.0),
-                self_managed: false,
-            },
+            tenant(TENANT_A, "Root", TenantStatus::Active),
+            tenant_with_parent(TENANT_B, "Sibling B", TENANT_A),
+            tenant_with_parent(TENANT_C, "Sibling C", TENANT_A),
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
 
-    // Should terminate (not loop forever) and return at most 2 ancestors
-    let ancestors = service.collect_ancestors(a_id, BarrierMode::Ignore);
-    assert!(ancestors.len() <= 2);
-}
-
-#[test]
-fn is_ancestor_of_cycle_terminates() {
-    // Create a cycle: A -> B -> A (via parent_id)
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
     let b_id = TenantId(Uuid::parse_str(TENANT_B).unwrap());
     let c_id = TenantId(Uuid::parse_str(TENANT_C).unwrap());
 
-    let cfg = StaticTrPluginConfig {
-        tenants: vec![
-            TenantConfig {
-                id: a_id.0,
-                name: "A".to_owned(),
-                status: TenantStatus::Active,
-                tenant_type: None,
-                parent_id: Some(b_id.0),
-                self_managed: false,
-            },
-            TenantConfig {
-                id: b_id.0,
-                name: "B".to_owned(),
-                status: TenantStatus::Active,
-                tenant_type: None,
-                parent_id: Some(a_id.0),
-                self_managed: false,
-            },
-            TenantConfig {
-                id: c_id.0,
-                name: "C".to_owned(),
-                status: TenantStatus::Active,
-                tenant_type: None,
-                parent_id: None,
-                self_managed: false,
-            },
-        ],
-        ..Default::default()
-    };
-    let service = Service::from_config(&cfg);
-
-    // Should terminate (not loop forever), C is not in the cycle
+    // Siblings are not ancestors of each other.
     assert!(
         !service
-            .is_ancestor_of(c_id, a_id, BarrierMode::Ignore)
+            .is_ancestor_of(b_id, c_id, BarrierMode::Respect)
             .unwrap()
     );
-}
-
-#[test]
-fn is_ancestor_of_unrelated() {
-    // A and B are both roots (unrelated)
-    let cfg = StaticTrPluginConfig {
-        tenants: vec![
-            tenant(TENANT_A, "Root A", TenantStatus::Active),
-            tenant(TENANT_B, "Root B", TenantStatus::Active),
-        ],
-        ..Default::default()
-    };
-    let service = Service::from_config(&cfg);
-
-    let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
-    let b_id = TenantId(Uuid::parse_str(TENANT_B).unwrap());
-
-    assert!(
-        !service
-            .is_ancestor_of(a_id, b_id, BarrierMode::Respect)
-            .unwrap()
-    );
+    // A child is not an ancestor of the root.
     assert!(
         !service
             .is_ancestor_of(b_id, a_id, BarrierMode::Respect)

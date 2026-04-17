@@ -61,6 +61,26 @@ pub trait TenantResolverClient: Send + Sync {
         id: TenantId,
     ) -> Result<TenantInfo, TenantResolverError>;
 
+    /// Get the root tenant (the unique tenant with no parent).
+    ///
+    /// In the single-root tree topology, exactly one tenant in the whole
+    /// hierarchy has `parent_id == None`. This helper fetches it without
+    /// requiring the caller to know its id up front.
+    ///
+    /// # Errors
+    ///
+    /// - `Internal` if the backing plugin cannot determine the root tenant
+    ///   at call time (for example, the invariant is enforced at runtime and
+    ///   the data source is currently inconsistent)
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - Security context
+    async fn get_root_tenant(
+        &self,
+        ctx: &SecurityContext,
+    ) -> Result<TenantInfo, TenantResolverError>;
+
     /// Get multiple tenants by IDs (batch).
     ///
     /// Returns only found tenants - missing IDs are silently skipped.

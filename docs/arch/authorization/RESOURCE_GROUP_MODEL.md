@@ -87,7 +87,7 @@ AuthZ plugin reads RG hierarchy via `ResourceGroupReadHierarchy` trait (narrow, 
 | **Purpose** | Ownership, isolation, billing | Grouping for access control |
 | **Scope** | System-wide | Per-tenant |
 | **Resource relationship** | Ownership (1:N) | Membership (M:N) |
-| **Hierarchy** | Forest (multiple roots) | Forest (multiple roots per tenant) |
+| **Hierarchy** | Single-root tree | Forest (multiple roots per tenant) |
 | **Type system** | Fixed (built-in tenant type) | Dynamic (GTS-based, vendor-defined types) |
 
 Resource groups operate **within** tenant boundaries — groups are tenant-scoped, cross-tenant groups are forbidden, and authorization always includes a tenant constraint alongside group predicates.

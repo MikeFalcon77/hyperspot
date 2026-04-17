@@ -7,7 +7,7 @@ This document describes Cyber Fabric's multi-tenancy model, tenant topology, and
 - [Tenant Model](#tenant-model)
   - [Table of Contents](#table-of-contents)
   - [Overview](#overview)
-  - [Tenant Topology: Forest](#tenant-topology-forest)
+  - [Tenant Topology: Single-Root Tree](#tenant-topology-single-root-tree)
   - [Tenant Properties](#tenant-properties)
   - [Barriers (Self-Managed Tenants)](#barriers-self-managed-tenants)
   - [Context Tenant vs Subject Tenant](#context-tenant-vs-subject-tenant)
@@ -19,10 +19,10 @@ This document describes Cyber Fabric's multi-tenancy model, tenant topology, and
 
 ## Overview
 
-Cyber Fabric uses a **hierarchical multi-tenancy** model where tenants form a forest (multiple independent trees). Each tenant can have child tenants, creating organizational structures like:
+Cyber Fabric uses a **hierarchical multi-tenancy** model where tenants form a single-root tree. Every tenant except the root has exactly one parent, and all tenants descend from a single shared root. Tenants can have child tenants, creating organizational structures like:
 
 ```
-Vendor
+Root
 ├── Organization A
 │   ├── Team A1
 │   └── Team A2
@@ -38,29 +38,43 @@ Key principles:
 
 ---
 
-## Tenant Topology: Forest
+## Tenant Topology: Single-Root Tree
 
-The tenant structure is a **forest** — a collection of independent trees with no single global root.
+The tenant structure is a **single-root tree** — every tenant except the root has exactly one parent, and all tenants descend from a single shared root.
 
 ```
-       [T1]              [T5]           ← Root tenants (no parent)
-      /    \               |
-   [T2]    [T3]          [T6]
+           [Root]          ← The only tenant with no parent
+          /      \
+       [T1]      [T5]
+      /    \       |
+   [T2]    [T3]  [T6]
      |
    [T4]
 ```
 
 **Properties:**
-- Each tree has exactly one root tenant (`parent_id = NULL`)
-- A tenant belongs to exactly one tree
-- Trees are completely isolated from each other
-- Depth is unlimited (but deep hierarchies may impact performance)
+- Exactly one tenant in the whole hierarchy has `parent_id = NULL`; this tenant is the root.
+- Every other tenant has exactly one parent.
+- Depth is not bounded by the tenant model itself; any limits on hierarchy depth come from the concrete Account/Tenant Management service implementation (operational policy, performance envelope, storage constraints).
+- The root is identified by convention (the single tenant with `parent_id = NULL`). There is no `is_system` field, and the root is not referred to as a "system tenant".
 
-**Why forest, not single tree?**
-- Supports multiple independent vendors/organizations
-- No artificial "super-root" that would complicate access control
-- Each tree can have different policies and configurations
-- Enables datacenter migration — vendor can gradually move tenant trees between regions/datacenters without cross-tree dependencies
+**Why single-root tree?**
+- **One OAuth client is enough** for S2S tenant-scoped flows that need to act as the root — no per-root credential fan-out at the vendor IdP.
+- **Unambiguous "act as root" semantics** — platform-level tenant-scoped operations always address the same tenant.
+- **Organizational autonomy is preserved via sub-roots** — in multi-tenant deployments each independent organization is modelled as its own sub-root directly under the root; barriers continue to provide isolation between sub-trees.
+- **Works naturally for single-user / consumer deployments** of Cyber-Fabric-based products — the root *is* the tenant that owns all business objects, and no sub-roots are created.
+- **Avoids the accidental complexity of DAGs** — closure-table rows, barriers, and ancestry queries stay tree-shaped.
+
+**Deployment shapes:**
+
+Both shapes satisfy the same topology invariant (exactly one `parent_id = NULL`); what differs is whether business objects live on the root.
+
+| Deployment | Role of the root | Business objects on the root? |
+|------------|------------------|-------------------------------|
+| Multi-tenant vendor deployment | Structural anchor above organization sub-roots | No — they live on sub-roots and below |
+| Single-user / consumer deployment | Owner of all platform data for the sole user | Yes |
+
+See [ADR 0004](./ADR/0004-single-root-tenant-model-topology.md) for the rationale and the rejected alternatives (forest, DAG).
 
 ---
 
@@ -69,7 +83,7 @@ The tenant structure is a **forest** — a collection of independent trees with 
 | Property | Type | Description |
 |----------|------|-------------|
 | `id` | UUID | Unique tenant identifier |
-| `parent_id` | UUID? | Parent tenant (NULL for root tenants) |
+| `parent_id` | UUID? | Parent tenant. `NULL` for exactly one tenant: the root. |
 | `status` | enum | `active`, `suspended`, `deleted` |
 | `self_managed` | bool | If true, creates a barrier — parent cannot access this subtree |
 
@@ -233,6 +247,7 @@ T1
 - `T1 → T2`: barrier = 1 because T2 (self_managed) is on the path
 - `T1 → T3`: barrier = 1 because T2 is on the path from T1 to T3
 - `T2 → T2` and `T2 → T3`: barrier = 0 because T2 is the **ancestor**, not between T2 and its descendants
+- Because the hierarchy has a single root, that root appears as `ancestor_id` of every tenant in the table (subject to the barrier rules above).
 
 **Query: "All tenants in T1's subtree, with `barrier_mode: "all"`"**
 
@@ -265,3 +280,4 @@ Result: T2, T3 (barrier = 0 for both rows because T2 is the ancestor, not betwee
 - [DESIGN.md](./DESIGN.md) — Core authorization design
 - [RESOURCE_GROUP_MODEL.md](./RESOURCE_GROUP_MODEL.md) — Resource group topology, membership, hierarchy
 - [AUTHZ_USAGE_SCENARIOS.md](./AUTHZ_USAGE_SCENARIOS.md) — Authorization scenarios with tenant examples
+- [ADR 0004: Single-Root Tenant Model Topology](./ADR/0004-single-root-tenant-model-topology.md) — Rationale for single-root tree vs. forest vs. DAG

@@ -20,6 +20,7 @@ block hierarchy traversal from parent tenants (unless explicitly ignored).
 The module registers [`TenantResolverClient`](tenant_resolver-sdk/src/api.rs) in ClientHub:
 
 - `get_tenant(ctx, id)` — Retrieve single tenant by ID
+- `get_root_tenant(ctx)` — Retrieve the root tenant (the unique tenant with no parent)
 - `get_tenants(ctx, ids, options)` — Retrieve multiple tenants by IDs (batch)
 - `get_ancestors(ctx, id, options)` — Get parent chain from tenant to root
 - `get_descendants(ctx, id, options)` — Get children subtree; `response.tenant` contains the starting tenant, `response.descendants` contains the subtree
@@ -37,7 +38,7 @@ T1 (root)
 └── T4
 ```
 
-- **`parent_id`**: Links a tenant to its parent (None for root tenants)
+- **`parent_id`**: Links a tenant to its parent (`None` for the root tenant — exactly one tenant in a single-root tree)
 - **`self_managed`**: When true, this tenant is a barrier that blocks parent traversal into its subtree
 
 ### Status Filtering
@@ -155,7 +156,7 @@ See [`models.rs`](tenant_resolver-sdk/src/models.rs): `TenantId`, `TenantInfo`, 
 - `name` — Human-readable tenant name
 - `status` — Lifecycle status (`Active`, `Suspended`, `Deleted`)
 - `tenant_type` — Optional classification string (e.g., `"enterprise"`, `"trial"`)
-- `parent_id` — Parent tenant ID (None for root tenants)
+- `parent_id` — Parent tenant ID (`None` for the root tenant — exactly one tenant in a single-root tree)
 - `self_managed` — True if this tenant is a barrier
 
 **`TenantRef`** — Tenant reference without name (for `get_ancestors`, `get_descendants`):

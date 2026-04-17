@@ -62,7 +62,7 @@ async fn get_tenant_existing() {
         tenants: vec![tenant(TENANT_A, "Tenant A", TenantStatus::Active)],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let result = service
@@ -81,7 +81,7 @@ async fn get_tenant_nonexistent() {
         tenants: vec![tenant(TENANT_A, "Tenant A", TenantStatus::Active)],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
     let nonexistent_id = TenantId(Uuid::parse_str(NONEXISTENT).unwrap());
 
@@ -103,12 +103,16 @@ async fn get_tenants_all_found() {
     let cfg = StaticTrPluginConfig {
         tenants: vec![
             tenant(TENANT_A, "A", TenantStatus::Active),
-            tenant(TENANT_B, "B", TenantStatus::Active),
-            tenant(TENANT_C, "C", TenantStatus::Suspended),
+            tenant_with_parent(TENANT_B, "B", TENANT_A),
+            {
+                let mut t = tenant_with_parent(TENANT_C, "C", TENANT_A);
+                t.status = TenantStatus::Suspended;
+                t
+            },
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let ids = vec![
@@ -130,7 +134,7 @@ async fn get_tenants_some_missing() {
         tenants: vec![tenant(TENANT_A, "A", TenantStatus::Active)],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let ids = vec![
@@ -151,13 +155,14 @@ async fn get_tenants_some_missing() {
 #[tokio::test]
 async fn get_tenants_with_filter() {
     let cfg = StaticTrPluginConfig {
-        tenants: vec![
-            tenant(TENANT_A, "A", TenantStatus::Active),
-            tenant(TENANT_B, "B", TenantStatus::Suspended),
-        ],
+        tenants: vec![tenant(TENANT_A, "A", TenantStatus::Active), {
+            let mut t = tenant_with_parent(TENANT_B, "B", TENANT_A);
+            t.status = TenantStatus::Suspended;
+            t
+        }],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let ids = vec![
@@ -184,7 +189,7 @@ async fn get_ancestors_root_tenant() {
         tenants: vec![tenant(TENANT_A, "Root", TenantStatus::Active)],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let result = service
@@ -215,7 +220,7 @@ async fn get_ancestors_with_hierarchy() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_C);
 
     let result = service
@@ -254,7 +259,7 @@ async fn get_ancestors_with_barrier() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_C);
 
     // Default (BarrierMode::Respect) - stops at barrier
@@ -289,8 +294,11 @@ async fn get_ancestors_with_barrier() {
 
 #[tokio::test]
 async fn get_ancestors_nonexistent() {
-    let cfg = StaticTrPluginConfig::default();
-    let service = Service::from_config(&cfg);
+    let cfg = StaticTrPluginConfig {
+        tenants: vec![tenant(TENANT_A, "Root", TenantStatus::Active)],
+        ..Default::default()
+    };
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let result = service
@@ -319,7 +327,7 @@ async fn get_ancestors_starting_tenant_is_barrier() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_B);
 
     // Default (BarrierMode::Respect) - B cannot see its parent chain
@@ -364,7 +372,7 @@ async fn get_descendants_no_children() {
         tenants: vec![tenant(TENANT_A, "Root", TenantStatus::Active)],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let result = service
@@ -395,7 +403,7 @@ async fn get_descendants_with_hierarchy() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     // Unlimited depth
@@ -446,7 +454,7 @@ async fn get_descendants_with_barrier() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     // Default (BarrierMode::Respect) - only D is visible
@@ -482,8 +490,11 @@ async fn get_descendants_with_barrier() {
 
 #[tokio::test]
 async fn get_descendants_nonexistent() {
-    let cfg = StaticTrPluginConfig::default();
-    let service = Service::from_config(&cfg);
+    let cfg = StaticTrPluginConfig {
+        tenants: vec![tenant(TENANT_A, "Root", TenantStatus::Active)],
+        ..Default::default()
+    };
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let result = service
@@ -520,7 +531,7 @@ async fn get_descendants_filter_stops_traversal() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     // Without filter: all 3 descendants (pre-order: B, C, D)
@@ -565,7 +576,7 @@ async fn get_descendants_pre_order() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let result = service
@@ -597,7 +608,7 @@ async fn is_ancestor_self_returns_false() {
         tenants: vec![tenant(TENANT_A, "Root", TenantStatus::Active)],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
 
@@ -617,7 +628,7 @@ async fn is_ancestor_direct_parent() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
@@ -649,7 +660,7 @@ async fn is_ancestor_with_barrier() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
@@ -687,7 +698,7 @@ async fn is_ancestor_direct_barrier_child() {
         ],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
@@ -713,7 +724,7 @@ async fn is_ancestor_nonexistent() {
         tenants: vec![tenant(TENANT_A, "Root", TenantStatus::Active)],
         ..Default::default()
     };
-    let service = Service::from_config(&cfg);
+    let service = Service::from_config(&cfg).expect("valid config");
     let ctx = ctx_for_tenant(TENANT_A);
 
     let a_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
@@ -730,4 +741,29 @@ async fn is_ancestor_nonexistent() {
         .is_ancestor(&ctx, a_id, nonexistent, &IsAncestorOptions::default())
         .await;
     assert!(result.is_err());
+}
+
+// ==================== get_root_tenant tests ====================
+
+#[tokio::test]
+async fn get_root_tenant_returns_cached_root() {
+    // A (root) -> B -> C — exactly one root.
+    let cfg = StaticTrPluginConfig {
+        tenants: vec![
+            tenant(TENANT_A, "Root", TenantStatus::Active),
+            tenant_with_parent(TENANT_B, "Child", TENANT_A),
+            tenant_with_parent(TENANT_C, "Grandchild", TENANT_B),
+        ],
+        ..Default::default()
+    };
+    let service = Service::from_config(&cfg).expect("valid config");
+    let ctx = ctx_for_tenant(TENANT_A);
+
+    let root = service
+        .get_root_tenant(&ctx)
+        .await
+        .expect("root should be cached for single-root config");
+    assert_eq!(root.id, TenantId(Uuid::parse_str(TENANT_A).unwrap()));
+    assert_eq!(root.name, "Root");
+    assert!(root.parent_id.is_none());
 }

@@ -334,3 +334,32 @@ async fn is_ancestor_error_for_different_descendant() {
         other => panic!("Expected TenantNotFound, got: {other:?}"),
     }
 }
+
+// ==================== get_root_tenant tests ====================
+
+#[tokio::test]
+async fn get_root_tenant_returns_context_tenant() {
+    let service = Service;
+    let tenant_id = TenantId(Uuid::parse_str(TENANT_A).unwrap());
+    let ctx = ctx_for_tenant(tenant_id);
+
+    let root = service
+        .get_root_tenant(&ctx)
+        .await
+        .expect("single-tenant root should succeed for non-nil context");
+    assert_eq!(root.id, tenant_id);
+    assert!(root.parent_id.is_none());
+    assert_eq!(root.status, TenantStatus::Active);
+}
+
+#[tokio::test]
+async fn get_root_tenant_internal_for_nil_context() {
+    let service = Service;
+    let ctx = ctx_for_tenant(TenantId::nil());
+
+    let err = service
+        .get_root_tenant(&ctx)
+        .await
+        .expect_err("nil-tenant context should produce Internal");
+    assert!(matches!(err, TenantResolverError::Internal(_)));
+}
