@@ -3,7 +3,7 @@ status: proposed
 date: 2026-04-02
 decision_owner: Platform Engineering
 approver: Architecture Review Board
-scope: licensing-service; quota-service; all ModKit modules integrating licensing and quota enforcement
+scope: licensing-service; all ModKit modules integrating licensing and quota enforcement
 ---
 
 # ADR-0001: Federated Licensing Authority Model for ModKit and Legacy VendorA Integration
@@ -103,10 +103,15 @@ Modules call a canonical ModKit licensing API. The service resolves authority pe
 
 ### Canonical Ownership Model
 
-- **Licensing Service** owns canonical licensing APIs, authority routing, normalized entitlement read models, and explanation of business entitlement outcomes
+- **Licensing Service** owns canonical licensing and quota APIs, authority routing, normalized entitlement read models,
+  explanation of business entitlement outcomes, quota policy resolution, runtime enforcement semantics, reservation
+  lifecycle, usage accounting, and reconciliation
 - **Legacy VendorA licensing** may remain authoritative for commercial truth for legacy-controlled scopes
 - **Native ModKit licensing** may become authoritative for new platform-native scopes
-- **Quota runtime** owns low-latency runtime enforcement semantics such as `check`, `reserve`, `commit`, `release`, hot-path counters, and reconciliation of runtime reservation state
+
+Internally, the module maintains two layers:
+- **Entitlement layer** owns business truth, authority routing, federation, shadow comparison, and legacy adaptation
+- **Quota layer** owns policy resolution, runtime enforcement, reservation lifecycle, usage accounting, and reconciliation
 
 ### Authority Modes
 
@@ -133,21 +138,29 @@ Canonical concepts include:
 - `UsageSnapshot`
 - `DecisionExplanation`
 
-### Relation to Quota Runtime
+### Relation to Quota Enforcement
 
-This ADR does not make the runtime quota engine the owner of commercial licensing truth.
+Quota enforcement is unified into the Licensing Service module rather than being a separate service. The former
+standalone `quota-service` module has been removed from the repository; its requirements are incorporated into the
+Licensing Service PRD (§5.5–§5.11).
 
-The current `modules/quota-service/docs/PRD.md` remains a useful specification for runtime quota enforcement mechanics, but it is subordinate to licensing authority for business entitlement truth. The quota runtime consumes effective limits from licensing authority and applies runtime enforcement semantics on top.
+The unification decision itself, including considered alternatives and consequences, is recorded in
+[ADR-0002 Unified Licensing and Quota Module](./0002-cpt-cf-licensing-service-adr-unified-licensing-quota-module.md).
+This ADR (ADR-0001) covers only the federated authority model.
+
+The quota layer does not own commercial licensing truth. Internal ownership boundaries ensure that the entitlement
+layer remains authoritative for business truth while the quota layer owns runtime enforcement, reservation lifecycle,
+and usage accounting.
 
 ### Failure Policy
 
-For legacy-authoritative scopes, cached last-known-good entitlement data may be used only where explicitly allowed by policy. New enablement or acquisition operations should default to fail-closed unless the product requirement states otherwise.
+For legacy-authoritative scopes, cached entitlement data classified as `freshness_state ∈ { fresh, stale_within_policy }` (per `cpt-cf-licensing-service-fr-freshness-semantics`) **MAY** be used where the per-scope `degradation_policy` permits; data classified as `freshness_state = stale_beyond_policy` **MUST NOT** be treated as authoritative, and its use (if any) is governed solely by the per-scope `degradation_policy ∈ { fail_open, fail_closed, emergency_fallback }` defined in `cpt-cf-licensing-service-fr-safe-degradation`. Operation-class eligibility for degraded evaluation is governed by the closed whitelist in `cpt-cf-licensing-service-fr-degraded-policy`; operations outside that whitelist (including state-changing admission operations such as `CheckAndReserve`, `Commit`, `AcquireLease`) **MUST** return a service error instead of a degraded success result when dependencies are unavailable. The `fail_closed` default for `degradation_policy` (when unset) is established by `cpt-cf-licensing-service-fr-safe-degradation`; this ADR does not introduce an independent default.
 
 ### Rollout Strategy
 
 - Phase 1: facade only, legacy-authoritative
 - Phase 2: shadow comparisons between legacy and native models
-- Phase 3: hybrid enforcement with legacy business truth and native runtime quota
+- Phase 3: hybrid enforcement with legacy business truth and the internal quota layer of Licensing Service
 - Phase 4: native-authoritative for selected new platform-native modules
 
 ## Review Cadence
@@ -161,7 +174,8 @@ Revisit this decision when one of the following becomes true:
 ## Traceability
 
 - **PRD**: [../PRD.md](../PRD.md)
-- **Related Runtime Spec**: [../../../quota-service/docs/PRD.md](../../../quota-service/docs/PRD.md)
+- **Companion ADR**: [0002-cpt-cf-licensing-service-adr-unified-licensing-quota-module.md](./0002-cpt-cf-licensing-service-adr-unified-licensing-quota-module.md)
+- **Superseded Module**: former standalone `quota-service` module; removed from the repository, requirements incorporated into §5.5–§5.11 of Licensing Service PRD
 
 This decision directly addresses the following planned requirements or design elements:
 
@@ -169,4 +183,3 @@ This decision directly addresses the following planned requirements or design el
 - `cpt-cf-licensing-service-fr-authority-routing`
 - `cpt-cf-licensing-service-fr-legacy-adapter`
 - `cpt-cf-licensing-service-fr-explanation`
-- `cpt-cf-licensing-service-fr-quota-runtime-integration`
