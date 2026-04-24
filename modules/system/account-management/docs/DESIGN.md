@@ -54,19 +54,19 @@ User group management is handled by the [Resource Group](../../resource-group/do
 
 ```mermaid
 graph LR
-    Admin["Platform / Tenant<br>Administrator"] -->|REST API| AM["Account<br>Management"]
-    AM -->|provision/deprovision<br>users & tenants| IdP["IdP Provider<br>Plugin"]
-    AM -->|type validation<br>& schema queries| GTS["GTS Types<br>Registry"]
-    AM -->|user-group type<br>registration & cleanup| RG["Resource<br>Group"]
-    AM ---|source-of-truth<br>tenant data| DB[("PostgreSQL")]
-    TR["Tenant Resolver"] -.->|reads tenant<br>source-of-truth| DB
-    AuthZ["AuthZ Resolver<br>(PDP plugin)"] -.->|tenant hierarchy<br>& barrier queries| TR
-    Billing["Billing System"] -.->|reads tenant<br>metadata| AM
+    Admin["Platform / Tenant<br/>Administrator"] -->|REST API| AM["Account<br/>Management"]
+    AM -->|provision/deprovision<br/>users & tenants| IdP["IdP Provider<br/>Plugin"]
+    AM -->|type validation<br/>& schema queries| GTS["GTS Types<br/>Registry"]
+    AM -->|user-group type<br/>registration & cleanup| RG["Resource<br/>Group"]
+    AM ---|"tenants + tenant_closure<br/>(source of truth)"| DB[(PostgreSQL)]
+    TR["Tenant Resolver<br/>(query facade)"] -.->|"tenants + tenant_closure<br/>via read-only DB role"| DB
+    AuthZ["AuthZ Resolver<br/>(PDP plugin)"] -.->|"tenant hierarchy<br/>& barrier queries"| TR
+    Billing["Billing System"] -.->|"reads tenant<br/>metadata"| AM
 ```
 
 **System actors by PRD ID**
 
-- `cpt-cf-account-management-actor-tenant-resolver` consumes AM source-of-truth tenant hierarchy and barrier state through the tenant data contract.
+- `cpt-cf-account-management-actor-tenant-resolver` reads AM-owned `tenants` and `tenant_closure` directly via a read-only database role and serves the SDK-facing query facade over that data.
 - `cpt-cf-account-management-actor-authz-resolver` consumes tenant context, barrier inputs, and metadata authorization attributes for access decisions.
 - `cpt-cf-account-management-actor-billing` consumes read-only hierarchy and billing-relevant metadata views under platform-authorized barrier-bypass policy.
 
@@ -90,13 +90,14 @@ graph LR
 | `cpt-cf-account-management-fr-tenant-type-enforcement` | `TenantService` queries `TypesRegistryClient` for type constraints at child creation time. |
 | `cpt-cf-account-management-fr-tenant-type-nesting` | Same-type nesting permitted when GTS type definition allows it; acyclicity guaranteed by tree structure. |
 | `cpt-cf-account-management-fr-managed-tenant-creation` | Tenant created with `self_managed=false`; no barrier flag set. |
-| `cpt-cf-account-management-fr-self-managed-tenant-creation` | Tenant created with `self_managed=true`; barrier flag stored for downstream resolver consumption. |
+| `cpt-cf-account-management-fr-self-managed-tenant-creation` | Tenant created with `self_managed=true`; the barrier flag is stored on the tenant row and materialized into `tenant_closure.barrier` on the same transaction for every `(ancestor, descendant)` pair whose path `(ancestor, descendant]` contains the new tenant. |
+| `cpt-cf-account-management-fr-tenant-closure` | AM owns `tenant_closure` with the platform-canonical shape `(ancestor_id, descendant_id, barrier, descendant_status)`. `TenantService` and `ConversionService::approve` maintain closure rows transactionally with every hierarchy or lifecycle mutation so downstream readers observe tree and closure as one consistent state. |
 | `cpt-cf-account-management-fr-mode-conversion-approval` | `ConversionService` owns the dual-consent lifecycle for any post-creation toggle of `tenants.self_managed`. Each side acts from its own authorized scope and root tenants are excluded from the flow. |
 | `cpt-cf-account-management-fr-mode-conversion-expiry` | A background expiry task closes unresolved conversion requests after the configured approval window without changing tenant mode. |
 | `cpt-cf-account-management-fr-mode-conversion-single-pending` | A partial unique invariant on the conversion store plus service-level conflict handling ensure at most one pending conversion request per tenant. |
 | `cpt-cf-account-management-fr-mode-conversion-consistent-apply` | Approval updates both conversion status and tenant barrier state as one consistent transaction outcome. |
 | `cpt-cf-account-management-fr-conversion-creation-time-self-managed` | `TenantService::create_tenant` accepts `self_managed=true` directly at creation time and stores the flag without a `ConversionRequest`; the parent's explicit creation call is the consent. Only post-creation toggles are routed through `ConversionService`. |
-| `cpt-cf-account-management-fr-child-conversions-query` | `ConversionService::list_inbound_for_parent` joins `conversion_requests` with `tenants` on `parent_id`. Operates within parent tenant AuthZ scope; no barrier bypass required. Exposes only conversion-request metadata (child `id`, child `name`, `initiator_side`, `target_mode`, `status`, timestamps), not full child tenant data. |
+| `cpt-cf-account-management-fr-child-conversions-query` | `ConversionService::list_inbound_for_parent` joins `conversion_requests` with `tenants` on `parent_id`. Operates within parent tenant AuthZ scope; no barrier bypass required. Exposes only conversion-request metadata (conversion `id`, `child_tenant_id`, `child_tenant_name`, `initiator_side`, `target_mode`, `status`, `requested_by`, terminal-actor fields as applicable, timestamps), not full child tenant data. |
 | `cpt-cf-account-management-fr-conversion-cancel` | `ConversionService::cancel` transitions a pending `ConversionRequest` to `cancelled` only when `caller_side == initiator_side`. Exposed via `PATCH .../conversions/{r}` (child scope) and `PATCH .../child-conversions/{r}` (parent scope) with body `{"status": "cancelled"}`. Role-check failures return `409 conflict` with sub-code `invalid_actor_for_transition`. |
 | `cpt-cf-account-management-fr-conversion-reject` | `ConversionService::reject` transitions a pending `ConversionRequest` to `rejected` only when `caller_side != initiator_side`. Exposed via the same `PATCH` endpoints with body `{"status": "rejected"}`. Role-check failures return `409 conflict` with sub-code `invalid_actor_for_transition`. |
 | `cpt-cf-account-management-fr-conversion-retention` | Background job `ConversionService::soft_delete_resolved` stamps `deleted_at` on resolved rows older than `resolved_retention` (default 30d); default queries filter `deleted_at IS NULL`. Hard-delete follows AM's existing retention cadence. |
@@ -116,16 +117,16 @@ graph LR
 | `cpt-cf-account-management-fr-tenant-metadata-list` | `MetadataService::list_for_tenant` returns paginated own-entries for a tenant; REST endpoint `GET /api/account-management/v1/tenants/{id}/metadata` is tenant-scope-filtered by the platform layer, so self-managed barriers apply without AM-specific logic. |
 | `cpt-cf-account-management-fr-tenant-metadata-permissions` | REST handlers pass `schema_id` into `PolicyEnforcer::enforce` as a resource attribute (`SCHEMA_ID`) on `Metadata.read`, `Metadata.write`, `Metadata.delete`, and `Metadata.list` actions, so external AuthZ policy can express per-`schema_id` grants without AM evaluating policy itself. |
 | `cpt-cf-account-management-fr-deterministic-errors` | Unified error mapper translates domain and infrastructure failures to stable public categories; the authoritative HTTP/sub-code mapping is published in the OpenAPI contract. |
-| `cpt-cf-account-management-fr-observability-metrics` | OpenTelemetry metrics for domain-internal latencies (IdP calls, GTS validation, metadata resolution, bootstrap), background job throughput, error rates, and security counters. Per-endpoint CRUD counts and children-query latency are captured by platform HTTP middleware; capacity gauges (active tenants) are derivable from DB queries. Projection freshness is a Tenant Resolver concern. |
+| `cpt-cf-account-management-fr-observability-metrics` | OpenTelemetry metrics for domain-internal latencies (IdP calls, GTS validation, metadata resolution, bootstrap), background job throughput, error rates, closure-maintenance counters, and security counters. Per-endpoint CRUD counts and children-query latency are captured by platform HTTP middleware; capacity gauges (active tenants) are derivable from DB queries. |
 
 #### NFR Allocation
 
 | NFR ID | NFR Summary | Allocated To | Design Response | Verification Approach |
 |--------|-------------|--------------|-----------------|----------------------|
-| `cpt-cf-account-management-nfr-context-validation-latency` | End-to-end tenant-context validation p95 ≤ 5ms | Schema design + indexes on `tenants` table (AM contribution); Tenant Resolver caching (resolver contribution) | Composite indexes on `(parent_id, status)`, `(id, status)`, and `(tenant_type_uuid)`; denormalized `depth` column avoids recursive queries. AM provides the indexed source-of-truth schema; the end-to-end p95 ≤ 5ms target requires Tenant Resolver's caching layer on top. | AM: integration tests verify indexed query baseline with seeded dataset. Platform: pre-GA load test benchmark (end-to-end through Tenant Resolver + caching) against approved deployment profile. |
+| `cpt-cf-account-management-nfr-context-validation-latency` | End-to-end tenant-context validation p95 ≤ 5ms | Schema design + indexes on `tenants` / `tenant_closure` + bounded reverse-hydration caches for UUID-backed public GTS identifiers | Composite indexes on `(parent_id, status)`, the single-root invariant backing `parent_id IS NULL`, `(tenant_type_uuid)`, `tenant_closure(ancestor_id, barrier, descendant_status)`, and `tenant_closure(descendant_id)`; denormalized `depth` avoids recursive checks on write paths. AM provides the indexed source-of-truth schema; the end-to-end p95 ≤ 5ms target assumes indexed resolver reads and warm reverse-hydration mappings for `tenant_type_uuid` / `schema_uuid`, not hierarchy caching. | AM: integration tests verify indexed query baselines and deterministic reverse-hydration miss behavior. Platform: pre-GA load test benchmark (end-to-end through Tenant Resolver) against approved deployment profile. |
 | `cpt-cf-account-management-nfr-tenant-isolation` | Zero cross-tenant data leaks | SecureConn + PolicyEnforcer on all API endpoints | All database access through `SecureConn` with tenant-scoped queries; `PolicyEnforcer` PEP pattern on every REST handler. | Automated security test suite with cross-tenant access attempts |
 | `cpt-cf-account-management-nfr-audit-completeness` | 100% tenant config changes audited | Platform append-only audit infrastructure | AM relies on the platform append-only audit infrastructure as the single audit sink. Request handlers emit audit records via the platform request pipeline; AM-owned non-request flows emit into the same sink with `actor=system` (bootstrap completion, conversion expiry, provisioning-reaper compensation, hard-delete / tenant-deprovision cleanup). Database-level `created_at`/`updated_at` timestamps provide additional chronology but are not the audit system. | Verify platform audit entries exist for state-changing API operations and for AM-owned system-actor lifecycle events in integration tests |
-| `cpt-cf-account-management-nfr-barrier-enforcement` | Barrier state sufficient for downstream enforcement; AM-owned barrier-state changes audited | `self_managed` column + tenant hierarchy in `tenants` table | AM exposes `self_managed` flag and parent-child relationships; Tenant Resolver and AuthZ Resolver consume this data for barrier traversal and access decisions. AM commits the flag synchronously within the conversion transaction; enforcement latency depends on how quickly Tenant Resolver's projection reflects the change (sync interval is a Tenant Resolver concern, not an AM guarantee). Platform request audit logging captures all barrier-state-changing operations (mode conversions) per `cpt-cf-account-management-nfr-audit-completeness`; cross-tenant access auditing is a platform AuthZ concern. | Integration tests validating barrier data completeness for resolver consumption; verify platform audit log entries exist for mode conversion operations |
+| `cpt-cf-account-management-nfr-barrier-enforcement` | Barrier state sufficient for downstream enforcement; AM-owned barrier-state changes audited | `self_managed` column on `tenants` + `barrier` column on `tenant_closure` | AM exposes `self_managed` on tenant rows and the materialized `barrier` column on `tenant_closure`; Tenant Resolver and AuthZ Resolver consume both directly for barrier traversal and access decisions. AM commits `self_managed` on the tenant row and the affected `tenant_closure.barrier` rows inside the same conversion transaction, so barrier-aware queries reflect the new state as soon as the transaction commits. Platform request audit logging captures all barrier-state-changing operations (mode conversions) per `cpt-cf-account-management-nfr-audit-completeness`; cross-tenant access auditing is a platform AuthZ concern. | Integration tests validating barrier data completeness across `tenants` and `tenant_closure`; verify platform audit log entries exist for mode conversion operations |
 | `cpt-cf-account-management-nfr-tenant-model-versatility` | Both managed and self-managed in same tree | `self_managed` boolean per tenant, independent of siblings | Sibling tenants under the same parent can have different `self_managed` values; mode conversion is a per-tenant operation. | Integration tests with mixed-mode hierarchies |
 | `cpt-cf-account-management-nfr-compatibility` | No breaking changes within minor release | Path-based API versioning + stable SDK trait contract | REST API uses `/api/account-management/v1/` prefix; SDK trait changes require new major version with migration path. | Contract tests on SDK trait + API schema regression tests |
 | `cpt-cf-account-management-nfr-production-scale` | Approved deployment profile before DESIGN sign-off | Schema design + index strategy | Approved deployment profile: 100K tenants, depth 5 (advisory threshold 10), 300K users (IdP-stored), 30K user groups / 300K memberships (RG-stored), 1K rps peak. All targets within planning envelope. Schema impact assessment confirms existing indexes and B-tree depths are sufficient for that profile; no partitioning is required. | Capacity test against approved profile (100K tenants, 300K users, 1K rps) |
@@ -133,7 +134,7 @@ graph LR
 | `cpt-cf-account-management-nfr-reliability` | Reads stay available during IdP outages; retry contract is explicit | Saga-based tenant creation + degraded-mode reads + reaper compensation | Non-IdP-dependent reads and admin operations continue during IdP outages. Tenant creation uses the three-step provisioning saga; clean step-2 compensation returns `idp_unavailable` and is retryable, while transport failure, timeout, or finalization failure after IdP-side success leave `POST /tenants` in an ambiguous, non-idempotent state that callers must reconcile before retry. | Integration tests for clean compensation, ambiguous finalization failure, provisioning reaper cleanup, and degraded reads during IdP outage |
 | `cpt-cf-account-management-nfr-data-lifecycle` | Tenant deprovisioning cascades cleanup | `TenantService::delete_tenant` + background hard-delete job | Soft delete transitions to `deleted` status; background job hard-deletes after retention period; cascade triggers IdP `deprovision_tenant` (with retry on failure), Resource Group cleanup for tenant-scoped user groups (via `ResourceGroupClient`), and metadata entry deletion. | Integration tests verifying cascaded cleanup |
 | `cpt-cf-account-management-nfr-authentication-context` | Authenticated requests via platform SecurityContext; MFA for admin ops deferred to platform AuthN policy | `SecurityContext` requirement on all REST handlers via framework middleware | AM does not validate tokens or enforce MFA directly. All REST endpoints require a valid `SecurityContext` provided by the framework AuthN pipeline. MFA enforcement for administrative operations such as tenant creation and mode conversion is a platform AuthN policy concern — AM relies on the framework to reject requests that do not meet the configured authentication strength. | API tests: every endpoint returns 401 without valid `SecurityContext`; E2E: admin operations succeed only with authenticated requests |
-| `cpt-cf-account-management-nfr-data-quality` | Transactional commit visibility for Tenant Resolver sync; hierarchy integrity checks | Transactional DB writes + diagnostic integrity query | AM commits hierarchy changes transactionally, making them immediately visible in the `tenants` table for Tenant Resolver consumption. Schema stability per `cpt-cf-account-management-nfr-compatibility` ensures the database-level data contract remains intact. AM provides a hierarchy integrity check (orphaned children, broken parent references, depth mismatches) as a diagnostic capability. The end-to-end 30s freshness SLO is a platform-level target requiring Tenant Resolver's sync mechanism; AM's contribution is transactional commit visibility. | Integration: hierarchy integrity check detects seeded anomalies (orphaned child, depth mismatch); Integration: committed writes are immediately visible via direct table query |
+| `cpt-cf-account-management-nfr-data-quality` | Transactional consistency across `tenants` and `tenant_closure`; hierarchy integrity checks | Transactional DB writes spanning `tenants` and `tenant_closure` + diagnostic integrity query | AM commits hierarchy changes and the corresponding `tenant_closure` updates in a single transaction, so a committed write is observable as one consistent `(tenants, tenant_closure)` state across every reader. Schema stability per `cpt-cf-account-management-nfr-compatibility` ensures the database-level data contract remains intact. AM provides a hierarchy integrity check (orphaned children, broken parent references, depth mismatches, missing or stale closure rows, `descendant_status` divergence) as a diagnostic capability. | Integration: hierarchy integrity check detects seeded anomalies (orphaned child, depth mismatch, missing closure row); Integration: committed writes are immediately visible across both tables via direct query |
 | `cpt-cf-account-management-nfr-data-integrity-diagnostics` | Diagnostic checks for observable hierarchy anomalies | `TenantService::check_hierarchy_integrity()` + observability surface | AM exposes explicit integrity diagnostics for orphaned children, broken parent links, root-count anomalies, and depth mismatches. | Integration tests seed anomalies and verify diagnostic output plus metric surfacing |
 | `cpt-cf-account-management-nfr-data-remediation` | Operator-visible remediation path for AM-owned integrity anomalies | Observability + runbook-owned lifecycle handling | Compensation failures and integrity anomalies emit telemetry quickly, remain visible until addressed, and map to runbook-driven triage owned by platform operations. | Alert simulation and operational review |
 | `cpt-cf-account-management-nfr-ops-metrics-treatment` | Minimum operational treatment for AM domain metrics | Shared dashboards + alert routing | AM publishes the minimum metric set required for operator treatment: IdP failures, bootstrap not-ready, provisioning reaper activity, integrity violations, and cleanup failures. | Dashboard/alert review plus smoke checks in staging |
@@ -149,6 +150,8 @@ The following architecture decisions are adopted in this DESIGN:
 | Conversion approval | Stateful `ConversionRequest` entity with a configurable approval window (default 72h), partial unique index for at-most-one pending row per tenant, background expiry and soft-delete retention jobs. Symmetric collection-based REST API (`/conversions` child-scope, `/child-conversions` parent-scope, each with `{request_id}`) lets each side initiate via `POST` and resolve via `PATCH` from its own AuthZ scope. Lifecycle enum is five-valued (`pending`/`approved`/`cancelled`/`rejected`/`expired`) with explicit actor-per-status semantics. | `cpt-cf-account-management-adr-conversion-approval` — [ADR-0003](ADR/0003-cpt-cf-account-management-adr-conversion-approval.md) |
 | User identity source of truth | IdP is the single source of truth for user identity data (credentials, profile, authentication state, user existence). AM does not maintain a local user table, projection, or cache. | `cpt-cf-account-management-adr-idp-user-identity-source-of-truth` — [ADR-0005](ADR/0005-cpt-cf-account-management-adr-idp-user-identity-source-of-truth.md) |
 | User-tenant binding | IdP stores the user-tenant binding as a tenant identity attribute on the user record. AM coordinates binding via the IdP contract but does not independently store or cache the relationship. | `cpt-cf-account-management-adr-idp-user-tenant-binding` — [ADR-0006](ADR/0006-cpt-cf-account-management-adr-idp-user-tenant-binding.md) |
+| Tenant hierarchy closure ownership | AM owns both the canonical tenant tree and the platform-canonical `tenant_closure` table `(ancestor_id, descendant_id, barrier, descendant_status)`. Closure maintenance is transactional with tenant writes in `TenantService` and `ConversionService::approve`. AM does not expose a sync capability (canonical enumeration or revision/change token); Tenant Resolver reads AM-owned storage directly via a **dedicated SecureConn connection pool** bound to a read-only database role — distinct from AM's writer pool, so plugin hot-path reads and AM writer traffic are isolated at the pool layer and cannot starve each other. | `cpt-cf-tr-plugin-adr-p1-tenant-hierarchy-closure-ownership` — [ADR-001](tr-plugin/ADR/ADR-001-tenant-hierarchy-closure-ownership.md) |
+| Provisioning tenants excluded from `tenant_closure` | Closure rows are inserted transactionally with the `provisioning → active` transition (saga step 3) and removed with hard-deletion. Provisioning tenants never appear in `tenant_closure`; `descendant_status` domain tightens to `{active, suspended, deleted}`. The Tenant Resolver Plugin's unconditional `descendant_status <> 'provisioning'` filter goes away — provisioning invisibility becomes structural on closure-driven reads. | `cpt-cf-account-management-adr-provisioning-excluded-from-closure` — [ADR-0007](ADR/0007-cpt-cf-account-management-adr-provisioning-excluded-from-closure.md) |
 
 Rejected prospective direction: `cpt-cf-account-management-adr-resource-group-tenant-hierarchy-source` — [ADR-0004](ADR/0004-cpt-cf-account-management-adr-resource-group-tenant-hierarchy-source.md) considered moving canonical tenant hierarchy storage from the AM `tenants` table to Resource Group, but rejected it because it splits tenant structure and tenant lifecycle ownership across modules. This DESIGN intentionally retains the dedicated `tenants` table as the AM source of truth.
 
@@ -201,7 +204,7 @@ Every tenant write validates that the resulting hierarchy remains a valid tree: 
 
 - [ ] `p2` - **ID**: `cpt-cf-account-management-principle-barrier-as-data`
 
-AM does not enforce access-control barriers. It stores the `self_managed` flag, returns it in API responses, and includes it in the source-of-truth dataset consumed by Tenant Resolver. AM domain logic does not filter or restrict API results based on barrier values — barrier enforcement is applied at the platform AuthZ layer: all AM REST API endpoints pass through `PolicyEnforcer` → AuthZ Resolver → Tenant Resolver, which excludes self-managed tenants and their subtrees from the caller's access scope before AM domain logic executes. AM's domain services do read hierarchy data that may include barrier-hidden tenants for two internal purposes: (1) **metadata inheritance boundary** — the ancestor walk stops at self-managed boundaries so that a self-managed tenant never inherits metadata from ancestors above its barrier (see `cpt-cf-account-management-fr-tenant-metadata-api`); (2) **structural invariant validation** — hierarchy-owner operations (parent-child type validation during creation, child-count pre-checks during deletion, child-state validation for the parent-scoped conversion endpoint) require full hierarchy visibility regardless of barrier state. Neither purpose constitutes access-control filtering — the results are used for internal precondition checks and are not exposed to API callers. These reads are performed via unscoped hierarchy lookups on the `tenants` table (see Security Architecture, Data Protection), distinct from the platform's `BarrierMode::Ignore` concept which AM does not use. When a tenant converts to self-managed, AM commits `self_managed=true` synchronously within the conversion transaction. Enforcement takes effect once Tenant Resolver's denormalized projection reflects the updated flag; the propagation interval is owned by Tenant Resolver, not AM.
+AM does not enforce access-control barriers. It stores the `self_managed` flag on `tenants` rows, materializes the same barrier state into `tenant_closure.barrier` for every affected `(ancestor, descendant)` pair, returns both in reads consumed by downstream modules, and exposes `self_managed` in API responses. Barrier enforcement is resource-type dependent and applied at the platform AuthZ layer rather than inside AM domain logic: barrier-enforced subtree/resource reads use Tenant Resolver / AuthZ semantics, while parent-side tenant metadata visibility remains policy-defined per the platform tenant model. AM domain logic does not implement module-specific barrier filtering, but its services do read hierarchy data that may include barrier-hidden tenants for two internal purposes: (1) **metadata inheritance boundary** — the ancestor walk stops at self-managed boundaries so that a self-managed tenant never inherits metadata from ancestors above its barrier (see `cpt-cf-account-management-fr-tenant-metadata-api`); (2) **structural invariant validation** — hierarchy-owner operations (parent-child type validation during creation, child-count pre-checks during deletion, child-state validation for the parent-scoped conversion endpoint) require full hierarchy visibility regardless of barrier state. Neither purpose constitutes access-control filtering — the results are used for internal precondition checks and are not exposed to API callers. These reads are performed via unscoped hierarchy lookups on the `tenants` table (see Security Architecture, Data Protection), distinct from the platform's `BarrierMode::Ignore` concept which AM does not use. AM's storage contract defines `tenant_closure.barrier = 1` iff some tenant on `(ancestor, descendant]` is self-managed (ancestor excluded, descendant included), with self-rows fixed to `barrier = 0` (the `barrier` column is `SMALLINT` per TENANT_MODEL.md — 16 bits of bitmask headroom for future multi-dimensional barriers, portable across PostgreSQL and MySQL; v1 uses bit 0 for self_managed). `tenant_closure` contains rows only for SDK-visible tenants (`active`, `suspended`, `deleted`); provisioning tenants are absent from the closure entirely and their barrier materialization happens at the `provisioning → active` transition, inserted in the same transaction as the status update. When a tenant converts to self-managed, AM commits `self_managed=true` on the tenant row and flips the `barrier` column on every affected non-self `(ancestor, descendant)` row of `tenant_closure` inside the same conversion transaction, so barrier-aware queries observe the new state as soon as the transaction commits.
 
 **Drivers**: `cpt-cf-account-management-fr-self-managed-tenant-creation`, `cpt-cf-account-management-fr-mode-conversion-approval`, `cpt-cf-account-management-fr-mode-conversion-expiry`, `cpt-cf-account-management-fr-child-conversions-query`, `cpt-cf-account-management-nfr-barrier-enforcement`
 
@@ -302,11 +305,13 @@ Legacy system integration is handled through the pluggable IdP provider contract
 | Entity | Description | Schema |
 |--------|-------------|--------|
 | Tenant | Core tenant node in the hierarchy tree. Holds identity, parent reference, status, mode, type, and depth. | `account-management-sdk` models |
+| TenantClosureEntry | Row of the AM-owned `tenant_closure` table capturing an `(ancestor_id, descendant_id)` pair together with the materialized `barrier` value (`SMALLINT`, v1 uses bit 0 for self_managed — `barrier = 1` when any tenant on `(ancestor, descendant]` is self-managed; self-rows are always `0`) and the denormalized `descendant_status` copied from the descendant's `tenants.status`. Closure rows exist only for SDK-visible tenants (`active`, `suspended`, `deleted`) — provisioning tenants are absent from the closure entirely. Every SDK-visible tenant owns a self-row `(id, id)` in addition to strict-ancestor rows. Closure entries are an internal storage projection for Tenant Resolver query paths; they are not exposed through the public AM REST API. | AM-owned table; internal entity (not part of the public SDK surface) |
 | TenantMetadata | Extensible metadata entry scoped to a tenant, validated against a GTS-registered schema. | `account-management-sdk` models |
 | ConversionRequest | Durable record of a dual-consent mode conversion for a single tenant. Captures `target_mode`, `initiator_side`, the five-valued status (`pending` / `approved` / `cancelled` / `rejected` / `expired`), approval window, resolver identities, and soft-delete tombstone. At most one `pending` row per tenant (partial unique index). | `account-management-sdk` models |
 
 **Relationships**:
 - Tenant → Tenant: Self-referential parent-child (via `parent_id`). A tenant has zero or one parent and zero or more children. The root tenant has `parent_id = NULL`.
+- Tenant → TenantClosureEntry: Each SDK-visible tenant participates in closure rows as both ancestor and descendant; every SDK-visible tenant has a self-row `(id, id)`. Closure rows are lifecycle-bound to the descendant — the self-row and strict-ancestor rows are inserted on the `provisioning → active` transition (one row per step up the `parent_id` chain), and all rows where the tenant appears as descendant are removed on hard-delete. Provisioning tenants have no closure rows at all.
 - Tenant → TenantMetadata: One-to-many. A tenant can have multiple metadata entries, at most one per `schema_id`.
 - Tenant → ConversionRequest: One-to-many overall, at most one **pending** request per tenant at any time (enforced by partial unique index). A conversion request references the target tenant; `initiator_side` records which side (`child` or `parent`) issued the `POST`. Resolved rows remain attached to the tenant until the soft-delete retention window elapses and the cleanup job hard-deletes them.
 - Tenant → GTS Type: Many-to-one (via internal `tenant_type_uuid`, projected publicly as chained `tenant_type`). Each tenant references a GTS-registered type that defines parent-child constraints.
@@ -327,6 +332,11 @@ Legacy system integration is handled through the pluggable IdP provider contract
 | `ConversionRequestStatus` | `pending`, `approved`, `cancelled`, `rejected`, `expired`, plus tombstoned historical state via `deleted_at`. | Conversion service + storage constraint |
 | Single root invariant | Exactly one tenant has `parent_id = NULL`; root is undeletable. | Bootstrap + domain validation + partial unique index |
 | Tree invariant | Each tenant has at most one parent and no cycles. | Domain service + FK structure |
+| Closure provisioning exclusion invariant | `tenant_closure` contains rows **only** for tenants whose `tenants.status` is SDK-visible (`active`, `suspended`, `deleted`). Tenants in the transient `provisioning` state have no closure rows. Rows are inserted in a single transaction with the `provisioning → active` transition and removed in a single transaction with hard-deletion. Rationale: the closure is a publication contract (future replication to business modules), and provisioning is internal AM saga state that must not leak across that boundary. | `TenantService::activate_tenant` (insert) + hard-deletion flow (remove) |
+| Closure self-row invariant | Every tenant with SDK-visible status has a `(id, id)` row in `tenant_closure`, with `barrier = 0` and `descendant_status = tenants.status`. | `TenantService::activate_tenant` + integrity check |
+| Closure coverage invariant | For every tenant row with SDK-visible status, `tenant_closure` contains one row per strict ancestor along the `parent_id` chain in addition to the self-row. | `TenantService::activate_tenant` + integrity check |
+| Closure barrier materialization invariant | `tenant_closure.barrier` is `1` on `(A, D)` when any tenant on the strict `A → D` path (excluding A, including D) has `self_managed = true`; otherwise `0`. The column is `SMALLINT` (bit 0 = self_managed in v1). | `TenantService::create_child_tenant` + `ConversionService::approve` |
+| Closure status denormalization invariant | `tenant_closure.descendant_status` tracks `tenants.status` for the row identified by `descendant_id`. Domain is `{active, suspended, deleted}` only — the `provisioning` value is never written because those tenants have no closure rows. | `TenantService::update_status` + hard-deletion flow |
 | Pending conversion invariant | At most one pending conversion request exists per tenant. | Conversion service + partial unique index |
 | Metadata uniqueness invariant | At most one direct metadata entry exists per `(tenant_id, schema_id)`. | Metadata service + unique constraint |
 | User identity ownership invariant | AM never becomes the system of record for credentials or user profiles. | IdP contract boundary + no local user table |
@@ -367,7 +377,7 @@ Derived type schemas resolve their behavioral traits via `x-gts-traits` (per [GT
 3. Validate the requested parent-child type relationship against the GTS `allowed_parent_types` rules — reject with `type_not_allowed` (409) if not permitted
 4. Call `IdpProviderPluginClient::provision_tenant`; provider implementations create tenant-scoped resources or reuse shared ones based on deployment-specific behavior and tenant traits such as `idp_provisioning`. Providers **MUST NOT** silently no-op — unsupported operations **MUST** fail with `idp_unsupported_operation`
 
-**User-group Resource Group type schema:** AM registers the chained RG type `gts.x.core.rg.type.v1~x.core.am.user_group.v1~` — [user_group.v1.schema.json](./schemas/user_group.v1.schema.json). It lives in the flat AM docs schema list, reuses the RG base contract, and defines no AM-specific `metadata` fields in v1.
+**User-group Resource Group type schema:** AM registers the chained RG type `gts.x.core.rg.type.v1~x.core.am.user_group.v1~` — [user_group.v1.schema.json](./schemas/user_group.v1.schema.json). It lives in the flat AM docs schema list, reuses the RG base contract, and defines no AM-specific `metadata` fields in v1. The `user_group` schema uses a chained GTS `$id` (`gts://gts.x.core.rg.type.v1~x.core.am.user_group.v1~`) because user groups are delegated to Resource Group per the Delegation-to-RG principle; the chain expresses that AM's user-group type extends the RG base resource-group type.
 
 **Referenced user resource schema:** The user-group type's `allowed_memberships` points at the platform user resource type `gts.x.core.am.user.v1~` — [user.v1.schema.json](./schemas/user.v1.schema.json).
 
@@ -434,6 +444,7 @@ graph TD
 
         subgraph INFRA["Infrastructure"]
             REPO[TenantRepository]
+            CLOSURE_REPO[ClosureRepository]
             META_REPO[MetadataRepository]
             CONV_REPO[ConversionRepository]
         end
@@ -441,19 +452,20 @@ graph TD
 
     subgraph EXTERNAL["External Dependencies"]
         IDP[IdP Provider]
-        DB[(Database)]
+        DB[("Database<br>tenants + tenant_closure<br>+ tenant_metadata<br>+ conversion_requests")]
     end
 
     subgraph PLATFORM["Platform Modules"]
         GTS[GTS Types Registry]
         RG[Resource Group]
-        TR[Tenant Resolver]
+        TR["Tenant Resolver<br>(query facade)"]
     end
 
     TH --> TS
     MH --> MS
     UH --> TS
     TS --> REPO
+    TS --> CLOSURE_REPO
     TS --> CONV_REPO
     TS --> GTS
     TS --> IDP
@@ -462,9 +474,10 @@ graph TD
     BS --> TS
     BS --> IDP
     REPO --> DB
+    CLOSURE_REPO --> DB
     META_REPO --> DB
     CONV_REPO --> DB
-    TR -.->|consumes| DB
+    TR -.->|tenants + tenant_closure<br>via read-only DB role| DB
     AM --> BS
     AM --> AC
 ```
@@ -507,6 +520,7 @@ TenantService owns tenant lifecycle orchestration, tenant-related IdP operations
 - Tenant creation saga: insert the tenant in `provisioning`, call `IdpProviderPluginClient::provision_tenant` outside the transaction, then persist provider-returned metadata and finalize the tenant as `active`. If provisioning fails, a compensating transaction removes the `provisioning` row so neither system keeps an orphan.
 - Provisioning recovery: if finalization fails after the IdP step succeeds, the tenant remains in internal `provisioning` state. A background provisioning reaper always compensates by calling `deprovision_tenant` and deleting the row; it does not retry finalization. `provisioning` tenants are hidden from API queries and rejected for all normal operations.
 - Hierarchy and lifecycle rules: validate depth against advisory and strict thresholds, allow only `active` ↔ `suspended` status changes on PATCH, and require the `DELETE` flow for deletion so child and resource-ownership preconditions are enforced.
+- Closure maintenance: every write path that changes tenant SDK-visibility also mutates `tenant_closure` in the same transaction as the owning `tenants` write, and `tenant_closure` never contains rows for tenants in the internal `provisioning` state. **Activation** (the `provisioning → active` transition at the end of the tenant-create saga) inserts the descendant's self-row with `barrier = 0` plus one strict-ancestor row per step up the `parent_id` chain, materializing `barrier` as `1` iff some tenant on `(ancestor, descendant]` is self-managed, and setting `descendant_status = active`. **Compensation** (provisioning reaper rolling back a stuck `provisioning` row) removes the `tenants` row only; no closure work is needed because no closure rows were ever written. **Status change** (between SDK-visible states `active` / `suspended` / `deleted`) rewrites `descendant_status` on every row where `descendant_id = X`. **Hard-deletion** (leaves only) removes every row where the hard-deleted tenant appears as descendant. Soft-delete flips both `tenants.status` and the matching `tenant_closure.descendant_status` rows; no closure row is inserted or removed. Subtree moves are not supported in v1 (`update_tenant` mutates only `name` and `status`), so no subtree-wide closure rebuild is needed.
 - Mode conversion delegation: post-creation toggles of `self_managed` are not applied directly by `TenantService`; they are routed to `ConversionService` (see below), which owns the `ConversionRequest` state machine, role-per-transition validation, and the atomic toggle-at-approval step. `TenantService::create_tenant` still accepts `self_managed=true` at creation time without a `ConversionRequest` — the parent's explicit creation call is the consent.
 - IdP integration: execute tenant deprovisioning during hard deletion and provide IdP user operations (provision, deprovision, query) through `IdpProviderPluginClient`. Providers **MUST NOT** silently no-op on mutating operations; failures are retried rather than skipped.
 - Tenant-facing queries: provide paginated children queries with status filtering. Conversion-request listing endpoints are implemented by `ConversionService` (see below) and do not bypass the self-managed barrier.
@@ -524,7 +538,22 @@ Does not evaluate authorization policies — relies on `PolicyEnforcer` PEP in t
 
 ##### Diagnostic Capabilities
 
-**Hierarchy integrity check mechanism**: Exposed as an internal SDK method `TenantService::check_hierarchy_integrity()`. Implementation uses a recursive CTE to detect orphaned children (nodes whose `parent_id` references a non-existent tenant), broken parent references, depth mismatches (where the stored `depth` column disagrees with the computed depth from the root), and root-count anomalies (zero or multiple rows with `parent_id IS NULL`). Results are surfaced as structured diagnostic output and as the `am_hierarchy_integrity_violations` gauge metric.
+**Hierarchy integrity check mechanism**: Exposed as an internal SDK method `TenantService::check_hierarchy_integrity()`. Implementation uses a recursive CTE over `tenants` plus a set of `tenants ⋈ tenant_closure` joining queries, and returns a structured report grouped by category. The closure-shape categories are what enforce the **Closure self-row invariant** and **Closure coverage invariant** recorded in the `TenantService` invariants table earlier in this DESIGN; provisioning exclusion (`tenant_closure` never contains rows for tenants in `provisioning` status) is enforced per [AM ADR-0007](ADR/0007-cpt-cf-account-management-adr-provisioning-excluded-from-closure.md) and the DB-level guard `CHECK (descendant_status IN (1, 2, 3))` in [migration.sql](migration.sql), so stale/provisioning rows in `tenant_closure` are a check target rather than a normal state.
+
+*Tree-shape anomalies* (over `tenants` alone):
+- **Orphaned child** — `parent_id` references a non-existent tenant row. Offending fields: `tenant_id`, `parent_id`.
+- **Broken parent reference** — dangling `parent_id` surfaced separately when the target is a hard-deleted row visible to a concurrent read.
+- **Depth mismatch** — stored `tenants.depth` disagrees with the depth computed by walking `parent_id` to the root. Offending fields: `tenant_id`, `stored_depth`, `computed_depth`.
+- **Root-count anomaly** — zero or multiple rows with `parent_id IS NULL`. Offending fields: `root_count`, `root_tenant_ids[]`.
+
+*Closure-shape anomalies* (join `tenants` ⋈ `tenant_closure`):
+- **Missing closure self-row** — a tenant with SDK-visible status (`active` / `suspended` / `deleted`) has no `(id, id)` row in `tenant_closure`, or the self-row carries `barrier ≠ 0`. Offending fields: `tenant_id`, `observed_self_row_present`, `observed_barrier`.
+- **Coverage gap (missing strict-ancestor row)** — a tenant with SDK-visible status is missing one or more `(ancestor_id, descendant_id = tenant_id)` rows along its `parent_id` chain. Offending fields: `descendant_tenant_id`, `missing_ancestor_tenant_ids[]`.
+- **Stale closure row** — `tenant_closure` contains a row whose `descendant_id` references a `tenants` row in `provisioning` status or that is absent from `tenants`. Offending fields: `ancestor_id`, `descendant_id`, `closure_descendant_status`, `tenants_status` (or `"missing"`).
+- **Barrier-column divergence** — the materialized `tenant_closure.barrier` disagrees with the canonical rule "`barrier = 1` iff some tenant on `(ancestor, descendant]` has `self_managed = true`" (self-rows always `barrier = 0`). Offending fields: `ancestor_id`, `descendant_id`, `observed_barrier`, `expected_barrier`, `self_managed_tenants_on_path[]`.
+- **`descendant_status` denormalization divergence** — `tenant_closure.descendant_status` disagrees with the mapped `tenants.status` for the same `descendant_id` (domain `{1=active, 2=suspended, 3=deleted}`). Offending fields: `ancestor_id`, `descendant_id`, `closure_descendant_status`, `tenants_status`.
+
+Results are returned as structured diagnostic output — per-category arrays carrying the offending-row fields listed above — and aggregated into the `am_hierarchy_integrity_violations` gauge metric with a `category` label (`orphaned_child`, `broken_parent_reference`, `depth_mismatch`, `root_count_anomaly`, `missing_closure_self_row`, `closure_coverage_gap`, `stale_closure_row`, `barrier_column_divergence`, `descendant_status_divergence`) so closure anomalies can be alerted and dashboarded distinctly from tree-shape anomalies.
 
 #### ConversionService
 
@@ -539,11 +568,11 @@ Owns the `ConversionRequest` state machine for post-creation toggles of `tenants
 The ConversionService owns everything about pending and resolved conversion requests, while `TenantService` continues to own `tenants` CRUD.
 
 - `initiate(caller_side, tenant_id, actor)`: validates preconditions (tenant is non-root, is `active`, caller's side has a valid scope for `tenant_id`, no pending row exists), derives `target_mode = NOT tenants.self_managed`, inserts a `pending` row with `initiator_side = caller_side` and `expires_at = now() + approval_ttl`. Partial unique index `UNIQUE (tenant_id) WHERE status='pending' AND deleted_at IS NULL` guarantees the at-most-one invariant at the DB level; service layer translates the conflict into `409 conflict` with sub-code `pending_exists` and the existing `request_id`.
-- `approve(caller_side, request_id, actor)`: valid only when `status = pending` and `caller_side != initiator_side`. In a single transaction: sets `status = approved`, `approved_by = actor`, toggles `tenants.self_managed` to `target_mode`, and writes the audit entry. Atomicity between the status transition and the flag toggle is what removes the "crash between approval and barrier removal" hazard.
+- `approve(caller_side, request_id, actor)`: valid only when `status = pending` and `caller_side != initiator_side`. In a single transaction: sets `status = approved`, `approved_by = actor`, toggles `tenants.self_managed` to `target_mode`, recomputes `tenant_closure.barrier` for every `(ancestor_id, descendant_id)` pair where the converted tenant lies on the strict `ancestor → descendant` path (excluding the ancestor itself, including the converted tenant as descendant) — the new barrier is derived from the canonical invariant (`barrier = 1` iff any tenant on `(ancestor, descendant]` *still* has `self_managed = true` after the flip), not copied from the converted tenant's flag, so nested self-managed boundaries on the same path remain correctly enforced when one of them converts back — and writes the audit entry. Atomicity across the request status, the tenant flag, and the closure barrier columns is what removes the "crash between approval and barrier removal" hazard. Write amplification is bounded by `O(strict_ancestors × (1 + descendants))` on the converted tenant, which is the ADR-001 envelope.
 - `cancel(caller_side, request_id, actor)`: valid only when `status = pending` and `caller_side == initiator_side`. Sets `status = cancelled`, `cancelled_by = actor`. Does **not** touch `tenants.self_managed`.
 - `reject(caller_side, request_id, actor)`: valid only when `status = pending` and `caller_side != initiator_side`. Sets `status = rejected`, `rejected_by = actor`. Does **not** touch `tenants.self_managed`.
 - `list_own_for_tenant(tenant_id, status_filter, pagination)`: tenant-scoped list for the child-scope collection. Default `status_filter = pending`; `any` returns all non-soft-deleted rows.
-- `list_inbound_for_parent(parent_id, status_filter, pagination)`: joins `conversion_requests` with `tenants` on `parent_id`. Exposes only the metadata fields allowed behind the barrier (`request_id`, `tenant_id`, `child_name`, `initiator_side`, `target_mode`, `status`, timestamps).
+- `list_inbound_for_parent(parent_id, status_filter, pagination)`: joins `conversion_requests` with `tenants` on `parent_id`. Projects the conversion-request row — `request_id`, `tenant_id`, `child_name`, `initiator_side`, `target_mode`, `status`, the actor uuids (`requested_by`, `approved_by`, `cancelled_by`, `rejected_by`), and timestamps — and nothing from the child's tenant record beyond its name. **Trade-off — dual-consent vs. barrier purity:** the actor uuids cross the self-managed barrier deliberately, because the parent admin has to know which counterparty in the child tenant initiated the request and who later cancelled / rejected / approved it in order to act on it within the dual-consent workflow. The fields exposed are opaque IdP uuids with no profile data attached — AM stores none per `cpt-cf-account-management-nfr-data-classification` — and resolving any uuid to a human identity still requires separate authorization against IdP, governed by platform AuthZ. The child's full tenant record, its metadata, and its subtree remain behind the barrier. "Minimal conversion-request metadata" elsewhere in this DESIGN and in the PRD means *"only the conversion-request row, not the child tenant record"*; it does not mean stripping the request's own audit-actor fields.
 - `expire` (background): scans `status = 'pending' AND expires_at < now() AND deleted_at IS NULL`, transitions matching rows to `expired`, emits an audit record with `system` actor and the `am_conversion_expired_total` counter.
 - `soft_delete_resolved` (background): scans resolved rows (`status IN ('approved','cancelled','rejected','expired')`) whose `updated_at + resolved_retention < now() AND deleted_at IS NULL`, stamps `deleted_at = now()`, and emits the `am_conversion_soft_deleted_total` counter. Hard deletion follows AM's existing retention cadence on `deleted_at`-tombstoned rows.
 
@@ -612,7 +641,9 @@ Metadata CRUD (create, read, update, delete), per-tenant listing, and hierarchy-
 
 ##### Responsibility boundaries
 
-Does not define metadata schemas — schemas are registered in GTS. Does not interpret metadata content — treats values as opaque GTS-validated payloads. Does not maintain a local inheritance-policy table — the policy is always resolved from the registered schema's `x-gts-traits`. Reads the `self_managed` flag during inheritance resolution to stop the ancestor walk at self-managed boundaries — a self-managed tenant's resolved value never includes ancestors above its barrier.
+Does not define metadata schemas — schemas are registered in GTS. Does not interpret metadata content — treats values as opaque GTS-validated payloads. Does not maintain a local inheritance-policy table — the policy is always resolved from the registered schema's `x-gts-traits`. Reads the `self_managed` flag during inheritance resolution to stop the ancestor walk at self-managed boundaries — a self-managed tenant's resolved value never includes ancestors above its barrier. Metadata inheritance walks skip tenants whose status is `suspended` and continue to their ancestors (suspension is a lifecycle state, not a barrier). The walk stops only at self-managed barriers or the root.
+
+**Enforcement layer — application-only, by design.** Per ADR-0002 `cpt-cf-account-management-adr-metadata-inheritance`, inheritance semantics are enforced exclusively inside `MetadataService::resolve` at read time. There is no DB-level CHECK, trigger, or materialized-inheritance column on `tenant_metadata` — the `tenant_metadata` table stores only values written directly on `tenant_id`, and ancestor walk-up lives entirely in application code. This is deliberate (walk-up resolution has no write amplification and is always consistent with the current `parent_id` chain), and the storage comment in `migration.sql` documents the consequence: any SQL reader that bypasses `MetadataService` will see only directly-written values, not the inherited view. Consumers requiring inherited values **MUST** use the `/resolved` API boundary or the `MetadataService::resolve` entry point; direct `SELECT ... FROM tenant_metadata` is the direct-write view only. No reconciliation job is needed — inheritance is derived on every read rather than materialized.
 
 ##### Related components (by ID)
 
@@ -780,7 +811,7 @@ IdP provider plugin credentials are managed by the plugin implementation and the
 | **Protocol / Driver** | `TypesRegistryClient` via ClientHub |
 | **Data Format** | GTS type definitions, schema bodies, and traits |
 | **Compatibility** | Registered schema identifiers remain the stable external contract key for tenant types and metadata kinds across AM and OpenAPI; tenant rows and metadata rows derive deterministic UUIDv5 storage surrogates from those identifiers for compact indexing without changing the public contract |
-| **Availability / Fallback** | GTS-backed writes validate against current registry data. Tenant and metadata projections that must reverse-hydrate chained identifiers from stored UUID keys depend on Types Registry (or a bounded AM cache fed from it) and fail deterministically rather than returning opaque UUIDs. |
+| **Availability / Fallback** | GTS-backed writes validate against current registry data. Reads that do not require fresh schema/type projection can continue during a registry outage, but tenant and metadata projections that must reverse-hydrate chained identifiers from stored UUID keys depend on Types Registry (or a bounded AM cache fed from it) and fail deterministically on cache miss rather than returning opaque UUIDs. |
 
 #### Tenant Resolver
 
@@ -788,12 +819,12 @@ IdP provider plugin credentials are managed by the plugin implementation and the
 
 | Aspect | Detail |
 |--------|--------|
-| **Type** | Downstream platform consumer |
-| **Direction** | AM provides source-of-truth data |
-| **Protocol / Driver** | Database-level data contract over AM-owned tenant tables |
-| **Data Format** | Tenant identifiers, parent-child relationships, depth, status, and barrier state |
-| **Compatibility** | Schema changes to the AM source tables must remain coordinated with resolver projection logic and rolling-upgrade compatibility constraints |
-| **Availability / Fallback** | AM commits source-of-truth state transactionally. Projection freshness, cache policy, and resync behavior are Tenant Resolver responsibilities. |
+| **Type** | Downstream platform consumer (query facade) |
+| **Direction** | Tenant Resolver reads AM-owned storage |
+| **Protocol / Driver** | Read-only PostgreSQL role provisioned by AM with `SELECT`-only grants scoped to `tenants` and `tenant_closure` |
+| **Data Format** | Rows from `tenants` (`id`, `parent_id`, `name`, `tenant_type_uuid`, `status`, `self_managed`, `depth`, timestamps, and any resolver-mapped metadata fields) and `tenant_closure` (`ancestor_id`, `descendant_id`, `barrier`, `descendant_status`) — the platform-canonical closure shape defined in [TENANT_MODEL.md](../../../../docs/arch/authorization/TENANT_MODEL.md). Public chained `tenant_type` identifiers are re-hydrated by Tenant Resolver from `tenant_type_uuid` via Types Registry. |
+| **Compatibility** | Schema changes to `tenants` and `tenant_closure` are coordinated contract changes between AM and Tenant Resolver; rolling-upgrade compatibility constraints apply to both modules simultaneously |
+| **Availability / Fallback** | Tenant Resolver query availability tracks AM database availability. AM commits tree and closure updates as one transaction, so Tenant Resolver observes every committed non-`provisioning` hierarchy change the moment it becomes visible in the database — there is no projection, no sync job, no drift-detection loop, and no revision or change token. Internal `provisioning` rows may exist transiently during bootstrap and tenant-create sagas, but they are outside the resolver-facing contract and remain non-visible until finalized to `active` or compensated away. |
 
 #### AuthZ Resolver
 
@@ -867,7 +898,8 @@ sequenceDiagram
         TS->>TS: Resolve root_tenant_type from config
         rect rgb(230, 245, 255)
             Note over TS,DB: Saga step 1 — short TX
-            TS->>DB: INSERT tenant (root, type=root_tenant_type, status='provisioning')
+            TS->>DB: INSERT tenant (root, type=root_tenant_type, status='provisioning', self_managed)
+            Note over TS,DB: No tenant_closure rows written yet —<br/>provisioning tenants are absent from the closure by contract
             TS->>DB: COMMIT
         end
         Note over TS,IDP: Saga step 2 — IdP call (no open TX)
@@ -879,6 +911,7 @@ sequenceDiagram
                 Note over TS,DB: Saga step 3 — finalize (short TX)
                 TS->>DB: INSERT tenant_metadata (provider entries, if any)
                 TS->>DB: UPDATE tenant SET status = 'active'
+                TS->>DB: INSERT tenant_closure (root_id, root_id, barrier=0, descendant_status='active')
                 TS->>DB: COMMIT
             end
             TS-->>BS: Root tenant created
@@ -886,7 +919,7 @@ sequenceDiagram
             BS-->>AM: Bootstrap complete
         else Finalization fails
             DB-->>TS: Finalization error
-            TS-->>BS: Bootstrap failed; root remains in provisioning
+            TS-->>BS: Bootstrap failed, root remains in provisioning
             BS->>BS: Do not create a second root while stale row exists
             BS->>BS: Release lock
             BS-->>AM: Bootstrap not complete
@@ -913,7 +946,7 @@ sequenceDiagram
 | `idp_retry_backoff_max` | duration | No (default: 30s) | Maximum backoff for IdP availability retry. |
 | `idp_retry_timeout` | duration | No (default: 5min) | Total timeout for IdP availability wait. Bootstrap fails if exceeded. |
 
-**Description**: On first platform start, AM acquires a distributed lock to prevent concurrent bootstrap from parallel service starts, then creates the initial root tenant using the configured `root_tenant_type` (validated against GTS — must be a registered type). Tenant creation follows the same saga pattern as API-created tenants: (1) a short transaction inserts the tenant with `status=provisioning`; (2) `provision_tenant` is called outside any transaction with the deployer-configured `root_tenant_metadata`; (3) a second short transaction persists any provider-returned metadata and transitions the tenant to visible `active` status. The metadata is opaque to AM — it flows through to the IdP provider plugin, which uses it to determine deployment-specific behavior (e.g., a Keycloak provider receiving `{ "adopt_realm": "master" }` may adopt an existing realm, while other metadata may trigger fresh resource creation). If the provider returns no metadata (binding established through external configuration or convention), bootstrap proceeds normally. On subsequent starts, bootstrap detects the existing root (in `active` status) and is a no-op. A root tenant stuck in `provisioning` status from a prior failed bootstrap attempt is left for provisioning-reaper compensation; bootstrap does not create a second root while that stale row exists. Successful bootstrap emits a platform audit event with `actor=system`. If IdP is unavailable, bootstrap retries with backoff until timeout. The lock ensures that even with multiple replicas starting simultaneously, only one performs the bootstrap sequence. The lock implementation is infrastructure-specific (e.g., database advisory lock, distributed lock service) and not prescribed by this design.
+**Description**: On first platform start, AM acquires a distributed lock to prevent concurrent bootstrap from parallel service starts, then creates the initial root tenant using the configured `root_tenant_type` (validated against GTS — must be a registered type). Tenant creation follows the same saga pattern as API-created tenants: (1) a short transaction inserts the `tenants` row with `status=provisioning` — no `tenant_closure` rows are written yet, because provisioning tenants are absent from the closure by contract; (2) `provision_tenant` is called outside any transaction with the deployer-configured `root_tenant_metadata`; (3) a second short transaction persists any provider-returned metadata, transitions the tenant to visible `active` status, and inserts the root's self-row into `tenant_closure` (`ancestor_id = descendant_id = root_id`, `barrier = 0`, `descendant_status = active`) — the root has no strict ancestors, so only the self-row is created. The metadata is opaque to AM — it flows through to the IdP provider plugin, which uses it to determine deployment-specific behavior (e.g., a Keycloak provider receiving `{ "adopt_realm": "master" }` may adopt an existing realm, while other metadata may trigger fresh resource creation). If the provider returns no metadata (binding established through external configuration or convention), bootstrap proceeds normally. On subsequent starts, bootstrap detects the existing root (in `active` status) and is a no-op. A root tenant stuck in `provisioning` status from a prior failed bootstrap attempt is left for provisioning-reaper compensation; bootstrap does not create a second root while that stale row exists. Successful bootstrap emits a platform audit event with `actor=system`. If IdP is unavailable, bootstrap retries with backoff until timeout. The lock ensures that even with multiple replicas starting simultaneously, only one performs the bootstrap sequence. The lock implementation is infrastructure-specific (e.g., database advisory lock, distributed lock service) and not prescribed by this design.
 
 #### Create Child Tenant with Type Validation
 
@@ -949,7 +982,8 @@ sequenceDiagram
 
     rect rgb(230, 245, 255)
         Note over TS,DB: Saga step 1 — short TX
-        TS->>DB: INSERT tenant (status = 'provisioning')
+        TS->>DB: INSERT tenant (status = 'provisioning', self_managed)
+        Note over TS,DB: No tenant_closure rows written yet —<br/>provisioning tenants are absent from the closure by contract
         TS->>DB: COMMIT
     end
 
@@ -961,6 +995,7 @@ sequenceDiagram
         rect rgb(255, 230, 230)
             Note over TS,DB: Compensate — short TX
             TS->>DB: DELETE tenant WHERE id = child_id AND status = 'provisioning'
+            Note over TS,DB: No tenant_closure cleanup needed — no rows were written
             TS->>DB: COMMIT
         end
         TS-->>API: Error: idp_unavailable
@@ -974,6 +1009,7 @@ sequenceDiagram
                     TS->>DB: INSERT tenant_metadata (provider-produced entries)
                 end
                 TS->>DB: UPDATE tenant SET status = 'active'
+                TS->>DB: INSERT tenant_closure (self-row with barrier=0 + one row per strict ancestor along parent chain,<br/>barrier materialized from self_managed on (ancestor, descendant],<br/>descendant_status = 'active')
                 TS->>DB: COMMIT
             end
             TS-->>API: Tenant response
@@ -987,13 +1023,14 @@ sequenceDiagram
             PR->>IDP: deprovision_tenant(child_id, ...)
             IDP-->>PR: OK / already absent
             PR->>DB: DELETE tenant WHERE id = child_id AND status = 'provisioning'
+            Note over PR,DB: No tenant_closure cleanup needed — provisioning rows never enter the closure
             PR->>DB: COMMIT
-            Note over TS,PR: Step 3 failure always compensates; AM does not retry finalization
+            Note over TS,PR: Step 3 failure always compensates, and AM does not retry finalization
         end
     end
 ```
 
-**Description**: Tenant creation validates parent status, type constraints via GTS, and hierarchy depth. The creation itself follows a three-step saga to avoid holding a DB transaction open during the external IdP call: (1) a short transaction inserts the tenant row with `status=provisioning`; (2) `IdpProviderPluginClient::provision_tenant` is called outside any transaction to set up IdP-side resources (e.g., a Keycloak realm); (3) a second short transaction persists any provider-returned metadata entries (e.g., effective realm name) and transitions the tenant to visible `active` status. If the IdP call fails at step 2, a compensating transaction deletes the `provisioning` row — neither system retains an orphan, and the caller receives `idp_unavailable`. If the finalization transaction at step 3 fails, the tenant remains in `provisioning` status; a background provisioning reaper compensates by calling `deprovision_tenant` (idempotent), emitting a platform audit event with `actor=system`, and deleting the row. AM does not retry the finalization step (see Reliability Architecture). `POST /tenants` is intentionally non-idempotent: only the clean compensated `idp_unavailable` path is retry-safe; transport failure, timeout, or generic `5xx` require reconciliation before retry. If the advisory threshold is exceeded, AM emits the v1 advisory warning signal (metric increment plus structured warning log entry) and creation proceeds. In strict mode, creation is rejected when the hard limit is exceeded.
+**Description**: Tenant creation validates parent status, type constraints via GTS, and hierarchy depth. The creation itself follows a three-step saga to avoid holding a DB transaction open during the external IdP call: (1) a short transaction inserts the tenant row with `status=provisioning` — no `tenant_closure` rows are written yet, because the closure contract excludes provisioning tenants entirely (`cpt-cf-account-management-fr-tenant-closure`); (2) `IdpProviderPluginClient::provision_tenant` is called outside any transaction to set up IdP-side resources (e.g., a Keycloak realm); (3) a second short transaction persists any provider-returned metadata entries (e.g., effective realm name), transitions the tenant to visible `active` status, and atomically inserts the matching `tenant_closure` rows (self-row with `barrier=0` plus one row per strict ancestor along the `parent_id` chain, with `barrier` set to `1` iff some tenant on `(ancestor, descendant]` is self-managed, and `descendant_status=active`). If the IdP call fails at step 2, a compensating transaction deletes the `provisioning` row — no closure cleanup is needed because nothing was ever written there — and the caller receives `idp_unavailable`. If the finalization transaction at step 3 fails, the tenant remains in `provisioning` status with no closure rows; a background provisioning reaper compensates by calling `deprovision_tenant` (idempotent), emitting a platform audit event with `actor=system`, and deleting the `tenants` row. AM does not retry the finalization step (see Reliability Architecture). `POST /tenants` is intentionally non-idempotent: only the clean compensated `idp_unavailable` path is retry-safe; transport failure, timeout, or generic `5xx` require reconciliation before retry. If the advisory threshold is exceeded, AM emits the v1 advisory warning signal (metric increment plus structured warning log entry) and creation proceeds. In strict mode, creation is rejected when the hard limit is exceeded.
 
 #### Resolve Inherited Metadata
 
@@ -1071,10 +1108,10 @@ sequenceDiagram
     Note over C: Within approval_ttl...
     C->>API: PATCH /tenants/{scope}/{conversions|child-conversions}/{request_id} {"status":"approved"}
     API->>CS: approve(caller_side, request_id, actor)
-    CS->>DB: Transactional: status=approved, approved_by=actor, tenants.self_managed := target_mode
+    CS->>DB: Transactional: status=approved, approved_by=actor, tenants.self_managed := target_mode, recompute tenant_closure.barrier for affected (ancestor, descendant) rows
     DB-->>CS: committed
     CS-->>API: 200 OK
-    Note over API,C: PATCH responses use the caller-scope projection. Child scope may include actor identity fields; parent scope omits them.
+    Note over API,C: PATCH responses use the caller-scope projection. Child scope may include actor identity fields, while parent scope omits them.
     API-->>C: 200 OK {status=approved, ...scope-specific projection...}
 ```
 
@@ -1151,7 +1188,7 @@ The sequences above are the canonical interaction views. The table below closes 
 | `cpt-cf-account-management-usecase-soft-delete-leaf` | `cpt-cf-account-management-interface-tenant-mgmt-rest`, Section 4.3 Reliability and Operations | Leaf soft delete is the public lifecycle boundary; hard deletion remains a background concern. |
 | `cpt-cf-account-management-usecase-reject-delete-root` | `cpt-cf-account-management-interface-tenant-mgmt-rest`, `cpt-cf-account-management-component-bootstrap-service` | The single-root invariant is protected across bootstrap, CRUD, and retention cleanup. |
 | `cpt-cf-account-management-usecase-reject-depth-exceeded` | `cpt-cf-account-management-seq-create-child`, `cpt-cf-account-management-component-tenant-service` | Strict-mode depth enforcement is part of the child creation path. |
-| `cpt-cf-account-management-usecase-discover-child-conversions` | `cpt-cf-account-management-seq-convert-dual-consent`, `cpt-cf-account-management-interface-conversions-api` | Parent-scope conversion discovery is the only barrier-aware structural-read carve-out exposed directly by AM. |
+| `cpt-cf-account-management-usecase-discover-child-conversions` | `cpt-cf-account-management-seq-convert-dual-consent`, `cpt-cf-account-management-interface-conversions-api` | Parent-scope conversion discovery is the only additional AM-owned structural-read carve-out beyond the platform's generic tenant-metadata visibility rules. |
 | `cpt-cf-account-management-usecase-retention-of-resolved-conversion` | `cpt-cf-account-management-component-conversion-service`, Section 4.3 Reliability and Operations | Resolved conversion rows remain queryable only for their configured retention window. |
 | `cpt-cf-account-management-usecase-write-tenant-metadata` | `cpt-cf-account-management-interface-metadata-rest`, `cpt-cf-account-management-component-metadata-service` | Metadata writes remain schema-driven and tenant-scoped. |
 | `cpt-cf-account-management-usecase-list-tenant-metadata` | `cpt-cf-account-management-interface-metadata-rest`, `cpt-cf-account-management-component-metadata-service` | Listing returns direct entries only; inherited resolution is a separate boundary. |
@@ -1169,12 +1206,33 @@ The reference DDL and index definitions live in [migration.sql](./migration.sql)
 
 **ID**: `cpt-cf-account-management-dbtable-tenants`
 
-`tenants` is the AM source-of-truth table for hierarchy structure, tenant type assignment, lifecycle state, and the v1 binary barrier flag. Tenant rows store internal `tenant_type_uuid`; the public chained `tenant_type` identifier is re-hydrated from Types Registry when AM projects tenant data through the API. It exists to support:
+`tenants` is the AM source-of-truth table for hierarchy structure, tenant type assignment, lifecycle state, and the `self_managed` boolean barrier flag. Tenant rows store internal `tenant_type_uuid`; the public chained `tenant_type` identifier is re-hydrated from Types Registry when AM projects tenant data through the API. It exists to support:
 
 - direct-child reads and lifecycle mutations without recursive recomputation on every request
-- source-table synchronization by `cpt-cf-account-management-contract-tenant-resolver`
+- direct reads by `cpt-cf-account-management-contract-tenant-resolver` over a read-only database role with `SELECT`-only grants scoped to `tenants` and `tenant_closure`
 - background retention cleanup in leaf-first order
-- durable storage of the barrier bit consumed by `cpt-cf-account-management-actor-tenant-resolver` and `cpt-cf-account-management-actor-authz-resolver`
+- durable storage of the `self_managed` boolean consumed by `cpt-cf-account-management-actor-tenant-resolver` and `cpt-cf-account-management-actor-authz-resolver` (materialized into the `tenant_closure.barrier` `SMALLINT` column as bit 0 — see [TENANT_MODEL.md §Closure Table](../../../../docs/arch/authorization/TENANT_MODEL.md#closure-table))
+
+#### Table: tenant_closure
+
+**ID**: `cpt-cf-account-management-dbtable-tenant-closure`
+
+`tenant_closure` is the AM-owned transitive-ancestry table with the platform-canonical shape `(ancestor_id, descendant_id, barrier, descendant_status)` defined in [TENANT_MODEL.md](../../../../docs/arch/authorization/TENANT_MODEL.md). Closure rows exist **only** for tenants whose `tenants.status` is SDK-visible (`active`, `suspended`, `deleted`); tenants in the internal `provisioning` state are absent from the closure entirely. Every SDK-visible tenant owns a self-row `(id, id)` in addition to one strict-ancestor row per step up the `parent_id` chain. The `barrier` column is `SMALLINT` (v1 encodes bit 0 = self_managed per TENANT_MODEL.md §Closure Table; 16 bits of bitmask headroom is retained for future multi-dimensional barriers, and the type is portable across PostgreSQL and MySQL without dialect-specific type mapping); `barrier = 1` materializes whether any tenant on the strict `ancestor → descendant` path (excluding the ancestor, including the descendant) has `self_managed = true`, and `barrier = 0` otherwise. The `descendant_status` column denormalizes `tenants.status` for the row identified by `descendant_id`; its domain is `{active, suspended, deleted}` only, since provisioning tenants never enter the closure. Rows are inserted in one transaction with the `provisioning → active` transition and removed in one transaction with hard-deletion — see [`cpt-cf-account-management-fr-tenant-closure`](PRD.md#transitive-ancestry-storage). The table exists to support:
+
+- direct barrier-aware subtree and ancestor queries by `cpt-cf-account-management-contract-tenant-resolver` over the same read-only database role used for `tenants`
+- one-step evaluation of `BarrierMode::Respect` / `BarrierMode::Ignore` semantics without walking the tree at query time
+- transactional co-maintenance with `tenants` writes in `TenantService` and `ConversionService::approve`, so barrier changes and hierarchy changes become visible together
+
+Closure maintenance write amplification is bounded per ADR-001:
+
+| Operation | Amplification |
+|-----------|---------------|
+| Create child | O(depth) inserts: self-row plus one row per strict ancestor |
+| Soft delete | O(depth) updates on `descendant_status`; no row insert or delete |
+| Hard delete (leaves only) | O(depth) deletes where the target appears as descendant |
+| Status change | O(depth) updates on `descendant_status` |
+| Convert (toggle `self_managed`) | O(strict_ancestors × (1 + descendants)) barrier updates along every path through the converted tenant |
+| Subtree move | Not supported in v1 |
 
 #### Table: tenant_metadata
 
@@ -1208,15 +1266,21 @@ The physical schema in [migration.sql](./migration.sql) must preserve these inva
 - a tenant may have at most one metadata value per public `schema_id` (enforced physically through the derived `schema_uuid`)
 - a tenant may have at most one pending conversion request visible to normal API queries
 - resolved conversion rows cannot outlive their owning tenant and are eventually tombstoned and purged
-- metadata and conversion rows are lifecycle-bound to the owning tenant so retention cleanup cannot leave AM-owned orphan rows behind
+- metadata, conversion, and closure rows are lifecycle-bound to the owning tenant so retention cleanup cannot leave AM-owned orphan rows behind
+- every tenant whose `tenants.status` is SDK-visible (`active`, `suspended`, `deleted`) has exactly one `(id, id)` self-row in `tenant_closure` with `barrier = 0` and `descendant_status = tenants.status`
+- tenants in the internal `provisioning` state have **no** rows in `tenant_closure` — neither as ancestor nor as descendant
+- for every SDK-visible tenant, `tenant_closure` contains one row per strict ancestor along the `parent_id` chain in addition to the self-row, with no gaps and no extra rows
+- `tenant_closure.barrier` is `1` on `(A, D)` when and only when any tenant on the strict `A → D` path (excluding A, including D) has `self_managed = true`
+- `tenant_closure.descendant_status` equals `tenants.status` for the row identified by `descendant_id` at every committed point in time (by construction, the value is never `provisioning`)
+- closure rows are inserted in the same transaction as the `provisioning → active` status transition and removed in the same transaction as hard-deletion, so external readers never observe divergent `(tenants, tenant_closure)` state and never observe `provisioning` rows in the closure
 
 #### Why This Storage Model Supports the Design
 
-- The tenant tree stays normalized enough for integrity and downstream resolver sync, while the stored `depth` value keeps hierarchy-mutating checks and retention ordering cheap at the approved scale.
+- The tenant tree stays normalized enough for integrity checks and stored `depth` keeps hierarchy-mutating validations and retention ordering cheap at the approved scale, while the co-located `tenant_closure` table provides the transitive query shape `cpt-cf-account-management-contract-tenant-resolver` needs without any projection, sync job, or external derived store.
 - Metadata is separated from tenant core fields so schema-extensible payloads do not destabilize the tenant data contract or require schema churn for every new metadata kind.
 - Metadata persistence uses fixed-width `schema_uuid` keys for compact indexes and predictable joins while keeping the public API/AuthZ contract anchored on the human-readable chained `schema_id`.
 - Conversion lifecycle state is separated from `tenants` so dual-consent history, expiry, and retention can evolve independently of core tenant CRUD.
-- The public contract depends on stable resource projections, not on direct storage exposure; downstream readers such as Billing and Tenant Resolver consume versioned views or coordinated source-table contracts rather than ad hoc schema knowledge.
+- The public contract depends on stable resource projections for administrative reads — Billing and other integrators consume versioned AM APIs rather than the underlying storage. Tenant Resolver is the single platform consumer that reads AM-owned storage directly, and does so over a read-only database role scoped to `tenants` and `tenant_closure`; the canonical closure shape is the contract.
 
 ### 3.8 Error Codes Reference
 
@@ -1369,8 +1433,8 @@ AM is the foundational multi-tenancy module handling tenant hierarchy, barrier s
 
 #### Recovery Architecture
 
-- Backup, PITR, and replica recovery are inherited from the platform database layer.
-- After database restore, AM is authoritative again immediately, and downstream consumers such as Tenant Resolver must resynchronize from AM-owned state.
+- Backup, PITR, and replica recovery are inherited from the platform database layer. `tenant_closure` is backed up and restored as part of the same database snapshot as `tenants`, so restore produces a self-consistent `(tenants, tenant_closure)` pair by construction.
+- After database restore, AM is authoritative again immediately. `cpt-cf-account-management-actor-tenant-resolver` begins serving reads over the restored `(tenants, tenant_closure)` tables with no intermediate resync step because it holds no derived state of its own.
 - IdP-side resources created after the restore point may require manual reconciliation because AM does not yet implement automated reverse-discovery of provider state.
 - Platform RPO / RTO targets apply to AM. No AM-specific disaster-recovery topology is required beyond the platform baseline.
 
@@ -1406,7 +1470,7 @@ Error-budget interpretation:
 
 | Data set | System of record | Consumer boundary |
 |----------|------------------|-------------------|
-| Tenant hierarchy, tenant type, status, barrier mode | AM | Tenant Resolver, AuthZ Resolver, Billing, and AM public/API consumers |
+| Tenant hierarchy, tenant type, status, barrier mode, `tenant_closure` | AM | Tenant Resolver (reads `tenants` + `tenant_closure` directly via a read-only database role), AuthZ Resolver (via Tenant Resolver), Billing (AM public/API reads), and AM public/API consumers |
 | Tenant metadata | AM | AM metadata APIs, IdP provider context resolution, Billing schema-driven reads |
 | Conversion requests | AM | Child-side and parent-side conversion workflows |
 | User identity and tenant binding | IdP | AM orchestrates lifecycle calls but does not become the canonical store |
@@ -1493,9 +1557,9 @@ The main design pitfalls are:
 
 - pending `ConversionRequest` rows become ambiguous after a move because the counterparty side is derived from the current parent-child relationship; the conservative first rule should therefore reject subtree moves while any tenant in the moved subtree has a pending conversion request, rather than silently re-binding review rights
 - moves that would cross an effective IdP provisioning boundary are unsafe until the IdP contract defines tenant rebind / migration semantics; the first supported version should reject moves when source and target imply different dedicated provider-side tenant contexts
-- direct tenant metadata rows remain valid, but any schema with `inheritance_policy=inherit` may resolve differently after the move because the ancestor chain changes; this is an intended consequence that must be reflected immediately in AM reads and downstream resolver sync
+- direct tenant metadata rows remain valid, but any schema with `inheritance_policy=inherit` may resolve differently after the move because the ancestor chain changes; this is an intended consequence that must be reflected immediately in AM reads and in the co-maintained `tenant_closure` rows for the moved subtree
 - self-managed barrier effects may change for the moved subtree because ancestor visibility and inherited metadata resolution are evaluated along the new hierarchy
-- Tenant Resolver, AuthZ Resolver, and Billing must observe the move as one coherent hierarchy change for the whole subtree; the future contract therefore needs an explicit downstream resync / invalidation model rather than relying on ad hoc polling behavior
+- Tenant Resolver, AuthZ Resolver, and Billing must observe the move as one coherent hierarchy change for the whole subtree; the future contract therefore needs a single-transaction closure-rewrite model that replaces the affected `tenant_closure` rows together with the `parent_id` change, rather than any separate invalidation or polling step
 
 ## 5. Traceability
 

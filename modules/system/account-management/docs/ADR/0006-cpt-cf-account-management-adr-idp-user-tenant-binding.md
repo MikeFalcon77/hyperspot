@@ -112,6 +112,7 @@ PRD Section 3.4 (User Data Ownership) explicitly states: "IdP is the single sour
 
 - **PRD**: [PRD.md](../PRD.md)
 - **DESIGN**: [DESIGN.md](../DESIGN.md)
+- **Related**: [ADR-0005](0005-cpt-cf-account-management-adr-idp-user-identity-source-of-truth.md) — ADR-0005 establishes IdP as the sole source of truth for user identity; this ADR specifies the user-tenant binding storage within that constraint. Decided together on the same date.
 
 This decision directly addresses the following requirements and design elements:
 

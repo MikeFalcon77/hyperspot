@@ -14,6 +14,11 @@ info:
     PRD and DESIGN intentionally summarize behavior and refer here for wire
     shapes, field semantics, and HTTP-level error mapping.
 
+    Versioning: breaking changes increment the major version embedded in the URL
+    path (`/api/account-management/v1/` → `/v2/`) and are coordinated with a
+    migration window per the Compatibility NFR in DESIGN.md. Additive changes
+    within v1 do not rev the path.
+
 servers:
   - url: https://api.example.com
 
@@ -488,6 +493,9 @@ components:
       name: status
       in: query
       required: false
+      description: |
+        Optional tenant-status filter. One of: `active`, `suspended`, `deleted`.
+        Omit to include all statuses.
       schema:
         $ref: '#/components/schemas/TenantStatus'
     ConversionStatusFilter:
@@ -642,6 +650,7 @@ components:
         - target_mode
         - initiator_side
         - status
+        - requested_by
         - created_at
         - expires_at
         - updated_at
@@ -662,7 +671,6 @@ components:
         requested_by:
           type: string
           format: uuid
-          nullable: true
         approved_by:
           type: string
           format: uuid
@@ -690,11 +698,12 @@ components:
       additionalProperties: false
       required:
         - id
-        - tenant_id
+        - child_tenant_id
         - child_tenant_name
         - target_mode
         - initiator_side
         - status
+        - requested_by
         - created_at
         - expires_at
         - updated_at
@@ -702,7 +711,7 @@ components:
         id:
           type: string
           format: uuid
-        tenant_id:
+        child_tenant_id:
           type: string
           format: uuid
         child_tenant_name:
@@ -714,6 +723,21 @@ components:
           enum: [child, parent]
         status:
           $ref: '#/components/schemas/ConversionStatus'
+        requested_by:
+          type: string
+          format: uuid
+        approved_by:
+          type: string
+          format: uuid
+          nullable: true
+        cancelled_by:
+          type: string
+          format: uuid
+          nullable: true
+        rejected_by:
+          type: string
+          format: uuid
+          nullable: true
         created_at:
           type: string
           format: date-time

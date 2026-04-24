@@ -678,7 +678,7 @@ WHERE owner_tenant_id IN (
 
 When querying from T1 with `barrier_mode=all`, only rows where `barrier = 0` match → T1, T4.
 
-**Key insight:** T2 → T2 and T2 → T3 have `barrier = 0` because barriers are tracked **strictly between** ancestor and descendant, not including the ancestor itself. When T2 is the query root, its self_managed status doesn't block access to its own subtree.
+**Key insight:** T2 → T2 and T2 → T3 have `barrier = 0` because the `barrier` column is defined over the interval **`(ancestor, descendant]`** — the ancestor endpoint is excluded (canonical definition in [TENANT_MODEL.md §Closure Table](./TENANT_MODEL.md#closure-table)). When T2 is the query root, its self_managed status doesn't block access to its own subtree.
 
 ---
 

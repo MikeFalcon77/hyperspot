@@ -216,12 +216,15 @@ The `tenant_closure` table is a denormalized representation of the tenant hierar
 |--------|------|-------------|
 | `ancestor_id` | UUID | Ancestor tenant |
 | `descendant_id` | UUID | Descendant tenant |
-| `barrier` | INT NOT NULL DEFAULT 0 | 0 = no barrier on path, 1 = barrier exists between ancestor and descendant |
+| `barrier` | SMALLINT NOT NULL DEFAULT 0 | 0 = no respected barrier on path `(ancestor, descendant]`, 1 = at least one `self_managed` tenant exists on that path |
 | `descendant_status` | enum | Status of descendant tenant (denormalized for query efficiency) |
 
-**Barrier semantics:** The `barrier` column stores whether a barrier exists **strictly between** ancestor and descendant, **not including the ancestor itself**. This means:
-- When querying from T2 (a self_managed tenant), rows with `ancestor_id = T2` have `barrier = 0` because T2 is the ancestor, not "between" itself and its descendants
-- When querying from T1 (parent of T2), rows with `ancestor_id = T1` and `descendant_id` in T2's subtree have `barrier = 1` because T2 is between T1 and its descendants
+**Barrier semantics:** The `barrier` column is defined over the path `(ancestor, descendant]`: the ancestor endpoint is excluded, the descendant endpoint is included. Formally, `barrier = 1` iff any tenant on that path has `self_managed = true`. Self-rows `(id, id)` are a special case and always carry `barrier = 0`.
+
+This endpoint rule is what makes a plain `AND barrier = 0` predicate satisfy the SDK contract:
+- `get_ancestors(T, Respect)` returns empty if `T` itself is self-managed, because every strict-ancestor row ending at `T` has `barrier = 1`
+- `get_descendants(T, Respect)` excludes a self-managed child `C` and its subtree, because rows starting at `T` and ending at `C` or below have `barrier = 1`
+- `is_ancestor(A, D, Respect)` returns `false` when `D` itself is self-managed or when another self-managed tenant lies on `(A, D]`
 
 **Example data for the hierarchy:**
 
@@ -244,9 +247,10 @@ T1
 | T4 | T4 | 0 | active |
 
 **Key observations:**
-- `T1 → T2`: barrier = 1 because T2 (self_managed) is on the path
-- `T1 → T3`: barrier = 1 because T2 is on the path from T1 to T3
-- `T2 → T2` and `T2 → T3`: barrier = 0 because T2 is the **ancestor**, not between T2 and its descendants
+- `T1 → T2`: barrier = 1 because the descendant endpoint `T2` is self-managed and the descendant endpoint is included in `(ancestor, descendant]`
+- `T1 → T3`: barrier = 1 because `T2` is on `(T1, T3]`
+- `T2 → T2`: barrier = 0 because self-rows always carry `barrier = 0`
+- `T2 → T3`: barrier = 0 because ancestor `T2` is excluded from `(T2, T3]`
 - Because the hierarchy has a single root, that root appears as `ancestor_id` of every tenant in the table (subject to the barrier rules above).
 
 **Query: "All tenants in T1's subtree, with `barrier_mode: "all"`"**
@@ -267,9 +271,9 @@ Result: T1, T4 (T2 and T3 excluded due to barrier = 1)
 SELECT descendant_id FROM tenant_closure WHERE ancestor_id = 'T2' AND barrier = 0
 ```
 
-Result: T2, T3 (barrier = 0 for both rows because T2 is the ancestor, not between T2 and its descendants)
+Result: T2, T3 (`T2 → T2` is the self-row; `T2 → T3` has `barrier = 0` because ancestor `T2` is excluded from `(T2, T3]`)
 
-**Future extensibility:** The `barrier` column is INT to allow future use as a bitmask for multiple barrier types (e.g., bit 0 for self_managed, bit 1 for data_sovereignty). SQL would change from `barrier = 0` to `(barrier & mask) = 0` for selective enforcement.
+**Future extensibility:** The `barrier` column is SMALLINT to allow future use as a bitmask for multiple barrier types (e.g., bit 0 for self_managed, bit 1 for data_sovereignty). 16 bits of bitmask headroom is ample for any realistic number of barrier dimensions, and the type is portable across PostgreSQL and MySQL. Selective enforcement changes from `barrier = 0` to a `(barrier & mask) = 0` check without touching the schema.
 
 **Synchronization:** How projection tables are synchronized with vendor systems, consistency guarantees, and conflict resolution are out of scope for this document. See Tenant Resolver design documentation (TBD).
 
