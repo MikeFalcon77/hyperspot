@@ -5,6 +5,15 @@
 -- This file is intentionally documentation-first: implementation migrations may
 -- express the same logical schema through ModKit/SeaORM migration code.
 -- Dialect: PostgreSQL reference DDL.
+-- Retention policy overview:
+--   conversion_requests: soft-deleted (`deleted_at` stamped) by the AM retention
+--     job after `resolved_retention` (default 30d) elapses past the terminal
+--     status transition; hard-deleted on AM's platform retention cadence.
+--   tenants: soft-deleted via `tenants.deleted_at`; hard-deleted by the
+--     background tenant-hard-delete job after the tenant retention window and
+--     precondition checks (no non-deleted children, no RG ownership references).
+--   tenant_closure: rows for a tenant are removed only on tenant hard-delete.
+--     Provisioning tenants are never present (see comment on descendant_status).
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -14,7 +23,14 @@ CREATE TABLE tenants (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     parent_id UUID NULL,
     name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 255),
-    status TEXT NOT NULL CHECK (status IN ('provisioning', 'active', 'suspended', 'deleted')),
+    -- status domain is the FULL internal domain {0=provisioning, 1=active, 2=suspended, 3=deleted}.
+    -- Code 0 (provisioning) is an AM-internal saga state that intentionally never appears in
+    -- `tenant_closure.descendant_status` — closure rows are inserted in the provisioning→active
+    -- transaction, so the closure contract exposes only the SDK-visible subset {1,2,3}
+    -- (see ADR-0007 and the comment on tenant_closure.descendant_status below).
+    -- Any reader that expects status=0 to be present in `tenant_closure` is querying the wrong
+    -- table; use `tenants` for full-domain reads and `tenant_closure` for publication-contract reads.
+    status SMALLINT NOT NULL CHECK (status IN (0, 1, 2, 3)),
     self_managed BOOLEAN NOT NULL DEFAULT FALSE,
     tenant_type_uuid UUID NOT NULL,
     depth INTEGER NOT NULL CHECK (depth >= 0),
@@ -55,6 +71,46 @@ COMMENT ON COLUMN tenants.tenant_type_uuid
     IS 'Deterministic UUIDv5 derived from the public chained tenant_type GTS identifier using the GTS namespace constant; compact storage/index key for tenant type assignment.';
 COMMENT ON COLUMN tenants.depth
     IS 'Denormalized hierarchy depth used for advisory threshold checks and leaf-first retention cleanup ordering.';
+COMMENT ON COLUMN tenants.status
+    IS 'Tenant lifecycle state, encoded as SMALLINT for MySQL/PostgreSQL parity. Mapping: 0=provisioning, 1=active, 2=suspended, 3=deleted. Int↔name translation is owned by the application layer; SQL authored outside the ORM MUST reference these codes, never string literals.';
+
+-- ── Tenant closure ───────────────────────────────────────────────────────────
+
+CREATE TABLE tenant_closure (
+    ancestor_id UUID NOT NULL,
+    descendant_id UUID NOT NULL,
+    barrier SMALLINT NOT NULL DEFAULT 0,
+    descendant_status SMALLINT NOT NULL CHECK (descendant_status IN (1, 2, 3)),
+    CONSTRAINT pk_tenant_closure
+        PRIMARY KEY (ancestor_id, descendant_id),
+    CONSTRAINT fk_tenant_closure_ancestor
+        FOREIGN KEY (ancestor_id)
+        REFERENCES tenants(id)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE,
+    CONSTRAINT fk_tenant_closure_descendant
+        FOREIGN KEY (descendant_id)
+        REFERENCES tenants(id)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE,
+    CONSTRAINT ck_tenant_closure_self_row_barrier
+        CHECK (ancestor_id <> descendant_id OR barrier = 0),
+    CONSTRAINT ck_tenant_closure_barrier_nonnegative
+        CHECK (barrier >= 0)
+);
+
+CREATE INDEX idx_tenant_closure_ancestor_barrier_status
+    ON tenant_closure (ancestor_id, barrier, descendant_status);
+
+CREATE INDEX idx_tenant_closure_descendant
+    ON tenant_closure (descendant_id);
+
+COMMENT ON TABLE tenant_closure
+    IS 'AM-owned transitive ancestry table used by Tenant Resolver for barrier-aware hierarchy reads over source-of-truth storage.';
+COMMENT ON COLUMN tenant_closure.barrier
+    IS 'Bit-encoded barrier flags on path (ancestor, descendant] (ancestor excluded, descendant included). v1 uses bit 0 for self_managed; barrier = 0 means no respected barrier on the path, barrier != 0 means at least one is set. The column is SMALLINT (signed 2-byte int, -32768..32767 on both PostgreSQL and MySQL) and ck_tenant_closure_barrier_nonnegative enforces CHECK (barrier >= 0), so the usable non-negative domain is 0..32767. That yields 15 usable flag bits (bits 0..14); the sign bit (bit 15) is unavailable because a value with bit 15 set overflows the signed positive range and/or trips the CHECK. 15 flag bits remain ample for the multi-dimensional barrier types contemplated in TENANT_MODEL.md, and SMALLINT stays portable across PostgreSQL and MySQL without dialect-specific type mapping. Self-rows must remain 0.';
+COMMENT ON COLUMN tenant_closure.descendant_status
+    IS 'Denormalized SDK-visible lifecycle state for descendant_id. Domain is {1=active, 2=suspended, 3=deleted} — the internal provisioning state (tenants.status = 0) is excluded by construction: closure rows are inserted on the provisioning→active transition and removed on hard-delete, so tenant_closure never contains provisioning rows. This keeps the closure a clean publication contract for replication to business modules — consumers do not need provisioning-specific filtering.';
 
 -- ── Tenant metadata ──────────────────────────────────────────────────────────
 
@@ -78,7 +134,7 @@ CREATE INDEX idx_tenant_metadata_schema_uuid
     ON tenant_metadata (schema_uuid);
 
 COMMENT ON TABLE tenant_metadata
-    IS 'Extensible tenant-scoped metadata entries validated against GTS-registered schemas.';
+    IS 'Extensible tenant-scoped metadata entries validated against GTS-registered schemas. Per-schema inheritance policy (ADR-0002 `cpt-cf-account-management-adr-metadata-inheritance`) is NOT enforced at the storage layer: each row stores only the value written directly on `tenant_id`. Inherited resolution is performed at READ time by the application-layer `MetadataService::resolve` (DESIGN §3.2 MetadataService), which walks the `parent_id` ancestor chain and stops at self-managed barriers for `inherit` schemas. Direct SQL readers that bypass `MetadataService` will therefore see only directly-written values — this is deliberate (ADR-0002: walk-up read resolution, no write amplification) and is the reason there is no CHECK/trigger/materialized inheritance on this table.';
 COMMENT ON COLUMN tenant_metadata.schema_uuid
     IS 'Deterministic UUIDv5 derived from schema_id using the GTS namespace constant; primary storage and index key for metadata lookups.';
 COMMENT ON COLUMN tenant_metadata.value
@@ -136,4 +192,4 @@ COMMENT ON TABLE conversion_requests
 COMMENT ON COLUMN conversion_requests.requested_by
     IS 'Canonical platform subject UUID from SecurityContext. Raw provider user identifiers are not stored here.';
 COMMENT ON COLUMN conversion_requests.deleted_at
-    IS 'Soft-delete tombstone for resolved-history retention. Default API reads exclude tombstoned rows.';
+    IS 'Soft-delete tombstone. Stamped by the AM retention job when `resolved_retention` (default 30d) elapses past the row reaching a terminal status (`approved`, `cancelled`, `rejected`, `expired`). Default API reads filter `deleted_at IS NULL`. Hard-delete occurs on AM''s platform retention cadence.';

@@ -410,6 +410,18 @@ The hierarchy **MUST** remain a strict forest:
 
 Cycle attempts **MUST** return `CycleDetected`.
 
+The forest **MAY** contain multiple root groups. Each root has `parent_id = NULL` and carries its own `tenant_id` (inherited from the main tenant via external seeding; non-tenant roots are not tenants themselves).
+
+#### Enforce Tenant Root Uniqueness
+
+- [x] `p1` - **ID**: `cpt-cf-resource-group-fr-enforce-tenant-root-uniqueness`
+
+At most **one** root in the whole RG forest **MUST** be of a tenant type (GTS type code with prefix `TENANT_RG_TYPE_PATH`, see `resource_group_sdk::TENANT_RG_TYPE_PATH`). That unique tenant root is the **main tenant**; every other tenant exists as its sub-tenant (`parent_id` points inside the main tenant's subtree).
+
+Non-tenant roots **MAY** coexist alongside the main tenant root; they carry `tenant_id` of the main tenant but are not tenants themselves.
+
+Group creation that would produce a second tenant-type root **MUST** be rejected with `TenantRootAlreadyExists` (HTTP 409 Conflict). Moving an existing tenant-type group to become a root (setting `parent_id = NULL`) when a tenant root already exists **MUST** be rejected with the same error.
+
 #### Validate Parent Type Compatibility
 
 - [x] `p1` - **ID**: `cpt-cf-resource-group-fr-validate-parent-type`

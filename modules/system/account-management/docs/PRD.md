@@ -22,6 +22,7 @@ Created:  2026-03-30 by Virtuozzo
 - [4. Scope](#4-scope)
   - [4.1 In Scope](#41-in-scope)
   - [4.2 Out of Scope](#42-out-of-scope)
+  - [4.3 Deferred Detailed Coverage](#43-deferred-detailed-coverage)
 - [5. Functional Requirements](#5-functional-requirements)
   - [5.1 Platform Bootstrap](#51-platform-bootstrap)
   - [5.2 Tenant Hierarchy Management](#52-tenant-hierarchy-management)
@@ -109,11 +110,11 @@ The platform needs a tenant model with unlimited hierarchy depth (configurable a
 
 | Metric | Baseline | Target | Timeframe |
 |--------|----------|--------|-----------|
-| Tenant onboarding effort | 5+ API calls and manual IdP configuration per tenant | Single API call — tenant create with type and mode | Module GA |
+| Tenant onboarding effort | 5+ API calls and manual IdP configuration per tenant (*baseline estimate from the current pre-AM workflow: create tenant record, provision IdP realm/org, bind admin identity, create root user-group, set barrier/policy flags; no production measurement exists because AM itself replaces this workflow, so the baseline is a design-time estimate used for GA pass/fail rather than a measured SLO*) | Single API call — tenant create with type and mode | Module GA |
 | Separate deployments per tenant model | 2 separate deployment configurations required today (one per managed/self-managed pattern) | Both modes in one tenant tree — zero per-model deployments (pass/fail) | Module GA |
 | End-to-end tenant context validation latency (p95) | 0 approved AM-backed benchmarks against the target | ≥ 1 approved pre-GA benchmark on the deployment profile with p95 ≤ 5ms through the resolver path | Pre-GA load test gate |
 | Cross-tenant data leaks | 0 AM-specific automated isolation scenarios wired into the gate today | Zero leaks observed; 100% of the planned AM isolation scenarios pass | Pre-GA security gate |
-| Hierarchy depth coverage | Fixed shallow hierarchies (2–3 levels) | No hard AM structural depth cap; configurable advisory threshold (default: 10); benchmark-backed validation of at least 3 distinct type topologies including hierarchies beyond the default threshold on the approved deployment profile | Pre-GA performance + integration gate |
+| Hierarchy depth coverage | Fixed shallow hierarchies (2–3 levels) | No hard AM structural depth cap; configurable advisory threshold (default: 10); benchmark-backed validation of at least 3 distinct type topologies, at least one of which reaches **≥ 15 levels** (50% above the default advisory threshold) on the approved deployment profile defined in §13 | Pre-GA performance + integration gate |
 | Conforming IdP provider implementations | 0 provider implementations validated against the AM contract suite | ≥ 2 provider implementations pass the AM tenant/user lifecycle contract suite without breaking the public API contract | Pre-GA integration gate |
 
 ### 1.4 Non-goals
@@ -139,9 +140,9 @@ The platform needs a tenant model with unlimited hierarchy depth (configurable a
 | Subject Tenant | Tenant the subject (user or API client) belongs to. Used for authorization context. |
 | Context Tenant | Tenant scope root for an operation. May differ from Subject Tenant in platform-authorized cross-tenant administrative scenarios. |
 | Resource Tenant | Actual tenant owning a specific resource. |
-| Self-Managed Tenant | Child tenant that creates a visibility barrier. The parent cannot see or access resources below this tenant through normal hierarchy and resource APIs. The only v1 exception is the dedicated conversion-request discovery surface (`/child-conversions`), which exposes minimal request metadata required for the dual-consent workflow. |
+| Self-Managed Tenant | Child tenant that creates a visibility barrier for barrier-enforced subtree/resource reads. Barrier handling is resource-type dependent per the platform tenant model: parent-side reads of child tenant metadata may still be policy-authorized, while barrier-respecting subtree/resource traversal stops at the self-managed boundary. AM's only module-specific v1 carve-out is the dedicated conversion-request discovery surface (`/child-conversions`), which exposes minimal request metadata required for the dual-consent workflow. |
 | Managed Tenant | Child tenant where the parent is eligible for controlled access to child tenant APIs and resources per policy. No visibility barrier exists. |
-| Tenant Barrier | Visibility and access boundary created by self-managed tenants. When a tenant is self-managed, it blocks ancestor visibility into the subtree below it except for the narrow v1 conversion-request metadata carve-out described for `/child-conversions`. |
+| Tenant Barrier | Visibility and access boundary created by self-managed tenants for barrier-enforced reads and subtree traversal. Whether the barrier applies is resource-type dependent per the platform tenant model; AM itself adds no module-specific bypass beyond the narrow conversion-request metadata carve-out described for `/child-conversions`. |
 | Barrier Mode | Authorization parameter controlling barrier handling: `Respect` (default) stops traversal at self-managed boundaries; `Ignore` traverses through barriers for operations like billing queries. Values align with the `BarrierMode` SDK enum. Tenant metadata resolution does not use `BarrierMode::Ignore` — inheritance stops at self-managed boundaries instead (see §5.7). |
 | Tenant Tree | Single rooted hierarchy of tenants. Has exactly one root tenant (`parent_id = NULL`) created at platform bootstrap. |
 | Root Tenant | Top-level tenant in the tree (`parent_id = NULL`). Exactly one root tenant exists per deployment, created automatically during platform bootstrap. |
@@ -180,13 +181,13 @@ The platform needs a tenant model with unlimited hierarchy depth (configurable a
 
 **ID**: `cpt-cf-account-management-actor-tenant-resolver`
 
-- **Role**: Maintains a denormalized projection of the tenant hierarchy for efficient subtree queries on the authorization hot path. Periodically synchronizes with the Account Service source of truth.
+- **Role**: Query facade over the AM-owned tenant hierarchy. Reads `tenants` and `tenant_closure` directly from the AM database over a read-only role provisioned by AM with `SELECT`-only grants, and serves barrier-aware subtree, ancestor, and existence queries on the authorization hot path. Holds no derived state of its own — every query reflects AM's currently committed state.
 
 #### AuthZ Resolver Plugin
 
 **ID**: `cpt-cf-account-management-actor-authz-resolver`
 
-- **Role**: Evaluates authorization decisions using tenant context, barrier semantics, and subtree scoping constraints. Consumes the tenant hierarchy projection via [Tenant Resolver](../../tenant-resolver) for query-level tenant isolation.
+- **Role**: Evaluates authorization decisions using tenant context, barrier semantics, and subtree scoping constraints. Consumes the barrier-aware query facade exposed by [Tenant Resolver](../../tenant-resolver/) for query-level tenant isolation.
 
 #### IdP Provider
 
@@ -206,7 +207,17 @@ The platform needs a tenant model with unlimited hierarchy depth (configurable a
 
 - **Role**: Provides runtime-extensible type definitions for tenant types, enabling new tenant classifications without code changes. Validates parent-child type constraints at tenant creation time.
 
-**Downstream consumer resilience**: Billing System and AuthZ Resolver Plugin are downstream consumers of AM data. Their resilience to AM unavailability is their own concern, consistent with the Tenant Resolver pattern where projection staleness is a Tenant Resolver responsibility.
+**Downstream consumer resilience**: Billing System and AuthZ Resolver Plugin are downstream consumers of AM data. Their resilience to AM unavailability is their own concern. Tenant Resolver Plugin reads AM-owned storage directly via a read-only database role, so its availability tracks AM database availability and it holds no independent derived state to reconcile.
+
+**Downstream SLA contract model**: AM does **not** issue per-consumer SLA contracts (availability, freshness, or convergence windows) to its downstream consumers. The architecture makes those guarantees unnecessary rather than negotiated:
+
+| Consumer | Freshness / availability model | Basis |
+|----------|-------------------------------|-------|
+| Tenant Resolver Plugin | Atomic: every AM commit is immediately visible. Query latency tracks AM database read latency and is bounded by the tenant-context-validation target in §6.1 / §9 (p95 ≤ 5ms). Availability tracks AM database availability. | Stateless DB facade; no derived state, no projection window. |
+| AuthZ Resolver Plugin | Consumer-owned: AuthZ decides its own cache-invalidation and convergence strategy over the AM-owned hierarchy and barrier state exposed by the Tenant Resolver. AM neither commits to a propagation deadline nor maintains an AM-side cache. | Downstream consumer; responsible for its own resilience (see above). |
+| Billing System | Consumer-owned, batch-friendly: Billing aggregates tenant hierarchy on its own cadence using `BarrierMode::Ignore`. AM commits no tight convergence window; hours-scale lag is architecturally acceptable. | Downstream consumer; responsible for its own resilience (see above). |
+
+The absence of AM-side SLA contracts is a deliberate architectural choice, not an omission: AM is an administrative source-of-truth module (see §3), and any per-consumer freshness guarantee would either require AM-owned caching/replication (rejected in [ADR-0004](ADR/0004-cpt-cf-account-management-adr-resource-group-tenant-hierarchy-source.md)) or shift AM into the request-path enforcement role it explicitly refuses (see §3).
 
 ## 3. Operational Concept & Environment
 
@@ -241,7 +252,7 @@ AM stores the tenant mode (`managed` or `self-managed`) and the hierarchy state 
 - nested self-managed boundaries are allowed;
 - authorized platform-owned consumers such as Billing System may use platform-level barrier-bypass modes outside AM itself.
 
-AM may still perform internal hierarchy-owner reads for two non-policy purposes: validating structure-changing operations against the full tenant tree, and stopping metadata inheritance at self-managed boundaries. The only product-level visibility exception that AM exposes directly is parent-side discovery of child conversion requests, and that exception returns only minimal request metadata needed for the dual-consent workflow.
+AM may still perform internal hierarchy-owner reads for two non-policy purposes: validating structure-changing operations against the full tenant tree, and stopping metadata inheritance at self-managed boundaries. Parent-side visibility of child tenant metadata follows the platform tenant model and platform AuthZ policy rather than an AM-specific bypass. The only additional AM-owned structural-read carve-out is parent-side discovery of child conversion requests, and that exception returns only minimal request metadata needed for the dual-consent workflow.
 
 ### 3.4 User Data Ownership
 
@@ -268,6 +279,7 @@ AM coordinates user lifecycle operations but **does not own user identity data**
 - Platform bootstrap: initial root tenant auto-creation during install, idempotent (p1).
 - Tenant type classification via GTS registry with configurable parent-child constraints (p1).
 - Tenant hierarchy: single rooted tree with parent-child relationships and unlimited depth with a configurable advisory threshold (p1).
+- Canonical transitive-ancestry storage: AM owns the `tenant_closure` table in the platform-canonical shape `(ancestor_id, descendant_id, barrier, descendant_status)` defined in TENANT_MODEL.md, maintains it transactionally with tenant writes, and exposes it to the Tenant Resolver Plugin through a read-only database role (p1).
 - Managed tenant model: parent eligible for delegated child administration with no barrier, subject to platform authorization policy (p1).
 - Self-managed tenant model: strict isolation via barrier; metadata inheritance stops at self-managed boundaries (p1).
 - Tenant CRUD operations: create, read, update, soft-delete with configurable retention (p1).
@@ -282,10 +294,29 @@ AM coordinates user lifecycle operations but **does not own user identity data**
 - User self-registration: users are provisioned via API within tenant security context (invite model only).
 - User authentication flows: covered by IAM PRD.
 - Tenant context propagation (SecurityContext population, cross-tenant rejection, service-to-service forwarding): framework and AuthZ Resolver responsibility.
-- Barrier-aware tenant tree traversal (ancestor chains, descendant queries with `BarrierMode`): Tenant Resolver Plugin responsibility. AM provides source-of-truth data and direct children queries.
+- Barrier-aware tenant tree traversal (ancestor chains, descendant queries with `BarrierMode`): Tenant Resolver Plugin responsibility. AM owns the underlying `tenants` + `tenant_closure` storage and the canonical closure shape, and exposes it to the Plugin via a read-only database role; barrier-aware SDK queries are served by the Plugin over that shared storage. AM's own public API exposes tenant CRUD and direct-children discovery, not barrier-aware subtree traversal.
 - AuthZ Resolver (PDP) implementation: covered by Cyber Fabric DESIGN; this module covers the tenant model consumed by PDP.
 - Resource provisioning and lifecycle for non-identity platform resources: outside AM scope. AM provides tenant context and ownership boundaries but does not manage downstream resource CRUD or provisioning workflows.
 - Tenant lifecycle events (CloudEvents): deferred until EVT (Events and Audit Bus) is introduced.
+
+### 4.3 Deferred Detailed Coverage
+
+Sections 1–5 scope the product and enumerate functional requirements at contract granularity. The following topics are intentionally treated in later sections of this PRD rather than inlined above, so reviewers can distinguish deliberate deferral from accidental omission:
+
+| Topic | Covered in | Rationale for deferral |
+|-------|-----------|------------------------|
+| Non-functional thresholds (latency, audit completeness, data classification, reliability, data lifecycle, production scale) | §6 | Contract obligations separated from functional scope so they can be reviewed as a coherent NFR set. |
+| Public library and integration interfaces (SDK surface, IdP contract, downstream consumer interfaces) | §7 | Interface shape depends on FRs + NFRs together; kept downstream of both. |
+| Use-case walkthroughs (bootstrap, tenant lifecycle, mode conversion, user groups, IdP ops, metadata) | §8 | FRs define *what*, use cases illustrate *how the actors compose them*; kept separate to avoid FR-level narrative drift. |
+| Acceptance criteria (review-ready GA gates) | §9 | Aggregated from FR + NFR + use-case claims; lives after all three. |
+| External dependencies and consumer matrix | §10 | Enumerated once, after actors and FRs are settled. |
+| Assumptions (IdP bootstrap, GTS availability, RG ownership graph) | §11 | Global to the PRD; not scoped per FR. |
+| Risks and mitigations | §12 | Cross-cutting; scored against the whole scope rather than per section. |
+| Review baseline decisions (approved deployment profile, barrier taxonomy, authoritative artifacts) | §13 | Point-in-time freeze for the v1 review; intentionally isolated so review baseline edits are auditable. |
+| Open questions requiring follow-up resolution | §14 | Unresolved items with owner/disposition; not FRs or NFRs. |
+| Traceability links (upstream requirements, downstream artifacts, canonical platform references) | §15 | Structural index; lives at the tail by convention. |
+
+Integration test strategy, per-endpoint SLA tables, implementation-level DECOMPOSITION/FEATURE traceability, and CloudEvents for metadata/lifecycle mutations are **not** in this PRD at all — they are explicitly out of scope for this review-ready baseline (see §1.4 Non-goals and §15 Traceability).
 
 ## 5. Functional Requirements
 
@@ -415,6 +446,16 @@ The system **MUST** return tenant details for a requested tenant identifier when
 The system **MUST** allow an authorized administrator to update only mutable tenant attributes through the general update operation: `name` and `status` (limited to `active` ↔ `suspended` transitions; `deleted` is handled exclusively by the soft-delete operation). The system **MUST** reject attempts to modify immutable hierarchy-defining fields such as `id`, `parent_id`, `tenant_type`, `self_managed`, and `depth`; mode changes remain handled by the dedicated conversion flow.
 
 - **Rationale**: Administrative workflows require controlled edits to tenant presentation and lifecycle state without allowing accidental hierarchy or mode mutations through a generic update path. Restricting the update path to non-terminal status transitions ensures deletion guards (child/resource checks) cannot be bypassed.
+
+#### Transitive Ancestry Storage
+
+- [ ] `p1` - **ID**: `cpt-cf-account-management-fr-tenant-closure`
+
+**Actors**: `cpt-cf-account-management-actor-tenant-admin`, `cpt-cf-account-management-actor-tenant-resolver`, `cpt-cf-account-management-actor-authz-resolver`
+
+The system **MUST** own a `tenant_closure` table with the platform-canonical shape `(ancestor_id, descendant_id, barrier, descendant_status)` defined in TENANT_MODEL.md. Closure rows **MUST** exist only for tenants whose `tenants.status` is SDK-visible (`active`, `suspended`, `deleted`): each such tenant has a self-row `(id, id)` plus one row per strict ancestor along the `parent_id` chain. Tenants in the transient `provisioning` state **MUST NOT** have any closure rows — they are inserted in a single transaction with the `provisioning → active` status transition, and removed in a single transaction with hard-deletion. Every status transition between SDK-visible states **MUST** update `descendant_status` transactionally for all rows where that tenant is `descendant_id`. The `barrier` column (`SMALLINT`, v1 uses bit 0 for self_managed per TENANT_MODEL.md) reflects whether any tenant on the path `(ancestor, descendant]` is `self_managed` (ancestor excluded, descendant included); self-rows `(id, id)` **MUST** carry `barrier = 0`. The `descendant_status` column domain is `{active, suspended, deleted}` only — the internal `provisioning` state is excluded by construction. The system **MUST** expose this storage to the Tenant Resolver Plugin through a read-only database role scoped to `tenants` and `tenant_closure`, and **MUST NOT** provide any sync, projection, revision-token, or change-feed capability on top of that storage.
+
+- **Rationale**: Barrier-aware subtree, ancestor, and existence queries on the authorization hot path need a transitive representation of the tenant tree. Co-owning the canonical closure table inside AM, and co-maintaining it transactionally with tenant writes, is what allows the Tenant Resolver Plugin to be a stateless query facade with no sync pipeline, no projection freshness budget, and no drift-detection loop — barrier changes and hierarchy changes become visible to the Plugin atomically the moment AM commits them. Keeping `provisioning` tenants out of `tenant_closure` entirely (rather than carrying them as a filtered state) makes the closure a clean publication contract for future replication to business modules — replica consumers never observe transient AM saga state and have no `provisioning`-specific filtering obligation.
 
 ### 5.3 Tenant Type Enforcement
 
@@ -558,6 +599,8 @@ The system **MUST** allow only the counterparty of a pending conversion request 
 Resolved conversion requests (`approved`, `cancelled`, `rejected`, `expired`) **MUST** remain queryable for a configurable review window and then leave the default API surface while remaining available to retained audit/history flows.
 
 - **Rationale**: Historical resolutions carry audit and UX value — "my last conversion attempt was rejected two weeks ago" must remain answerable without forcing unbounded storage growth. A configurable retention window gives operators a single knob to balance audit needs, operational clarity, and storage cost.
+
+Pending `ConversionRequest` rows transition to `expired` by an AM background reaper that scans for rows whose `expires_at` has passed. The reaper runs on a `cleanup_interval` cadence (default 60s). Expired rows remain queryable for `resolved_retention` (default 30 days) before the retention job stamps `deleted_at` and default API reads exclude them. Hard-delete follows AM's platform retention cadence. See `cpt-cf-account-management-fr-mode-conversion-expiry` and `cpt-cf-account-management-fr-conversion-retention`.
 
 ### 5.5 IdP Tenant & User Operations Contract
 
@@ -762,7 +805,7 @@ The module **MUST** export domain-specific metrics for dependency health, metada
 
 - [ ] `p1` - **ID**: `cpt-cf-account-management-nfr-context-validation-latency`
 
-AM data access and source-of-truth lookups **MUST** enable end-to-end tenant-context validation to complete in p95 ≤ 5ms under normal load when resolver-side caching is enabled.
+AM data access and source-of-truth lookups **MUST** enable end-to-end tenant-context validation — including the Tenant Resolver Plugin's indexed read path over `tenants` + `tenant_closure` via the read-only database role and steady-state reverse-hydration of UUID-backed public GTS identifiers — to complete in p95 ≤ 5ms under normal load on the approved deployment profile.
 
 - **Threshold**: 5ms at p95 across the full tenant-context validation path under the approved deployment profile.
 - **Rationale**: AM is not the request-path enforcement point, but its source-of-truth query model must not block the platform SLO.
@@ -824,23 +867,22 @@ Published REST APIs **MUST** follow path-based versioning. SDK client and IdP in
 
 - [ ] `p1` - **ID**: `cpt-cf-account-management-nfr-production-scale`
 
-The platform team **MUST** define and approve a canonical AM deployment profile before DESIGN sign-off. At minimum, the profile **MUST** specify target values for the following dimensions and keep them within, or explicitly revise, the current planning envelope. The approved profile **MUST** include benchmark evidence for the hierarchy depth and volume envelope claimed for production, including dependent resolver paths that consume AM hierarchy data.
+The AM deployment profile is defined authoritatively in §13 *Review Baseline Decisions* and frozen for the v1 review. The dimensions below are the **design targets** the architecture is validated against — not measured production workloads (AM is a new module; no production AM traffic exists yet). Each bound is anchored to a specific architectural decision in the companion DESIGN, so enlarging any bound requires revisiting that decision rather than a documentation change.
 
-| Dimension | Current Planning Envelope |
-|-----------|---------------------------|
-| Tenants (hierarchy nodes) | 1K–100K |
-| Typical hierarchy depth | 3–10 levels (AM model has no hard depth cap; advisory threshold default: 10; deeper production support is benchmark-gated) |
-| Users (across all tenants) | 10K–1M |
-| User groups (Resource Group entities) | 1K–50K (stored in Resource Group) |
-| Group memberships (Resource Group membership links) | 10K–500K (stored in Resource Group) |
-| Concurrent API requests (peak) | 100–10K rps |
+| Dimension | v1 Design Target (from §13) | Anchored architectural decision |
+|-----------|-----------------------------|--------------------------------|
+| Tenants (hierarchy nodes) | 100K | Closure-table sizing and B-tree index layout on `tenant_closure (ancestor_id, barrier, descendant_status)` (DESIGN §3.1 *Domain Model* / §3.7 *Database schemas & tables*) |
+| Typical hierarchy depth | 3–10 levels, with no hard cap; advisory threshold default 10; benchmark-gated validation up to ≥ 15 levels per §1.3 | Closure row count per tenant ≈ depth; recursive structural-validation cost (DESIGN §3.2 `TenantService`) |
+| Users (across all tenants) | 300K (IdP-stored) | Out of AM's storage; affects only audit-trail identity references |
+| User groups / memberships | 30K user groups, 300K memberships (Resource Group-stored) | Out of AM's storage; sets RG integration expectations only |
+| Concurrent API requests (peak) | 1K rps | Per-endpoint latency table in §9 (Acceptance Criteria) and the Tenant Resolver p95 ≤ 5ms hot-path budget |
 
-- **Threshold**: 100% of the listed dimensions have an approved target before DESIGN sign-off.
-- **Additional throughput targets**:
-  - Lifecycle reads must support the approved 1K rps peak without violating NFR 6.1.
-  - Administrative mutations must sustain at least 25 writes/second for a 15-minute window under the approved profile.
-  - Background expiry and retention work must be able to clear a backlog of 10K due rows within 60 minutes under the approved profile.
-- **Rationale**: AM indexing, job cadence, and consumer freshness expectations depend on explicit scale and throughput inputs rather than implicit assumptions.
+- **Threshold**: all dimensions locked to §13; changes require an amendment to §13 *and* the anchored architectural decision.
+- **Additional throughput targets** (design targets, validated pre-GA):
+  - Lifecycle reads sustain the 1K rps peak without violating NFR 6.1.
+  - Administrative mutations sustain ≥ 25 writes/second for a 15-minute window under the profile.
+  - Background expiry and retention work clear a backlog of 10K due rows within 60 minutes under the profile.
+- **Rationale**: stating these as design targets anchored to concrete architectural decisions prevents the envelope from drifting independently of the architecture it was sized against. The wider planning ranges previously shown here (up to 1M users, 10K rps) were not architecture-validated and are removed to avoid implying production-supported limits that were never designed for. Evidence becomes measured only after GA load-test gates (§1.3 success criteria).
 
 ### 6.9 Data Classification
 
@@ -873,7 +915,7 @@ Tenant deprovisioning **MUST** remove tenant-scoped metadata, trigger Resource G
 
 - [ ] `p2` - **ID**: `cpt-cf-account-management-nfr-data-quality`
 
-AM hierarchy changes **MUST** be committed transactionally and become immediately visible in the source-of-truth tenant tables. Mandatory fields **MUST** be validated before persistence. The downstream 30-second projection freshness target remains a platform-level objective that depends on Tenant Resolver's sync behavior.
+AM hierarchy changes **MUST** be committed transactionally across `tenants` and `tenant_closure` together and become immediately visible in the source-of-truth tenant tables. Mandatory fields **MUST** be validated before persistence. The Tenant Resolver Plugin reads those tables directly over a read-only database role and therefore observes every committed change the moment the transaction commits — there is no projection freshness window, no sync interval, and no barrier-propagation latency between AM and the Plugin.
 
 #### Data Integrity Diagnostics
 
@@ -958,18 +1000,18 @@ IdP implementations may align with standards such as SCIM 2.0 and OIDC where app
 - **Direction**: required from client (schema/type resolution consumed by AM)
 - **Protocol/Format**: SDK trait or equivalent registry API
 - **Consumed / Provided Data**: tenant type definitions, allowed-parent rules, metadata-schema validation material, and metadata inheritance traits.
-- **Availability / Fallback**: Existing AM reads remain available if GTS is unavailable. Type-validating writes and metadata writes that require fresh schema lookup fail with `service_unavailable`; AM does not invent or cache unverified schema changes locally.
+- **Availability / Fallback**: Existing AM reads that do not require fresh schema/type projection remain available if GTS is unavailable. Reads that must reverse-hydrate public chained identifiers from stored `tenant_type_uuid` / `schema_uuid` keys depend on Types Registry availability or a bounded local cache and fail deterministically on cache miss rather than returning opaque UUIDs. Type-validating writes and metadata writes that require fresh schema lookup fail with `service_unavailable`; AM does not invent or cache unverified schema changes locally.
 - **Compatibility**: Registered schema identifiers remain the stable keys by which AM references tenant types and metadata kinds.
 
 #### Tenant Resolver Plugin Data Contract
 
 - [ ] `p1` - **ID**: `cpt-cf-account-management-contract-tenant-resolver`
 
-- **Direction**: provided by library (tenant hierarchy data for Resolver consumption)
-- **Protocol/Format**: Database-level data contract (source-of-truth tenant tables consumed by Resolver sync)
-- **Consumed / Provided Data**: tenant identifiers, parent-child relationships, status, depth, type, and barrier state.
-- **Availability / Fallback**: AM provides immediate transactional visibility in source tables. Projection lag and cache freshness are Tenant Resolver responsibilities.
-- **Compatibility**: Schema changes to source-of-truth tenant tables require coordinated update with Tenant Resolver Plugin. Schema migrations to source-of-truth tenant tables MUST be backward-compatible within a minor release to support rolling upgrades where AM and Tenant Resolver may temporarily run different versions.
+- **Direction**: provided (AM exposes its own storage to the Tenant Resolver Plugin for direct reads)
+- **Protocol/Format**: Read-only PostgreSQL role provisioned by AM with `SELECT`-only grants scoped to `tenants` and `tenant_closure`. The canonical closure shape `(ancestor_id, descendant_id, barrier, descendant_status)` defined in TENANT_MODEL.md is the on-the-wire contract. AM does not expose any sync, projection, revision-token, or change-feed surface.
+- **Consumed / Provided Data**: rows of `tenants` (`id`, `parent_id`, `name`, `tenant_type_uuid`, `status`, `self_managed`, `depth`, timestamps, and any additional resolver-mapped metadata fields) and rows of `tenant_closure` (`ancestor_id`, `descendant_id`, `barrier`, `descendant_status`). Public chained `tenant_type` values are re-hydrated by the Tenant Resolver side through Types Registry; raw UUID keys are not the public contract.
+- **Availability / Fallback**: AM commits tree and closure updates as one transaction, so the Tenant Resolver Plugin observes every committed hierarchy change the moment it becomes visible in the database — there is no projection lag and no cache freshness window for hierarchy state. AM persists internal `provisioning` rows on `tenants` during bootstrap/tenant-create sagas, but the `tenant_closure` contract excludes those rows entirely: closure entries are inserted atomically with the `provisioning → active` transition, so Tenant Resolver reads against the closure never observe provisioning tenants, by construction. Plugin read availability tracks AM database availability.
+- **Compatibility**: Schema changes to `tenants` and `tenant_closure` are a coordinated contract change between AM and the Tenant Resolver Plugin. Migrations **MUST** be backward-compatible within a minor release so that rolling upgrades where AM and the Plugin temporarily run different versions remain safe against the shared storage.
 
 #### AuthZ Resolver Integration
 
@@ -1078,12 +1120,12 @@ IdP implementations may align with standards such as SCIM 2.0 and OIDC where app
 **Main Flow**:
 1. Tenant admin of `T1` submits a child tenant create request with type `division`, name `"East Division"`, and mode `self_managed=false`.
 2. System validates parent status, type constraints, and current hierarchy depth.
-3. System completes tenant creation; the new child becomes visible under parent `T1` in status `active` and managed mode.
-4. Hierarchy projection converges on the next sync cycle.
+3. System completes tenant creation; the new child becomes visible under parent `T1` in status `active` and managed mode. The `tenants` row and the matching `tenant_closure` entries (self-row plus one row per strict ancestor along the `parent_id` chain) are committed in the same transaction.
+4. The Tenant Resolver Plugin's next barrier-aware query observes the new child immediately because it reads the same database.
 
 **Postconditions**:
 - Child tenant exists under `T1`
-- Hierarchy projection reflects the new child after synchronization
+- Closure rows for the new child are committed and immediately queryable by the Tenant Resolver Plugin
 
 **Alternative Flows**:
 - **Type not allowed under parent**: See `cpt-cf-account-management-usecase-reject-type-not-allowed`
@@ -1354,7 +1396,7 @@ IdP implementations may align with standards such as SCIM 2.0 and OIDC where app
 **Postconditions**:
 - `tenants.self_managed` on `T2` reflects `target_mode`
 - Conversion history shows both the initiating and approving sides with their respective identities
-- Downstream barrier state converges once Tenant Resolver's projection picks up the new value (propagation latency is a platform concern, not AM's)
+- `tenant_closure.barrier` is updated in the same transaction across every `(ancestor, descendant)` pair whose path `(ancestor, descendant]` contains `T2`, so barrier-aware queries served by the Tenant Resolver Plugin observe the new state the moment the approval commits
 
 **Alternative Flows**:
 - **Counterparty does not approve within the window**: See `cpt-cf-account-management-usecase-conversion-expires`
@@ -1818,7 +1860,19 @@ IdP implementations may align with standards such as SCIM 2.0 and OIDC where app
 - [ ] Authorization policy can restrict `read`, `write`, `delete`, and `list` actions on resource type `Metadata` at `schema_id` granularity; `PolicyEnforcer` receives `schema_id` as a resource attribute on every metadata operation.
 - [ ] `not_found` errors on metadata endpoints carry the stable sub-codes `metadata_schema_not_registered` and `metadata_entry_not_found`.
 - [ ] Tenant isolation is verified by automated security tests: Tenant A cannot access Tenant B data through any path.
-- [ ] Tenant context validation completes in p95 ≤ 5ms.
+- [ ] Tenant context validation completes in p95 ≤ 5ms (hot path, served by Tenant Resolver Plugin over AM-owned storage).
+- [ ] Control-plane (administrative) endpoints meet the following latency targets on the §13 approved deployment profile (1K rps peak). These are admin-plane targets, not request-path enforcement; the hot-path budget above is the binding p95 for read-path tenant context:
+
+    | Endpoint class | p95 | p99 |
+    |----------------|-----|-----|
+    | `GET` single tenant / `GET` single metadata entry | ≤ 50 ms | ≤ 150 ms |
+    | `GET` list (direct children, metadata listing, conversion-request discovery) | ≤ 150 ms | ≤ 400 ms |
+    | `POST` create tenant (includes IdP provisioning saga) | ≤ 300 ms | ≤ 1000 ms |
+    | `PATCH` / `PUT` update (tenant mutable fields, metadata full-replace) | ≤ 200 ms | ≤ 500 ms |
+    | `DELETE` (soft-delete, with child/resource precondition checks) | ≤ 150 ms | ≤ 500 ms |
+    | Mode conversion request create / resolve | ≤ 200 ms | ≤ 500 ms |
+
+    IdP-dependent endpoints (tenant create, user provisioning, user deprovisioning) inherit IdP latency and may exceed these p99 bounds when the IdP itself is slow; in that case the AM-side error contract (`idp_unavailable`) applies rather than a latency-violation SLO.
 - [ ] All tenant configuration changes are recorded in the platform append-only audit infrastructure with actor and tenant identity, including `actor=system` events for AM-owned background transitions.
 - [ ] All failures map to deterministic error categories.
 - [ ] AM exports the documented domain-specific metrics for dependency health, metadata resolution, bootstrap lifecycle, tenant-retention work, conversion lifecycle, hierarchy-depth threshold exceedance, and cross-tenant denials.
@@ -1846,7 +1900,7 @@ IdP implementations may align with standards such as SCIM 2.0 and OIDC where app
 
 | Consumer | What it consumes |
 |----------|-----------------|
-| Tenant Resolver Plugin | Syncs denormalized hierarchy projection from AM source-of-truth tenant tables. |
+| Tenant Resolver Plugin | Reads AM-owned `tenants` and `tenant_closure` directly via a read-only database role and serves barrier-aware query APIs over that data. |
 | AuthZ Resolver Plugin | Consumes tenant hierarchy and barrier state for authorization decisions. |
 | RBAC Engine | Consumes user group structure and membership data from Resource Group for group-to-role binding; uses AM tenant hierarchy and barrier context separately where needed. |
 | Billing System | Consumes tenant hierarchy metadata with barrier bypass for billing aggregation. |
@@ -1860,14 +1914,14 @@ IdP implementations may align with standards such as SCIM 2.0 and OIDC where app
 - The v1 tenant-mode contract is binary: `managed` and `self-managed`. Richer barrier taxonomies are explicitly out of scope for this review baseline.
 - RBAC Engine handles role definitions, role assignments, and group-to-role binding; Resource Group provides group structure and membership data, while AM provides tenant hierarchy, barrier context, and IdP-backed user lookup when needed.
 - Resource ownership is represented in the Resource Group ownership graph; tenant deletion validation relies on the absence of resource associations under the tenant's ownership scope.
-- Authorization enforcement (AuthZ Resolver) and barrier-aware traversal (Tenant Resolver) are external consumers of AM source-of-truth data; their projection consistency and query performance are their own responsibility.
+- Authorization enforcement (AuthZ Resolver) and barrier-aware traversal (Tenant Resolver Plugin) are downstream consumers of AM data. The Tenant Resolver Plugin is a stateless query facade over the same database that AM owns, consuming `tenants` and `tenant_closure` directly through a read-only database role; the Plugin holds no derived state of its own, so consistency with AM follows from transactional co-maintenance of those tables inside AM.
 
 ## 12. Risks
 
 | Risk | Likelihood | Severity | Impact | Mitigation |
 |------|-----------|----------|--------|------------|
 | Cross-tenant data leak due to query-level isolation bypass | Low | High | Tenant data exposure, contractual and legal liability | Automated security test suite with cross-tenant access attempts; barrier enforcement at query level; continuous monitoring |
-| Tenant hierarchy depth exceeding practical limits at scale | Low | Medium | Performance degradation of hierarchy queries and projections | Configurable advisory threshold (default: 10) with opt-in strict mode; monitoring of hierarchy depth distribution; design for scalability beyond 10,000 tenants |
+| Tenant hierarchy depth exceeding practical limits at scale | Low | Medium | Performance degradation of hierarchy queries and projections | Configurable advisory threshold (default: 10) with opt-in strict mode; monitoring of hierarchy depth distribution; closure-table sizing and indexing anchored to the §13 approved deployment profile (100K tenants, 1K rps) per §6.8 |
 | Circular nesting in user groups | Low | Low | Infinite loops in permission resolution | Enforced by Resource Group forest invariants — cycle detection at group move/create time; consumers receive `CycleDetected` directly from Resource Group before persistence. AM is not in the call path. |
 | IdP provider unavailability during operations | Medium | High | Tenant creation and user lifecycle operations become temporarily unavailable | Clear deterministic error mapping (`idp_unavailable`), bootstrap retry/backoff, and operator alerting via observability metrics |
 | Ambiguous retry after tenant-create timeout or generic platform fault | Medium | Medium | Blind retry of tenant creation can trigger duplicate tenant or IdP-side provisioning attempts because the initial outcome may already have crossed the IdP boundary | Document tenant creation as intentionally non-idempotent; require reconciliation before retry; use platform audit records, compensation metrics, and reaper cleanup for investigation |
@@ -1883,7 +1937,11 @@ The following decisions are fixed for the review-ready v1 baseline:
 
 ## 14. Open Questions
 
-- **Do we need managed-tenant impersonation in v1?** The current review-ready baseline does not commit AM to issuing impersonation tokens or exposing a stable impersonation endpoint. If v1 requires that capability, PRD, DESIGN, OpenAPI, AuthZ vocabulary, IdP contract, and security/test scope must be updated together as one coordinated contract change.
+_None open for the v1 baseline._
+
+**Resolved for v1:**
+
+- **Managed-tenant impersonation — out of scope for v1.** AM does not issue impersonation tokens and exposes no impersonation endpoint. Delegated parent administration of managed children is handled exclusively through platform AuthZ policy evaluation over normal `SecurityContext`, not through a separate impersonation flow. If future versions require impersonation, the change is coordinated across PRD, DESIGN, OpenAPI, AuthZ vocabulary, IdP contract, and security/test scope and will be tracked under a new ADR at that time; it is **not** a deferred v1 commitment.
 
 ## 15. Traceability
 

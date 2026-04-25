@@ -343,7 +343,7 @@ error: field 'pool' has type 'sqlx::PgPool' which is forbidden (crate 'sqlx').
 
 #### CI enforcement
 
-The [DE0309 lint](../../dylint_lints/de03_domain_layer/de0309_must_have_domain_model/README.md) runs in CI and **denies** any `struct` or `enum` in `domain/` that is missing the `#[domain_model]` attribute. This ensures the macro cannot be accidentally omitted.
+The [DE0309 lint](../../tools/dylint_lints/de03_domain_layer/de0309_must_have_domain_model/README.md) runs in CI and **denies** any `struct` or `enum` in `domain/` that is missing the `#[domain_model]` attribute. This ensures the macro cannot be accidentally omitted.
 
 ### Module `src/api/rest/dto.rs` (REST DTOs, OData)
 

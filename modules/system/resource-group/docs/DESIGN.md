@@ -93,7 +93,8 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | `cpt-cf-resource-group-fr-validate-type-update-hierarchy`     | Type update validates removed `allowed_parents` and `can_be_root` changes against existing groups; rejects with `AllowedParentsViolation` when hierarchy would become inconsistent. |
 | `cpt-cf-resource-group-fr-delete-type-only-if-empty`          | Type deletion flow checks for existing entities and rejects delete when references remain.                                            |
 | `cpt-cf-resource-group-fr-manage-entities`                    | Entity service with create/get/update/move/delete operations.                                                                         |
-| `cpt-cf-resource-group-fr-enforce-forest-hierarchy`           | Domain invariants + cycle checks before writes.                                                                                       |
+| `cpt-cf-resource-group-fr-enforce-forest-hierarchy`           | Domain invariants + cycle checks before writes. Multiple roots permitted (forest).                                                    |
+| `cpt-cf-resource-group-fr-enforce-tenant-root-uniqueness`     | Entity create/move validates that at most one root group is of a tenant type (GTS code starts with `TENANT_RG_TYPE_PATH`); second tenant root rejected with `TenantRootAlreadyExists` (409 Conflict). |
 | `cpt-cf-resource-group-fr-validate-parent-type`               | Entity create/move validates parent-child compatibility against runtime type parent rules.                                            |
 | `cpt-cf-resource-group-fr-delete-entity-no-active-references` | Delete orchestration applies reference-policy checks before entity removal and closure mutation.                                      |
 | `cpt-cf-resource-group-fr-tenant-scope-ownership-graph`       | Ownership-graph profile enforces tenant-hierarchy-compatible parent-child and membership writes, with tenant-scoped AuthZ query path. |
@@ -170,7 +171,13 @@ RG handles graph/membership data only.
 
 - [x] `p1` - **ID**: `cpt-cf-resource-group-principle-strict-forest`
 
-Hierarchy guarantees single parent and cycle prevention for all writes.
+Hierarchy guarantees single parent and cycle prevention for all writes. Multiple roots are allowed (RG is a forest, not a single tree).
+
+#### Tenant Root Uniqueness
+
+- [x] `p1` - **ID**: `cpt-cf-resource-group-principle-tenant-root-uniqueness`
+
+The forest **MAY** contain multiple root groups, but at most **one** of them **MUST** be a tenant-type group (GTS code starts with `TENANT_RG_TYPE_PATH`). That unique tenant root is the **main tenant**; every other tenant lives as its sub-tenant. Non-tenant roots (e.g. auxiliary ownership forests that are not part of the tenant tree) may coexist alongside the main tenant root and carry the main tenant's `tenant_id`, but they are not tenants themselves. This invariant aligns the RG forest with the AuthZ/TR single-root tenant tree: `TENANT_MODEL.md`'s single-root-tree is realized as exactly the tenant-root subtree inside the RG forest. Enforcement at create time rejects a second tenant-type root with `TenantRootAlreadyExists` (409 Conflict).
 
 #### Dynamic Type Governance
 
@@ -1170,6 +1177,7 @@ Ownership-graph tenant enforcement:
 | invalid input               | `Validation`               |
 | missing type/entity         | `NotFound`                 |
 | duplicate type              | `TypeAlreadyExists`        |
+| second tenant-type root rejected | `TenantRootAlreadyExists` (409 Conflict) — enforces `cpt-cf-resource-group-fr-enforce-tenant-root-uniqueness` |
 | invalid parent type         | `InvalidParentType`        |
 | type update violates existing hierarchy | `AllowedParentsViolation` |
 | cycle attempt               | `CycleDetected`            |

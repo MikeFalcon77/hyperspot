@@ -11,7 +11,7 @@
 - **SaaS Ready**: Multi-tenancy, granular access control, usage tracking, and tenant customization built-in
 - **Cloud Operations Excellence**: Production-grade observability, database agnostic design, API best practices, and resilience patterns via ModKit
 - **Spec-Driven Development**: [Industry-standard specification templates](docs/spec-templates/README.md) (PRD, Design, ADR, Feature, Upstream Reqs) define what gets built *before* code is written, ensuring traceability from requirements to implementation
-- **Shift Left**: Catch issues at the earliest possible stage — custom [dylint](dylint_lints/) architectural lints enforce design rules at compile time, Clippy with denied warnings, integrated [E2E tests](#e2e-tests), fuzzing, and security audits run in CI before code reaches review
+- **Shift Left**: Catch issues at the earliest possible stage — custom [dylint](tools/dylint_lints/) architectural lints enforce design rules at compile time, Clippy with denied warnings, integrated [E2E tests](#e2e-tests), fuzzing, and security audits run in CI before code reaches review
 - **Quality First**: 90%+ test coverage target with unit, integration, E2E, performance, and security testing
 - **Universal Deployment**: Single codebase runs on cloud, on-prem Windows/Linux workstation, or mobile
 - **Developer Friendly**: AI-assisted code generation, automatic OpenAPI docs, DDD-light structure, and type-safe APIs
@@ -216,9 +216,9 @@ make fuzz            # fuzz smoke tests (30 s per target)
 On **Windows** (no `make`), use the cross-platform CI script directly:
 
 ```bash
-python scripts/ci.py check          # full CI suite
-python scripts/ci.py e2e-local      # end-to-end tests
-python scripts/ci.py fuzz --seconds 60  # fuzz smoke run
+python tools/scripts/ci.py check          # full CI suite
+python tools/scripts/ci.py e2e-local      # end-to-end tests
+python tools/scripts/ci.py fuzz --seconds 60  # fuzz smoke run
 ```
 
 For the complete test strategy, coverage policy, CI pipeline details, and all

@@ -145,11 +145,17 @@ pub trait ResourceGroupClient: Send + Sync {
 }
 
 // @cpt-dod:cpt-cf-resource-group-dod-integration-auth-read-service:p1
-/// Narrow read-only trait for hierarchy data, used by `AuthZ` plugin.
+/// Narrow read-only trait for group data, used by in-process plugin consumers
+/// (`AuthZ` resolver plugin, tenant-resolver RG plugin).
 ///
-/// This trait provides the integration read port that external consumers
-/// (such as the `AuthZ` plugin) use to query group hierarchy data without
-/// depending on the full `ResourceGroupClient`.
+/// Scope is deliberately "reads only": hierarchy walks anchored at a reference
+/// group (ancestors / descendants with depth) **and** flat OData-filtered group
+/// listing. Writes remain the responsibility of the full `ResourceGroupClient`.
+///
+/// The listing method (`list_groups`) is what allows consumers to fetch several
+/// groups by id in a single round-trip (`id in (id1, id2, …)`), which is the
+/// batch read pattern the tenant-resolver RG plugin uses for
+/// `get_tenants(&[TenantId])`.
 #[async_trait]
 pub trait ResourceGroupReadHierarchy: Send + Sync {
     /// Get descendants of a reference group (depth >= 0).
@@ -167,4 +173,16 @@ pub trait ResourceGroupReadHierarchy: Send + Sync {
         group_id: Uuid,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError>;
+
+    /// List resource groups with `OData` filtering and cursor-based pagination.
+    ///
+    /// Mirrors [`ResourceGroupClient::list_groups`] — a single implementation
+    /// on the RG service backs both traits. Exposed on the narrow trait so
+    /// plugin consumers can perform batch reads (e.g. `id in (...)` filters)
+    /// without pulling in the full client surface.
+    async fn list_groups(
+        &self,
+        ctx: &SecurityContext,
+        query: &ODataQuery,
+    ) -> Result<Page<ResourceGroup>, ResourceGroupError>;
 }

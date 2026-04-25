@@ -181,7 +181,7 @@ Optional M:N, tenant-scoped resource grouping that acts as a **PIP** alongside t
 
 ### GTS-Based Attribute Access Control (ABAC)
 
-> Source: [gts-spec](https://github.com/globalTypeSystem/gts-spec/) · [`dylint_lints/de09_gts_layer/`](../../dylint_lints/de09_gts_layer/) · [`modules/system/types-registry/`](../../modules/system/types-registry/)
+> Source: [gts-spec](https://github.com/globalTypeSystem/gts-spec/) · [`dylint_lints/de09_gts_layer/`](../../tools/dylint_lints/de09_gts_layer/) · [`modules/system/types-registry/`](../../modules/system/types-registry/)
 
 Cyber Fabric uses the **Global Type System (GTS)** as the foundation for attribute-based access control. GTS defines a hierarchical identifier scheme for data types and instances:
 
@@ -327,7 +327,7 @@ The project enforces **90+ Clippy rules at `deny` level**, including the full `p
 
 ## 7. Compile-Time Linting — Custom Dylint Rules
 
-> Source: [`dylint_lints/`](../../dylint_lints/)
+> Source: [`dylint_lints/`](../../tools/dylint_lints/)
 
 Project-specific architectural lints run on every CI build via `cargo dylint`. These enforce design boundaries that generic linters cannot:
 
@@ -378,7 +378,7 @@ This switches the underlying cryptographic module from `aws-lc-sys` to `aws-lc-f
 
 ## 10. Continuous Fuzzing
 
-> Source: [`fuzz/`](../../fuzz/) · CI workflow: `.github/workflows/clusterfuzzlite.yml`
+> Source: [`fuzz/`](../../tools/fuzz/) · CI workflow: `.github/workflows/clusterfuzzlite.yml`
 
 Cyber Fabric uses [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) with [ClusterFuzzLite](https://google.github.io/clusterfuzzlite/) for continuous fuzzing. Fuzzing discovers panics, logic bugs, and algorithmic complexity attacks in parsers and validators.
 

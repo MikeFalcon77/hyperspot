@@ -152,6 +152,19 @@ impl UpstreamRepository for InMemoryUpstreamRepo {
         self.alias_index.remove(&(tenant_id, upstream.alias));
         Ok(())
     }
+
+    async fn list_by_alias_for_tenants(
+        &self,
+        alias: &str,
+        tenant_ids: &std::collections::HashSet<Uuid>,
+    ) -> Result<Vec<Upstream>, RepositoryError> {
+        Ok(self
+            .alias_index
+            .iter()
+            .filter(|e| e.key().1 == alias && tenant_ids.contains(&e.key().0))
+            .filter_map(|e| self.store.get(e.value()).map(|u| u.value().clone()))
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -371,5 +384,54 @@ mod tests {
 
         // Different tenant cannot see it.
         assert!(repo.get_by_id(t2, id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn list_by_alias_for_tenants_filters_by_tenant_set() {
+        let repo = InMemoryUpstreamRepo::new();
+        let t1 = Uuid::new_v4();
+        let t2 = Uuid::new_v4();
+        let t3 = Uuid::new_v4();
+
+        repo.create(make_upstream(t1, "shared")).await.unwrap();
+        repo.create(make_upstream(t2, "shared")).await.unwrap();
+        repo.create(make_upstream(t3, "shared")).await.unwrap();
+
+        let filter: std::collections::HashSet<Uuid> = [t1, t2].into();
+        let results = repo
+            .list_by_alias_for_tenants("shared", &filter)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|u| u.alias == "shared"));
+        assert!(results.iter().all(|u| u.tenant_id != t3));
+    }
+
+    #[tokio::test]
+    async fn list_by_alias_for_tenants_returns_empty_for_unknown_alias() {
+        let repo = InMemoryUpstreamRepo::new();
+        let t = Uuid::new_v4();
+        repo.create(make_upstream(t, "openai")).await.unwrap();
+
+        let filter: std::collections::HashSet<Uuid> = [t].into();
+        let results = repo
+            .list_by_alias_for_tenants("nonexistent", &filter)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_by_alias_for_tenants_returns_empty_for_empty_tenant_set() {
+        let repo = InMemoryUpstreamRepo::new();
+        let t = Uuid::new_v4();
+        repo.create(make_upstream(t, "openai")).await.unwrap();
+
+        let filter: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        let results = repo
+            .list_by_alias_for_tenants("openai", &filter)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
     }
 }

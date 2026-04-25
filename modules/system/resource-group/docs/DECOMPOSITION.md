@@ -193,6 +193,7 @@ The Resource Group DESIGN is decomposed into seven features organized around the
 
   - [x] `p1` - `cpt-cf-resource-group-fr-manage-entities`
   - [x] `p1` - `cpt-cf-resource-group-fr-enforce-forest-hierarchy`
+  - [x] `p1` - `cpt-cf-resource-group-fr-enforce-tenant-root-uniqueness`
   - [x] `p1` - `cpt-cf-resource-group-fr-validate-parent-type`
   - [x] `p1` - `cpt-cf-resource-group-fr-delete-entity-no-active-references`
   - [x] `p1` - `cpt-cf-resource-group-fr-seed-groups`

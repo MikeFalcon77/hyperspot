@@ -1,6 +1,6 @@
 # Multi-stage build for hyperspot-server API backend
 # Stage 1: Builder
-FROM rust:1.92-bookworm@sha256:e90e846de4124376164ddfbaab4b0774c7bdeef5e738866295e5a90a34a307a2 AS builder
+FROM rust:1.95.0-bookworm@sha256:6bb82db0878825e157664188b319c875de4f1fff5d70f5917b3a3f1974b472e4 AS builder
 
 # Build arguments for cargo features
 ARG CARGO_FEATURES

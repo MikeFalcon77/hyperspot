@@ -54,7 +54,14 @@ pub(crate) trait ControlPlaneService: Send + Sync {
         req: UpdateUpstreamRequest,
     ) -> Result<Upstream, DomainError>;
 
-    async fn delete_upstream(&self, ctx: &SecurityContext, id: Uuid) -> Result<(), DomainError>;
+    /// Delete an upstream and cascade-delete its routes.
+    /// Returns the IDs of deleted routes so callers can clean up route-scoped
+    /// rate-limit keys.
+    async fn delete_upstream(
+        &self,
+        ctx: &SecurityContext,
+        id: Uuid,
+    ) -> Result<Vec<Uuid>, DomainError>;
 
     // -- Route CRUD --
 
@@ -107,8 +114,11 @@ pub(crate) trait DataPlaneService: Send + Sync {
         req: http::Request<Body>,
     ) -> Result<http::Response<Body>, DomainError>;
 
-    /// Remove a rate-limit bucket by key (e.g. `"upstream:{id}"` or `"route:{id}"`).
-    fn remove_rate_limit_key(&self, key: &str);
+    /// Remove all rate-limit buckets associated with an upstream (all scope variants).
+    fn remove_rate_limit_keys_for_upstream(&self, upstream_id: Uuid);
+
+    /// Remove all rate-limit buckets associated with a route.
+    fn remove_rate_limit_keys_for_route(&self, route_id: Uuid);
 }
 
 /// Endpoint selection abstraction for multi-endpoint load balancing.

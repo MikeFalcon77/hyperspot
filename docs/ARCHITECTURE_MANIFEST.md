@@ -46,7 +46,7 @@ Rust and a monorepo are intentional choices to optimize **recurring engineering 
   Strong typing, structured errors, and deterministic build artifacts make failures easier to localize. This improves troubleshooting for complex, multi-module behaviors and makes it easier for LLMs to propose minimal, correct fixes based on compiler diagnostics, test failures, and traces.
 
 - **Deep static analysis as a platform feature**.
-  Rust's compiler and tooling ecosystem enable strong static inspection (AST/HIR/MIR-level analysis). Over time, recurring code review feedback and internal guidelines can be converted into custom project-specific lints (see [dylint_lints](../dylint_lints)), preventing bad patterns *before* they reach code review or production.
+  Rust's compiler and tooling ecosystem enable strong static inspection (AST/HIR/MIR-level analysis). Over time, recurring code review feedback and internal guidelines can be converted into custom project-specific lints (see [dylint_lints](../tools/dylint_lints)), preventing bad patterns *before* they reach code review or production.
 
 - **Low footprint + performance enable “whole subsystem locally” workflows**.
   A fast, resource-efficient stack makes it realistic for developers (and LLM-based code generators) to:

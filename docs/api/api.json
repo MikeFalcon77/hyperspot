@@ -125,6 +125,37 @@
         ],
         "type": "object"
       },
+      "BudgetConfig": {
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/BudgetMode"
+          },
+          "overcommit_ratio": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "BudgetMode": {
+        "enum": [
+          "unlimited",
+          "allocated",
+          "shared"
+        ],
+        "type": "string"
+      },
       "BurstConfig": {
         "properties": {
           "capacity": {
@@ -2197,6 +2228,16 @@
           "algorithm": {
             "$ref": "#/components/schemas/RateLimitAlgorithm"
           },
+          "budget": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BudgetConfig"
+              }
+            ]
+          },
           "burst": {
             "oneOf": [
               {
@@ -2211,6 +2252,9 @@
             "format": "int32",
             "minimum": 0,
             "type": "integer"
+          },
+          "response_headers": {
+            "type": "boolean"
           },
           "scope": {
             "$ref": "#/components/schemas/RateLimitScope"

@@ -132,5 +132,5 @@ mod handler_tests;
 ## References
 
 - [Rust Book ch11-03: Test Organization](https://doc.rust-lang.org/book/ch11-03-test-organization.html)
-- [DE1101 lint README](../../../dylint_lints/de11_testing/de1101_tests_in_separate_files/README.md)
+- [DE1101 lint README](../../../tools/dylint_lints/de11_testing/de1101_tests_in_separate_files/README.md)
 - [Unit & Integration Testing Guide](../../modkit_unified_system/12_unit_testing.md)

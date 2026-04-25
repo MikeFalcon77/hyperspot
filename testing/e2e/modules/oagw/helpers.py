@@ -111,25 +111,14 @@ def unique_alias(prefix: str = "e2e") -> str:
     short = uuid.uuid4().hex[:8]
     return f"{prefix}-{short}"
 
-async def create_upstream(
-    client: httpx.AsyncClient,
-    base_url: str,
-    headers: dict,
+
+def _build_upstream_body(
     mock_url: str,
     alias: Optional[str] = None,
     upstream_headers: Optional[dict] = None,
     **kwargs,
 ) -> dict:
-    """Create an upstream via the Management API and return the response JSON.
-
-    ``upstream_headers`` maps to the upstream resource ``headers`` field
-    (e.g., ``{"request": {"passthrough": "all"}}``).  It is accepted as a
-    separate parameter to avoid colliding with the HTTP ``headers`` argument.
-
-    ``kwargs`` are merged into the request body (e.g., ``enabled=False``,
-    ``auth={...}``, ``rate_limit={...}``).
-    """
-    # Parse host/port from mock_url.
+    """Build the upstream request body from a mock URL and optional overrides."""
     from urllib.parse import urlparse
     parsed = urlparse(mock_url)
     host = parsed.hostname or "127.0.0.1"
@@ -150,6 +139,28 @@ async def create_upstream(
         body["headers"] = upstream_headers
 
     body.update(kwargs)
+    return body
+
+
+async def create_upstream(
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: dict,
+    mock_url: str,
+    alias: Optional[str] = None,
+    upstream_headers: Optional[dict] = None,
+    **kwargs,
+) -> dict:
+    """Create an upstream via the Management API and return the response JSON.
+
+    ``upstream_headers`` maps to the upstream resource ``headers`` field
+    (e.g., ``{"request": {"passthrough": "all"}}``).  It is accepted as a
+    separate parameter to avoid colliding with the HTTP ``headers`` argument.
+
+    ``kwargs`` are merged into the request body (e.g., ``enabled=False``,
+    ``auth={...}``, ``rate_limit={...}``).
+    """
+    body = _build_upstream_body(mock_url, alias, upstream_headers, **kwargs)
 
     resp = await client.post(
         f"{base_url}/oagw/v1/upstreams",
@@ -158,6 +169,46 @@ async def create_upstream(
     )
     resp.raise_for_status()
     return resp.json()
+
+
+async def create_upstream_raw(
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: dict,
+    mock_url: str,
+    alias: Optional[str] = None,
+    **kwargs,
+) -> httpx.Response:
+    """Create an upstream and return the raw Response (no raise_for_status).
+
+    Use this when testing error paths (e.g., validation failures returning 400).
+    """
+    body = _build_upstream_body(mock_url, alias, **kwargs)
+
+    return await client.post(
+        f"{base_url}/oagw/v1/upstreams",
+        headers={**headers, "content-type": "application/json"},
+        json=body,
+    )
+
+
+async def update_upstream_raw(
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: dict,
+    upstream_id: str,
+    mock_url: str,
+    alias: Optional[str] = None,
+    **kwargs,
+) -> httpx.Response:
+    """Replace an upstream via PUT and return the raw Response (no raise_for_status)."""
+    body = _build_upstream_body(mock_url, alias, **kwargs)
+
+    return await client.put(
+        f"{base_url}/oagw/v1/upstreams/{upstream_id}",
+        headers={**headers, "content-type": "application/json"},
+        json=body,
+    )
 
 
 async def create_route(
@@ -208,24 +259,7 @@ async def update_upstream(
     ``create_upstream``).  ``kwargs`` are merged into the body
     (e.g., ``enabled=False``, ``auth={...}``).
     """
-    from urllib.parse import urlparse
-    parsed = urlparse(mock_url)
-    host = parsed.hostname or "127.0.0.1"
-    scheme = parsed.scheme or "http"
-    port = parsed.port or (443 if scheme == "https" else 80)
-
-    body: dict = {
-        "server": {
-            "endpoints": [{"host": host, "port": port, "scheme": scheme}],
-        },
-        "protocol": HTTP_PROTOCOL_ID,
-        "enabled": True,
-        "tags": [],
-    }
-    if alias is not None:
-        body["alias"] = alias
-
-    body.update(kwargs)
+    body = _build_upstream_body(mock_url, alias, **kwargs)
 
     resp = await client.put(
         f"{base_url}/oagw/v1/upstreams/{upstream_id}",

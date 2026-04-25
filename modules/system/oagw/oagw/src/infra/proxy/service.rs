@@ -15,6 +15,8 @@ use pingora_proxy::HttpProxy;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 
+use uuid::Uuid;
+
 use crate::config::TokenCacheConfig;
 use crate::domain::error::DomainError;
 use crate::domain::model::{
@@ -24,7 +26,9 @@ use crate::domain::plugin::{
     AuthContext, GuardContext, GuardDecision, TransformErrorContext, TransformRequestContext,
     TransformResponseContext,
 };
-use crate::domain::rate_limit::RateLimiter;
+use crate::domain::rate_limit::{
+    RateLimitKeyContext, RateLimitOutcome, RateLimitResource, RateLimiter, build_rate_limit_key,
+};
 use crate::domain::services::{
     ControlPlaneService, DataPlaneService, EndpointSelector, SelectedEndpoint,
 };
@@ -212,6 +216,16 @@ impl DataPlaneServiceImpl {
         // Apply response header rules (set/add/remove) from upstream config.
         if let Some(rules) = pipeline.response_header_rules {
             headers::apply_response_header_rules(&mut resp_headers, rules);
+        }
+
+        // Inject rate-limit response headers if configured.
+        if let Some((ref outcome, true)) = pipeline.rate_limit_outcome {
+            resp_headers.insert("x-ratelimit-limit", HeaderValue::from(outcome.limit));
+            resp_headers.insert(
+                "x-ratelimit-remaining",
+                HeaderValue::from(outcome.remaining),
+            );
+            resp_headers.insert("x-ratelimit-reset", HeaderValue::from(outcome.reset_epoch));
         }
 
         // Apply streaming lifecycle management for SSE responses:
@@ -682,14 +696,58 @@ impl DataPlaneService for DataPlaneServiceImpl {
 
         headers::set_host_header(&mut outbound_headers, &endpoint.host, endpoint.port);
 
-        // 6. Check rate limit (upstream then route).
+        // 6. Check rate limit (upstream then route) with scope-aware keying.
+        //    Both try_consume calls decrement their respective buckets
+        //    unconditionally — an upstream token is spent even when a stricter
+        //    route-level bucket later causes rejection.
+        let mut rate_limit_outcome: Option<(RateLimitOutcome, bool)> = None;
+        let client_ip = headers::extract_client_ip(&req_headers);
+        let client_ip_ref = client_ip.as_deref();
+        let tenant_id = ctx.subject_tenant_id();
+        let subject_id = ctx.subject_id();
+
         if let Some(ref rl) = upstream.rate_limit {
-            let key = format!("upstream:{}", upstream.id);
-            self.rate_limiter.try_consume(&key, rl, &instance_uri)?;
+            // For shared-pool budgets, use the pool owner's ID so all children
+            // sharing the pool consume from the same token bucket.
+            let effective_resource_id = rl.pool_owner_id.as_ref().unwrap_or(&upstream.id);
+            let key = build_rate_limit_key(&RateLimitKeyContext {
+                resource: RateLimitResource::Upstream,
+                resource_id: effective_resource_id,
+                scope: &rl.scope,
+                tenant_id: &tenant_id,
+                subject_id: &subject_id,
+                client_ip: client_ip_ref,
+                window: &rl.sustained.window,
+            });
+            let outcome = self.rate_limiter.try_consume(&key, rl, &instance_uri)?;
+            rate_limit_outcome = Some((outcome, rl.response_headers));
         }
         if let Some(ref rl) = route.rate_limit {
-            let key = format!("route:{}", route.id);
-            self.rate_limiter.try_consume(&key, rl, &instance_uri)?;
+            let key = build_rate_limit_key(&RateLimitKeyContext {
+                resource: RateLimitResource::Route,
+                resource_id: &route.id,
+                scope: &rl.scope,
+                tenant_id: &tenant_id,
+                subject_id: &subject_id,
+                client_ip: client_ip_ref,
+                window: &rl.sustained.window,
+            });
+            let outcome = self.rate_limiter.try_consume(&key, rl, &instance_uri)?;
+            match &rate_limit_outcome {
+                Some((existing, show_headers)) if existing.remaining <= outcome.remaining => {
+                    // Tighter (or equal) bucket wins for enforcement; on ties
+                    // upstream wins — both remaining counts are identical so the
+                    // allow/reject decision is the same either way.  OR the header
+                    // flags so headers are emitted if either scope enables them.
+                    if rl.response_headers && !show_headers {
+                        rate_limit_outcome = rate_limit_outcome.map(|(o, _)| (o, true));
+                    }
+                }
+                _ => {
+                    let prev_headers = rate_limit_outcome.as_ref().is_some_and(|(_, h)| *h);
+                    rate_limit_outcome = Some((outcome, rl.response_headers || prev_headers));
+                }
+            }
         }
 
         // 7. Build URL.
@@ -749,6 +807,7 @@ impl DataPlaneService for DataPlaneServiceImpl {
             cors_config: effective_cors.as_ref(),
             origin: request_origin,
             response_header_rules,
+            rate_limit_outcome,
         };
 
         // 8. WebSocket upgrade path: bypass the normal request/response bridge
@@ -813,6 +872,17 @@ impl DataPlaneService for DataPlaneServiceImpl {
             // Sanitize response headers, preserving Upgrade/Connection.
             let mut resp_headers = resp_headers;
             headers::sanitize_response_headers_for_upgrade(&mut resp_headers);
+
+            // Inject rate-limit response headers if configured (the normal path
+            // does this in finalize_response, which the upgrade path bypasses).
+            if let Some((ref outcome, true)) = pipeline.rate_limit_outcome {
+                resp_headers.insert("x-ratelimit-limit", HeaderValue::from(outcome.limit));
+                resp_headers.insert(
+                    "x-ratelimit-remaining",
+                    HeaderValue::from(outcome.remaining),
+                );
+                resp_headers.insert("x-ratelimit-reset", HeaderValue::from(outcome.reset_epoch));
+            }
 
             // Build the 101 response with the DuplexStream stashed in extensions.
             let mut resp = http::Response::builder()
@@ -1037,8 +1107,12 @@ impl DataPlaneService for DataPlaneServiceImpl {
         }
     }
 
-    fn remove_rate_limit_key(&self, key: &str) {
-        self.rate_limiter.remove_key(key);
+    fn remove_rate_limit_keys_for_upstream(&self, upstream_id: Uuid) {
+        self.rate_limiter.remove_keys_for_upstream(upstream_id);
+    }
+
+    fn remove_rate_limit_keys_for_route(&self, route_id: Uuid) {
+        self.rate_limiter.remove_keys_for_route(route_id);
     }
 }
 
@@ -1185,6 +1259,7 @@ struct ResponsePipelineCtx<'a> {
     cors_config: Option<&'a crate::domain::model::CorsConfig>,
     origin: Option<String>,
     response_header_rules: Option<&'a ResponseHeaderRules>,
+    rate_limit_outcome: Option<(RateLimitOutcome, bool)>,
 }
 
 /// Execute `on_error` for all transform bindings, logging errors without aborting.
@@ -1520,7 +1595,7 @@ mod tests {
                 &self,
                 _: &SecurityContext,
                 _: Uuid,
-            ) -> Result<(), DomainError> {
+            ) -> Result<Vec<Uuid>, DomainError> {
                 unimplemented!()
             }
             async fn create_route(

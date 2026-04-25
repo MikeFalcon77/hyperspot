@@ -1139,7 +1139,7 @@ Filters resources by tenant subtree using the closure table. The `resource_prope
 | `"all"` | `AND barrier = 0` | (default) Respect all barriers. Stops traversal at `self_managed` tenants. |
 | `"none"` | (omit clause) | Ignore barriers. Use for billing, tenant metadata, or other cross-barrier operations. |
 
-**Future extensibility:** The `barrier` column is INT to allow future use as a bitmask for multiple barrier types. Future modes (e.g., `"data_sovereignty_only"`) can be added with selective checks like `(barrier & mask) = 0` without breaking existing consumers.
+**Future extensibility:** The `barrier` column is SMALLINT to allow future use as a bitmask for multiple barrier types (16 bits of headroom; portable across PostgreSQL and MySQL). Future modes (e.g., `"data_sovereignty_only"`) can be added with selective checks like `(barrier & mask) = 0` without breaking existing consumers.
 
 **Relationship to request `tenant_context`:** The PDP uses `context.tenant_context` from the request to determine the tenant context, then generates `in_tenant_subtree` predicates in the response. The predicate's `root_tenant_id` comes from either the request's `tenant_context.root_id` or PDP's resolution from token/subject. The `barrier_mode` and `tenant_status` parameters flow through from request to predicate.
 
@@ -1309,16 +1309,17 @@ Denormalized closure table for tenant hierarchy. Enables efficient subtree queri
 |--------|------|----------|-------------|
 | `ancestor_id` | UUID | No | Parent tenant in the hierarchy |
 | `descendant_id` | UUID | No | Child tenant (the one we check ownership against) |
-| `barrier` | INT | No | 0 = no barrier on path, 1 = barrier exists between ancestor and descendant (default 0) |
-| `descendant_status` | TEXT | No | Status of descendant tenant (`active`, `suspended`, `deleted`) |
+| `barrier` | SMALLINT | No | 0 = no barrier on path, 1 = barrier exists between ancestor and descendant (default 0) |
+| `descendant_status` | SMALLINT | No | Status of descendant tenant, encoded as a small integer. Domain is **`{1=active, 2=suspended, 3=deleted}`** only — the internal `0=provisioning` code is **absent** from `tenant_closure` by construction (see the provisioning-exclusion note below). Int↔name translation is owned by the application layer. |
 
 **Notes:**
 - Status is denormalized into closure for query simplicity (avoids JOIN). When a tenant's status changes, all rows where it is `descendant_id` are updated.
-- **Barrier semantics:** The `barrier` column stores barriers **strictly between** ancestor and descendant, **not including the ancestor itself**. This means when T2 is self_managed, rows with `ancestor_id = T2` have `barrier = 0`, while rows with T2 on the path from another ancestor have `barrier = 1`.
+- **Provisioning exclusion:** `tenant_closure` never contains a row for a tenant in `provisioning` state. Closure rows are inserted on the `provisioning → active` transition (end of the tenant-create saga) and removed on hard-deletion; the `0=provisioning` code is therefore not a legal value for `tenant_closure.descendant_status` even though it is legal for `tenants.status`. The database-level enforcement point is `CHECK (descendant_status IN (1, 2, 3))` on the `tenant_closure` table — see [`modules/system/account-management/docs/migration.sql`](../../../modules/system/account-management/docs/migration.sql) for the constraint and column COMMENT, and [AM ADR-0007 — Exclude Provisioning Tenants from `tenant_closure`](../../../modules/system/account-management/docs/ADR/0007-cpt-cf-account-management-adr-provisioning-excluded-from-closure.md) for the decision rationale. Consumers of `tenant_closure` (Tenant Resolver Plugin today, business-module replicas later) therefore do **not** need a provisioning-specific filter — the invisibility is structural.
+- **Barrier semantics:** The `barrier` column is defined over the interval **`(ancestor, descendant]`** — the ancestor endpoint is excluded, the descendant endpoint is included (canonical definition in [TENANT_MODEL.md §Closure Table](./TENANT_MODEL.md#closure-table)). This means when T2 is self_managed, rows with `ancestor_id = T2` have `barrier = 0`, while rows with T2 on the path from another ancestor have `barrier = 1`.
 - The `barrier` column enables simple filtering: `barrier_mode: "all"` adds `AND barrier = 0`, `barrier_mode: "none"` omits the clause.
 - Self-referential rows exist: each tenant has a row where `ancestor_id = descendant_id`.
 - **Predicate mapping:** `in_tenant_subtree` predicate compiles to SQL using this closure table.
-- **Future extensibility:** The `barrier` column is INT to allow future use as a bitmask for multiple barrier types (e.g., `(barrier & mask) = 0` for selective enforcement).
+- **Future extensibility:** The `barrier` column is SMALLINT to allow future use as a bitmask for multiple barrier types (16 bits of headroom, portable across PostgreSQL and MySQL; e.g., `(barrier & mask) = 0` for selective enforcement).
 
 **Example query (in_tenant_subtree):**
 ```sql

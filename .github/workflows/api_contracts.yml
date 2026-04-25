@@ -11,7 +11,7 @@ name: API Contracts
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ main, "pr/rg-**" ]
     paths:
       - '**/*.rs'
       - '**/Cargo.toml'
@@ -80,8 +80,10 @@ jobs:
           go-version: 'stable'
           cache: false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@9bc92bc5598b4f3bec5d910d352094982cb0c3b9 # 1.92.0
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup show
 
       # Cache Cargo registry/git + target/ across platforms.
       - name: Cache Cargo/target
@@ -89,7 +91,7 @@ jobs:
         with:
           cache-bin: false
           cache-targets: false
-          shared-key: pr-${{ runner.os }}-stable-1.92
+          shared-key: pr-${{ runner.os }}-stable-1.95
 
       # Install sccache (cross-platform)
       - name: Install sccache

@@ -82,12 +82,23 @@ pub async fn update_upstream(
 ) -> Result<impl IntoResponse, Problem> {
     let instance = format!("/oagw/v1/upstreams/{id}");
     let uuid = parse_gts_id(&id, gts::UPSTREAM_SCHEMA, &instance)?;
+    // Snapshot old rate_limit before update so we can detect changes and
+    // clean up stale rate-limit keys (avoids accumulating orphaned buckets).
+    let old_rate_limit = state
+        .cp
+        .get_upstream(&ctx, uuid)
+        .await
+        .map_err(|e| domain_error_to_problem(e, &instance))?
+        .rate_limit;
     let upstream = state
         .cp
         .update_upstream(&ctx, uuid, req.into())
         .await
         .map_err(|e| domain_error_to_problem(e, &instance))?;
     state.backend_selector.invalidate(upstream.id);
+    if upstream.rate_limit != old_rate_limit {
+        state.dp.remove_rate_limit_keys_for_upstream(uuid);
+    }
     Ok(Json(to_response(upstream)))
 }
 
@@ -98,12 +109,15 @@ pub async fn delete_upstream(
 ) -> Result<impl IntoResponse, Problem> {
     let instance = format!("/oagw/v1/upstreams/{id}");
     let uuid = parse_gts_id(&id, gts::UPSTREAM_SCHEMA, &instance)?;
-    state
+    let deleted_route_ids = state
         .cp
         .delete_upstream(&ctx, uuid)
         .await
         .map_err(|e| domain_error_to_problem(e, &instance))?;
     state.backend_selector.invalidate(uuid);
-    state.dp.remove_rate_limit_key(&format!("upstream:{uuid}"));
+    state.dp.remove_rate_limit_keys_for_upstream(uuid);
+    for route_id in deleted_route_ids {
+        state.dp.remove_rate_limit_keys_for_route(route_id);
+    }
     Ok(StatusCode::NO_CONTENT)
 }

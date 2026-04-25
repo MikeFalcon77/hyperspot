@@ -198,7 +198,7 @@ make fuzz-clean                          # remove fuzzing artifacts
 ```
 
 Fuzzing runs automatically in CI via ClusterFuzzLite.
-See [`fuzz/README.md`](../fuzz/README.md) for corpus management and crash reproduction.
+See [`fuzz/README.md`](../tools/fuzz/README.md) for corpus management and crash reproduction.
 
 ---
 
@@ -299,6 +299,6 @@ Before opening a PR, verify:
 
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — development workflow, commit conventions, PR process
 - [testing/e2e/README.md](../testing/e2e/README.md) — E2E test guide, fixtures, advanced usage
-- [fuzz/README.md](../fuzz/README.md) — fuzz target reference, corpus management
+- [fuzz/README.md](../tools/fuzz/README.md) — fuzz target reference, corpus management
 - [guidelines/SECURITY.md](../guidelines/SECURITY.md) — secure coding practices
 - [docs/QUICKSTART_GUIDE.md](./QUICKSTART_GUIDE.md) — getting started with the project

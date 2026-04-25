@@ -44,10 +44,12 @@ authz-resolver = { package = "cf-authz-resolver", path = "../../modules/system/a
 # Optional tenant resolver plugins
 single-tenant-tr-plugin = { package = "cf-single-tenant-tr-plugin", path = "../../modules/system/tenant-resolver/plugins/single-tenant-tr-plugin", optional = true }
 static-tr-plugin = { package = "cf-static-tr-plugin", path = "../../modules/system/tenant-resolver/plugins/static-tr-plugin", optional = true }
+rg-tr-plugin = { package = "cf-rg-tr-plugin", path = "../../modules/system/tenant-resolver/plugins/rg-tr-plugin", optional = true }
 
 # Optional authn/authz plugins
 static-authn-plugin = { package = "cf-static-authn-plugin", path = "../../modules/system/authn-resolver/plugins/static-authn-plugin", optional = true }
 static-authz-plugin = { package = "cf-static-authz-plugin", path = "../../modules/system/authz-resolver/plugins/static-authz-plugin", optional = true }
+tr-authz-plugin = { package = "cf-tr-authz-plugin", path = "../../modules/system/authz-resolver/plugins/tr-authz-plugin", optional = true }
 
 # Optional credstore plugins
 static-credstore-plugin = { package = "cf-static-credstore-plugin", path = "../../modules/credstore/plugins/static-credstore-plugin", optional = true }

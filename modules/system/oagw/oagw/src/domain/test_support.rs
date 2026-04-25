@@ -34,6 +34,22 @@ pub fn allow_all_enforcer() -> PolicyEnforcer {
     PolicyEnforcer::new(Arc::new(MockAuthZResolverClient))
 }
 
+/// Install a rustls `CryptoProvider` once per process.
+///
+/// Workspace feature unification activates both `aws-lc-rs` and `ring`
+/// on rustls (via gts -> jsonschema), so rustls 0.23 cannot auto-determine
+/// a provider and panics on first TLS construction (pingora `LoadBalancer`
+/// or `HttpProxy::new`). Under `cargo nextest` each test runs in its own
+/// process, so every test that builds a pingora-backed service must
+/// install a provider explicitly.
+pub fn ensure_crypto_provider() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+}
+
 /// Mock AuthZ resolver that always allows access for testing.
 struct MockAuthZResolverClient;
 
@@ -209,6 +225,83 @@ impl MockTenantResolverClient {
         Self {
             tenants: HashMap::new(),
         }
+    }
+
+    /// Create a resolver where `parent` has multiple direct `children`.
+    ///
+    /// Each child sees `[parent]` as its ancestor chain. Parent has no
+    /// ancestors (it's the root).
+    pub fn with_siblings(parent: TenantId, children: Vec<TenantId>) -> Self {
+        let mut tenants = HashMap::new();
+        let parent_info = TenantInfo {
+            id: parent,
+            name: format!("tenant-{}", &parent.to_string()[..8]),
+            status: TenantStatus::Active,
+            tenant_type: None,
+            parent_id: None,
+            self_managed: false,
+        };
+        tenants.insert(parent, (parent_info, vec![]));
+        for &child in &children {
+            let info = TenantInfo {
+                id: child,
+                name: format!("tenant-{}", &child.to_string()[..8]),
+                status: TenantStatus::Active,
+                tenant_type: None,
+                parent_id: Some(parent),
+                self_managed: false,
+            };
+            let ancestors = vec![TenantRef {
+                id: parent,
+                status: TenantStatus::Active,
+                tenant_type: None,
+                parent_id: None,
+                self_managed: false,
+            }];
+            tenants.insert(child, (info, ancestors));
+        }
+        Self { tenants }
+    }
+
+    /// Create a resolver with two independent trees (separate roots).
+    ///
+    /// Each root has its own set of direct children. The trees share no
+    /// ancestry. Used for testing cross-tree isolation.
+    pub fn with_two_trees(
+        root_a: TenantId,
+        children_a: Vec<TenantId>,
+        root_b: TenantId,
+        children_b: Vec<TenantId>,
+    ) -> Self {
+        let mut resolver = Self::with_siblings(root_a, children_a);
+        let parent_info = TenantInfo {
+            id: root_b,
+            name: format!("tenant-{}", &root_b.to_string()[..8]),
+            status: TenantStatus::Active,
+            tenant_type: None,
+            parent_id: None,
+            self_managed: false,
+        };
+        resolver.tenants.insert(root_b, (parent_info, vec![]));
+        for &child in &children_b {
+            let info = TenantInfo {
+                id: child,
+                name: format!("tenant-{}", &child.to_string()[..8]),
+                status: TenantStatus::Active,
+                tenant_type: None,
+                parent_id: Some(root_b),
+                self_managed: false,
+            };
+            let ancestors = vec![TenantRef {
+                id: root_b,
+                status: TenantStatus::Active,
+                tenant_type: None,
+                parent_id: None,
+                self_managed: false,
+            }];
+            resolver.tenants.insert(child, (info, ancestors));
+        }
+        resolver
     }
 
     /// Create a resolver with an explicit hierarchy.
@@ -566,6 +659,7 @@ impl TestDpBuilder {
             .unwrap_or_else(|| Arc::new(MockAuthZResolverClient));
         let policy_enforcer = PolicyEnforcer::new(authz_client);
 
+        ensure_crypto_provider();
         let server_conf = Arc::new(pingora_core::server::configuration::ServerConf::default());
         let pingora_proxy = crate::infra::proxy::pingora_proxy::PingoraProxy::new(
             Duration::from_secs(10),

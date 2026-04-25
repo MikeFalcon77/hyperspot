@@ -1,9 +1,9 @@
-# Updated: 2026-03-27 by Constructor Tech
+# Updated: 2026-04-20 by Constructor Tech
 name: Cypilot
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ main, "pr/rg-**" ]
     paths:
       - '**/*.md'
       - 'docs/**'

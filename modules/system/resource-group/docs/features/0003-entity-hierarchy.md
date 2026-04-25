@@ -68,9 +68,9 @@ Group entity lifecycle (create, get, update, move, delete) with strict forest in
 
 Groups are the core nodes of the resource group hierarchy. This feature implements the entity service that enforces structural invariants, the hierarchy engine that maintains the closure table projection for efficient graph queries, and the query profile guardrails that bound hierarchy depth and width.
 
-**Requirements**: `cpt-cf-resource-group-fr-manage-entities`, `cpt-cf-resource-group-fr-enforce-forest-hierarchy`, `cpt-cf-resource-group-fr-validate-parent-type`, `cpt-cf-resource-group-fr-delete-entity-no-active-references`, `cpt-cf-resource-group-fr-seed-groups`, `cpt-cf-resource-group-fr-closure-table`, `cpt-cf-resource-group-fr-query-group-hierarchy`, `cpt-cf-resource-group-fr-subtree-operations`, `cpt-cf-resource-group-fr-query-profile`, `cpt-cf-resource-group-fr-profile-change-no-rewrite`, `cpt-cf-resource-group-fr-reduced-constraints-behavior`, `cpt-cf-resource-group-fr-list-groups-depth`, `cpt-cf-resource-group-fr-force-delete`, `cpt-cf-resource-group-nfr-hierarchy-query-latency`
+**Requirements**: `cpt-cf-resource-group-fr-manage-entities`, `cpt-cf-resource-group-fr-enforce-forest-hierarchy`, `cpt-cf-resource-group-fr-enforce-tenant-root-uniqueness`, `cpt-cf-resource-group-fr-validate-parent-type`, `cpt-cf-resource-group-fr-delete-entity-no-active-references`, `cpt-cf-resource-group-fr-seed-groups`, `cpt-cf-resource-group-fr-closure-table`, `cpt-cf-resource-group-fr-query-group-hierarchy`, `cpt-cf-resource-group-fr-subtree-operations`, `cpt-cf-resource-group-fr-query-profile`, `cpt-cf-resource-group-fr-profile-change-no-rewrite`, `cpt-cf-resource-group-fr-reduced-constraints-behavior`, `cpt-cf-resource-group-fr-list-groups-depth`, `cpt-cf-resource-group-fr-force-delete`, `cpt-cf-resource-group-nfr-hierarchy-query-latency`
 
-**Principles**: `cpt-cf-resource-group-principle-strict-forest`, `cpt-cf-resource-group-principle-query-profile-guardrail`
+**Principles**: `cpt-cf-resource-group-principle-strict-forest`, `cpt-cf-resource-group-principle-tenant-root-uniqueness`, `cpt-cf-resource-group-principle-query-profile-guardrail`
 
 **Constraints**: `cpt-cf-resource-group-constraint-profile-change-safety`
 
@@ -107,6 +107,7 @@ Groups are the core nodes of the resource group hierarchy. This feature implemen
 - Parent not found → NotFound
 - Parent type not in allowed_parents → InvalidParentType
 - Type does not allow root placement (can_be_root=false) and no parent → Validation error
+- Creating a tenant-type group as root while another tenant-type root already exists → `TenantRootAlreadyExists` (409 Conflict)
 - Depth or width limit exceeded → LimitViolation
 
 **Steps**:
@@ -122,6 +123,7 @@ Groups are the core nodes of the resource group hierarchy. This feature implemen
    6. [x] - `p1` - Invoke query profile enforcement: check width limit (sibling count under parent) - `inst-create-group-4f`
 5. [x] - `p1` - **ELSE** (root group) - `inst-create-group-5`
    1. [x] - `p1` - **IF** type does not allow root placement (can_be_root=false) → **RETURN** Validation error - `inst-create-group-5a`
+   2. [x] - `p1` - **IF** type code starts with `TENANT_RG_TYPE_PATH` (tenant type) AND there already exists any other root group whose type is a tenant type → **RETURN** `TenantRootAlreadyExists` (409 Conflict) - `inst-create-group-5c`
 6. [x] - `p1` - **IF** metadata provided AND type has metadata_schema → validate metadata against the chained GTS type schema via `TypesRegistryClient` (types-registry-sdk, already in workspace). The `gts` crate (v0.8.4) validates metadata fields against the inline `metadata` sub-schema defined in the chained RG type (`additionalProperties: false`, field types, `maxLength`). **IF** invalid → **RETURN** Validation error with field-level details - `inst-create-group-5b`
 7. [x] - `p1` - DB: INSERT INTO resource_group (id, parent_id, gts_type_id, name, metadata, tenant_id) - `inst-create-group-6`
 7. [x] - `p1` - DB: INSERT INTO resource_group_closure (ancestor_id=id, descendant_id=id, depth=0) — self-row - `inst-create-group-7`

@@ -49,6 +49,18 @@ pub trait UpstreamRepository: Send + Sync {
 
     /// Delete an upstream. Returns NotFound if it does not exist.
     async fn delete(&self, tenant_id: Uuid, id: Uuid) -> Result<(), RepositoryError>;
+
+    /// List upstreams with the given alias restricted to a set of tenant IDs.
+    /// Used for budget validation where only descendants of a particular
+    /// ancestor are relevant.
+    ///
+    /// The provided `alias` must already be normalized (lowercase) as
+    /// implementations perform case-sensitive exact-string matching.
+    async fn list_by_alias_for_tenants(
+        &self,
+        alias: &str,
+        tenant_ids: &std::collections::HashSet<Uuid>,
+    ) -> Result<Vec<Upstream>, RepositoryError>;
 }
 
 /// Repository trait for route persistence.
@@ -84,10 +96,10 @@ pub trait RouteRepository: Send + Sync {
     /// Delete a route.
     async fn delete(&self, tenant_id: Uuid, id: Uuid) -> Result<(), RepositoryError>;
 
-    /// Delete all routes for a given upstream. Returns the count of deleted routes.
+    /// Delete all routes for a given upstream. Returns the IDs of deleted routes.
     async fn delete_by_upstream(
         &self,
         tenant_id: Uuid,
         upstream_id: Uuid,
-    ) -> Result<u64, RepositoryError>;
+    ) -> Result<Vec<Uuid>, RepositoryError>;
 }

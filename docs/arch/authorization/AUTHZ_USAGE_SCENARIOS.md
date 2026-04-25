@@ -66,6 +66,18 @@ All examples use a Task Management domain:
     - [When TOCTOU Matters](#when-toctou-matters)
     - [How Each Scenario Handles TOCTOU](#how-each-scenario-handles-toctou)
     - [Key Insight: Prefetch + Constraint for Mutations](#key-insight-prefetch--constraint-for-mutations)
+  - [tr-authz-plugin Decision Matrix](#tr-authz-plugin-decision-matrix)
+    - [Inputs](#inputs)
+    - [Decision Table](#decision-table)
+    - [R1 — Single-resource, explicit target tenant, root\_only](#r1--single-resource-explicit-target-tenant-root_only)
+    - [R2 — Single-resource, explicit target tenant, subtree (default)](#r2--single-resource-explicit-target-tenant-subtree-default)
+    - [R3 — Single-resource, no target tenant, root\_only](#r3--single-resource-no-target-tenant-root_only)
+    - [R4 — Single-resource, no target tenant, subtree (default)](#r4--single-resource-no-target-tenant-subtree-default)
+    - [R5 — List, explicit target tenant, root\_only](#r5--list-explicit-target-tenant-root_only)
+    - [R6 — List, explicit target tenant, subtree (default)](#r6--list-explicit-target-tenant-subtree-default)
+    - [R7 — List, no target tenant, root\_only](#r7--list-no-target-tenant-root_only)
+    - [R8 — List, no target tenant, subtree (default)](#r8--list-no-target-tenant-subtree-default)
+    - [Required Helpers](#required-helpers)
   - [References](#references)
 
 ---
@@ -678,7 +690,7 @@ WHERE owner_tenant_id IN (
 
 When querying from T1 with `barrier_mode=all`, only rows where `barrier = 0` match → T1, T4.
 
-**Key insight:** T2 → T2 and T2 → T3 have `barrier = 0` because barriers are tracked **strictly between** ancestor and descendant, not including the ancestor itself. When T2 is the query root, its self_managed status doesn't block access to its own subtree.
+**Key insight:** T2 → T2 and T2 → T3 have `barrier = 0` because the `barrier` column is defined over the interval **`(ancestor, descendant]`** — the ancestor endpoint is excluded (canonical definition in [TENANT_MODEL.md §Closure Table](./TENANT_MODEL.md#closure-table)). When T2 is the query root, its self_managed status doesn't block access to its own subtree.
 
 ---
 
@@ -2211,6 +2223,173 @@ Without closure tables, mutations (UPDATE/DELETE) use a two-step pattern:
 The constraint acts as a [compare-and-swap](https://en.wikipedia.org/wiki/Compare-and-swap) mechanism — if the value changed between check and use, the operation atomically fails.
 
 **For reads (S09):** PEP prefetches the resource, asks PDP with `require_constraints: false`, and returns the prefetched data if `decision: true` with no constraints. If constraints are returned, PEP falls back to a scoped re-read.
+
+---
+
+## tr-authz-plugin Decision Matrix
+
+The **`tr-authz-plugin`** implements tenant-based access enforcement backed by `TenantResolverClient`. It does not depend on `resource-group-sdk` directly — all hierarchy queries go through the Tenant Resolver.
+
+This section enumerates the 8 decision rules (R1–R8) that govern how `Service::evaluate` must translate an incoming request into an access predicate. They are referenced by the PR-2 review comments on `modules/system/authz-resolver/plugins/tr-authz-plugin/src/domain/service.rs` and are the target implementation for `evaluate`.
+
+Example hierarchy used throughout:
+
+```
+r (root)
+└── t1 (partner)
+    └── t2 (partner)
+        ├── t3 (customer)
+        └── t4 (customer)
+```
+
+### Inputs
+
+The algorithm branches on three orthogonal axes derived from `EvaluationRequest`:
+
+| Axis | Value | Source |
+|------|-------|--------|
+| **Kind of request** | single-resource / list | `resource.id` is present / absent |
+| **Explicit target tenant** | specified / absent | `context.tenant_context.root_id` |
+| **Scope mode** | `root_only` / `subtree` (default) | `context.tenant_context.mode` |
+
+Additional required values:
+- `subject.properties.tenant_id` — the acting subject's tenant (mandatory; deny if missing)
+- `resource.properties.owner_tenant_id` — required for single-resource rules (R1–R4) when `resource.id` is present; deny if missing
+- `is_parent(ancestor, descendant)` — TR-backed helper returning `true` if `descendant` is `ancestor` or any descendant of `ancestor` in the tenant tree
+
+### Decision Table
+
+| Rule | `resource.id` | `root_id` | `mode` | Access check | Returned predicate |
+|------|---------------|-----------|--------|--------------|--------------------|
+| R1 | present | specified | `root_only` | `owner_tenant_id == root_id` ∧ `is_parent(subject.tenant_id, root_id)` | `EQ(owner_tenant_id)` |
+| R2 | present | specified | `subtree` | `is_parent(root_id, owner_tenant_id)` ∧ `is_parent(subject.tenant_id, root_id)` | `EQ(owner_tenant_id)` |
+| R3 | present | absent | `root_only` | `owner_tenant_id == subject.tenant_id` | `EQ(owner_tenant_id)` |
+| R4 | present | absent | `subtree` | `is_parent(subject.tenant_id, owner_tenant_id)` | `EQ(owner_tenant_id)` |
+| R5 | absent | specified | `root_only` | `is_parent(subject.tenant_id, root_id)` | `EQ(root_id)` |
+| R6 | absent | specified | `subtree` | `is_parent(subject.tenant_id, root_id)` | `IN(get_descendants(root_id))` |
+| R7 | absent | absent | `root_only` | always allowed (subject scope) | `EQ(subject.tenant_id)` |
+| R8 | absent | absent | `subtree` | always allowed (subject scope) | `IN(get_descendants(subject.tenant_id))` |
+
+Semantics of `is_parent(a, b)`: `b` is `a` itself or any descendant of `a`. Wherever the access check fails, the plugin returns **deny** (fail-closed). Where a helper call (e.g. `get_descendants`) errors out, the plugin also denies.
+
+All returned predicates apply to `owner_tenant_id` of the target resource table; R5/R7 narrow the scope to exactly one tenant, while R6/R8 expand it to a full subtree.
+
+### R1 — Single-resource, explicit target tenant, root_only
+
+**Use case:** Partner's admin reads one task that belongs to its customer, scoped strictly to that customer (no subtree).
+
+```http
+GET /tasks/028bedcd-6f7f-4158-89c1-acbb60caddff?tenant=t2&tenant_mode=root_only
+Subject tenant: t1
+```
+
+**Check:** `resource.owner_tenant_id == t2` AND `is_parent(t1, t2)` — i.e., the subject's tenant must be an ancestor of the declared target tenant, and the resource must actually belong to that target.
+
+**Predicate:** `EQ(owner_tenant_id, t2)`
+
+### R2 — Single-resource, explicit target tenant, subtree (default)
+
+**Use case:** Partner's admin reads one task from somewhere in its customer's subtree.
+
+```http
+GET /tasks/028bedcd-6f7f-4158-89c1-acbb60caddff?tenant=t2
+Subject tenant: t1
+```
+
+**Check:** `is_parent(t2, resource.owner_tenant_id)` AND `is_parent(t1, t2)` — the resource must lie within the target's subtree, and the subject must be an ancestor of the target.
+
+**Predicate:** `EQ(owner_tenant_id, resource.owner_tenant_id)` (constraint is still pinned to the concrete resource tenant to make the SQL deterministic)
+
+### R3 — Single-resource, no target tenant, root_only
+
+**Use case:** A customer-level user reads their own task without crossing subtree boundaries.
+
+```http
+GET /tasks/028bedcd-6f7f-4158-89c1-acbb60caddff?tenant_mode=root_only
+Subject tenant: t3
+```
+
+**Check:** `resource.owner_tenant_id == subject.tenant_id`.
+
+**Predicate:** `EQ(owner_tenant_id, subject.tenant_id)`
+
+### R4 — Single-resource, no target tenant, subtree (default)
+
+**Use case:** Partner admin reads one task anywhere in its own subtree.
+
+```http
+GET /tasks/028bedcd-6f7f-4158-89c1-acbb60caddff
+Subject tenant: t1
+```
+
+**Check:** `is_parent(subject.tenant_id, resource.owner_tenant_id)`.
+
+**Predicate:** `EQ(owner_tenant_id, resource.owner_tenant_id)`
+
+### R5 — List, explicit target tenant, root_only
+
+**Use case:** Partner admin lists tasks that belong *strictly* to its customer tenant (no sub-partners, no sub-customers).
+
+```http
+GET /tasks?tenant=t2&tenant_mode=root_only
+Subject tenant: t1
+```
+
+**Check:** `is_parent(t1, t2)`.
+
+**Predicate:** `EQ(owner_tenant_id, t2)` — one tenant only.
+
+### R6 — List, explicit target tenant, subtree (default)
+
+**Use case:** Partner admin lists everything in its customer's subtree.
+
+```http
+GET /tasks?tenant=t2
+Subject tenant: t1
+```
+
+**Check:** `is_parent(t1, t2)`.
+
+**Action:** resolve `get_descendants(t2)` via TR (barriers respected).
+
+**Predicate:** `IN(owner_tenant_id, descendants(t2))`
+
+### R7 — List, no target tenant, root_only
+
+**Use case:** Customer-level user lists their own tasks only.
+
+```http
+GET /tasks?tenant_mode=root_only
+Subject tenant: t3
+```
+
+**Check:** none beyond identity (the subject is always allowed to list within their own tenant).
+
+**Predicate:** `EQ(owner_tenant_id, subject.tenant_id)`
+
+### R8 — List, no target tenant, subtree (default)
+
+**Use case:** Partner admin lists tasks across their whole subtree.
+
+```http
+GET /tasks
+Subject tenant: t1
+```
+
+**Check:** none beyond identity.
+
+**Action:** resolve `get_descendants(subject.tenant_id)` via TR.
+
+**Predicate:** `IN(owner_tenant_id, descendants(subject.tenant_id))`
+
+### Required Helpers
+
+The matrix relies on two core capabilities provided by `tr-authz-plugin`:
+
+1. **`is_parent(ancestor, descendant)`** — reflexive ancestor check, implemented in `tr-authz-plugin` as `Service::is_in_subtree` on top of `TenantResolverClient::is_ancestor` (with the reflexive `anchor == candidate` short-circuit returning `true`).
+2. **Reading `context.tenant_context.mode`** — `root_only` / `subtree` selection used to route R1–R8 branches; surfaced through `authz-resolver-sdk::TenantMode` on `TenantContext`.
+
+Test coverage must hit all 8 rules plus fail-closed paths (missing subject tenant, `is_parent` returns false, TR error, empty descendants set).
 
 ---
 

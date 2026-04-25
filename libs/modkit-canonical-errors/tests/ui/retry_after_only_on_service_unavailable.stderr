@@ -4,6 +4,6 @@ error[E0599]: no method named `with_retry_after_seconds` found for struct `Resou
 7 |       let _err = CanonicalError::internal("bug")
   |  ________________-
 8 | |         .with_retry_after_seconds(5)
-  | |         -^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `ResourceErrorBuilder<ResourceAbsent, NoContext>`
+  | |         -^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `ResourceErrorBuilder<modkit_canonical_errors::builder::ResourceAbsent, modkit_canonical_errors::builder::NoContext>`
   | |_________|
   |

@@ -16,7 +16,7 @@ We welcome contributions in:
 
 ### 1.1 Prerequisites
 
-- **Rust stable** with Cargo (Edition 2024, Rust MSRV 1.92.0)
+- **Rust stable** with Cargo (Edition 2024, Rust MSRV 1.95.0)
 - **Protocol Buffers compiler** (`protoc`) (see `README.md`)
 - **Git** for version control
 - **Your favorite editor** (VS Code with rust-analyzer recommended)
@@ -77,7 +77,7 @@ Follow the coding standards and guidelines:
 4. Security policy [SECURITY.md](./SECURITY.md) and secure coding [guidelines/SECURITY.md](./guidelines/SECURITY.md)
 5. ModKit architecture and invariants [docs/modkit_unified_system/README.md](./docs/modkit_unified_system/README.md)
 
-Module directories under `modules/` must use kebab-case (validated by `scripts/validate_module_names.py` and enforced in CI).
+Module directories under `modules/` must use kebab-case (validated by `tools/scripts/validate_module_names.py` and enforced in CI).
 
 Always include unit tests when introducing new code.
 
@@ -89,11 +89,11 @@ Build and run all the quality checks:
 ```bash
 # Run the complete quality check suite: formatting, linting, tests, and security
 make check # Linux/Mac
-python scripts/ci.py check # Windows
+python tools/scripts/ci.py check # Windows
 
 # Run the full pipeline (includes build + e2e-local)
 make all # Linux/Mac
-python scripts/ci.py all # Windows
+python tools/scripts/ci.py all # Windows
 ```
 
 Note: CI workflows may not run for PRs that only touch `*.md` files or `docs/**` due to path filters.
@@ -119,7 +119,7 @@ Before submitting changes to parsers or validation logic, run fuzzing:
 make fuzz
 
 # Longer test for critical changes (5 minutes per target)
-python scripts/ci.py fuzz --seconds 300
+python tools/scripts/ci.py fuzz --seconds 300
 
 # Target specific component
 make fuzz-run FUZZ_TARGET=fuzz_odata_filter FUZZ_SECONDS=600
@@ -130,7 +130,7 @@ Fuzzing helps catch:
 - Performance problems
 - Edge cases
 
-See `fuzz/README.md` for detailed fuzzing documentation.
+See `tools/fuzz/README.md` for detailed fuzzing documentation.
 
 Helpful environment variables:
 

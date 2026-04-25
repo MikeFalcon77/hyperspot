@@ -26,7 +26,7 @@ Tenant T1
 Key principles:
 - **Optional** — resources may exist without group membership
 - **Many-to-many** — a resource can belong to multiple groups
-- **Hierarchical** — groups form a strict forest (single parent, no cycles)
+- **Hierarchical** — groups form a strict forest (single parent, no cycles); **multiple roots are allowed**, but among them there is **at most one tenant-type root** (the "main tenant"). All other tenants are sub-tenants below that main tenant; non-tenant roots may coexist and carry the main tenant's `tenant_id` but are not tenants themselves — see [RG DESIGN §Tenant Root Uniqueness](../../../modules/system/resource-group/docs/DESIGN.md#tenant-root-uniqueness).
 - **Tenant-scoped** — groups exist within tenant boundaries
 - **Typed** — groups have dynamic GTS types with configurable parent/membership rules
 

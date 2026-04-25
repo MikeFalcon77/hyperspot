@@ -196,26 +196,19 @@ impl RouteRepository for InMemoryRouteRepo {
         &self,
         tenant_id: Uuid,
         upstream_id: Uuid,
-    ) -> Result<u64, RepositoryError> {
+    ) -> Result<Vec<Uuid>, RepositoryError> {
         let route_ids: Vec<Uuid> = self
             .upstream_index
             .remove(&upstream_id)
             .map(|(_, ids)| ids)
             .unwrap_or_default();
 
-        let mut deleted = 0u64;
-        let mut surviving_ids: Vec<Uuid> = Vec::new();
+        let (to_delete, surviving_ids): (Vec<_>, Vec<_>) = route_ids
+            .into_iter()
+            .partition(|id| self.store.get(id).is_some_and(|r| r.tenant_id == tenant_id));
 
-        for id in route_ids {
-            if let Some((_, route)) = self.store.remove(&id) {
-                if route.tenant_id == tenant_id {
-                    deleted += 1;
-                } else {
-                    // Put it back — wrong tenant.
-                    self.store.insert(id, route);
-                    surviving_ids.push(id);
-                }
-            }
+        for id in &to_delete {
+            self.store.remove(id);
         }
 
         // Rebuild the upstream index for surviving routes.
@@ -223,7 +216,7 @@ impl RouteRepository for InMemoryRouteRepo {
             self.upstream_index.insert(upstream_id, surviving_ids);
         }
 
-        Ok(deleted)
+        Ok(to_delete)
     }
 }
 
@@ -437,8 +430,9 @@ mod tests {
         repo.create(route_b.clone()).await.unwrap();
 
         // Cascade delete for tenant_a should only remove tenant_a's route.
-        let deleted = repo.delete_by_upstream(tenant_a, upstream).await.unwrap();
-        assert_eq!(deleted, 1);
+        let deleted_ids = repo.delete_by_upstream(tenant_a, upstream).await.unwrap();
+        assert_eq!(deleted_ids.len(), 1);
+        assert!(deleted_ids.contains(&route_a.id));
 
         // tenant_a's route is gone.
         assert!(repo.get_by_id(tenant_a, route_a.id).await.is_err());
@@ -490,8 +484,10 @@ mod tests {
         repo.create(r1.clone()).await.unwrap();
         repo.create(r2.clone()).await.unwrap();
 
-        let deleted = repo.delete_by_upstream(tenant, upstream).await.unwrap();
-        assert_eq!(deleted, 2);
+        let deleted_ids = repo.delete_by_upstream(tenant, upstream).await.unwrap();
+        assert_eq!(deleted_ids.len(), 2);
+        assert!(deleted_ids.contains(&r1.id));
+        assert!(deleted_ids.contains(&r2.id));
 
         assert!(repo.get_by_id(tenant, r1.id).await.is_err());
         assert!(repo.get_by_id(tenant, r2.id).await.is_err());

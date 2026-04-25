@@ -30,7 +30,7 @@ Purpose: one concise map of repository artifacts that improve developer + AI pro
 | Architecture overview | [x] `p1` | [docs/ARCHITECTURE_MANIFEST.md](./ARCHITECTURE_MANIFEST.md), [docs/MODULES.md](./MODULES.md) | Add “current vs target” split blocks |
 | System diagrams | [x] `p1` | [docs/img/](./img), [docs/ARCHITECTURE_MANIFEST.md](./ARCHITECTURE_MANIFEST.md), [docs/MODULES.md](./MODULES.md) | Add ownership + update cadence per diagram |
 | Component responsibilities | [x] `p1` | [docs/MODULES.md](./MODULES.md), [docs/modkit_unified_system/README.md](./modkit_unified_system/README.md) | Add per-module responsibility cards |
-| Module boundaries | [x] `p1` | [docs/MODULES.md](./MODULES.md), [docs/modkit_unified_system/](./modkit_unified_system/README.md), [dylint_lints/README.md](../dylint_lints/README.md) | Expand lint coverage for boundary rules |
+| Module boundaries | [x] `p1` | [docs/MODULES.md](./MODULES.md), [docs/modkit_unified_system/](./modkit_unified_system/README.md), [tools/dylint_lints/README.md](../tools/dylint_lints/README.md) | Expand lint coverage for boundary rules |
 | Technology choices | [x] `p1` | [README.md](../README.md), [docs/ARCHITECTURE_MANIFEST.md](./ARCHITECTURE_MANIFEST.md), [guidelines/DEPENDENCIES.md](../guidelines/DEPENDENCIES.md) | Add technology decision registry page |
 | Data flow | [x] `p2` | [docs/MODULES.md](./MODULES.md) and [docs/spec-templates/cf-sdlc/DESIGN/template.md](./spec-templates/cf-sdlc/DESIGN/template.md) | Add dedicated sequence-diagram doc set |
 
@@ -40,7 +40,7 @@ Purpose: one concise map of repository artifacts that improve developer + AI pro
 |---|---|---|---|
 | Repository structure | [x] `p1` | [README.md](../README.md), [docs/ARCHITECTURE_MANIFEST.md](./ARCHITECTURE_MANIFEST.md), [docs/modkit_unified_system/](./modkit_unified_system/README.md) | Keep in sync with workspace changes |
 | Folder conventions | [x] `p1` | [docs/modkit_unified_system/](./modkit_unified_system/README.md) | Add root-level `REPO_STRUCTURE.md` |
-| Naming conventions | [x] `p1` | [docs/modkit_unified_system/](./modkit_unified_system/README.md), [scripts/validate_module_names.py](../scripts/validate_module_names.py), [dylint_lints/](../dylint_lints) | Expand naming rules beyond modules |
+| Naming conventions | [x] `p1` | [docs/modkit_unified_system/](./modkit_unified_system/README.md), [tools/scripts/validate_module_names.py](../tools/scripts/validate_module_names.py), [tools/dylint_lints/](../tools/dylint_lints) | Expand naming rules beyond modules |
 | Code organization rules | [x] `p1` | [docs/modkit_unified_system/](./modkit_unified_system/README.md), [docs/modkit_unified_system/README.md](./modkit_unified_system/README.md) | Add short “golden-path skeleton” page |
 | Dependency policies | [x] `p1` | [guidelines/DEPENDENCIES.md](../guidelines/DEPENDENCIES.md), [docs/security/SECURITY.md](./security/SECURITY.md) | Add explicit approval policy for new deps |
 | File naming rules | [x] `p2` | [docs/spec-templates/README.md](./spec-templates/README.md) (ADR/feature naming), module file layout in [docs/modkit_unified_system/](./modkit_unified_system/README.md) | Add global naming matrix |
@@ -50,11 +50,11 @@ Purpose: one concise map of repository artifacts that improve developer + AI pro
 | Item | Status / Phase / ID | Implemented (where) | Planned |
 |---|---|---|---|
 | Coding standards | [x] `p1` | [guidelines/README.md](../guidelines/README.md), [CONTRIBUTING.md](../CONTRIBUTING.md) | Add short one-page standards index |
-| Style guide | [x] `p1` | clippy rules in [clippy.toml](../clippy.toml) and [Cargo.toml](../Cargo.toml), `cargo fmt` in [Makefile](../Makefile), dylint rules in [dylint_lints/README.md](../dylint_lints/README.md) | Expand language-agnostic style section |
-| Lint rules | [x] `p1` | [dylint_lints/README.md](../dylint_lints/README.md), [Makefile](../Makefile), [scripts/ci.py](../scripts/ci.py) | Add lint policy matrix by layer |
-| Formatting rules | [x] `p1` | [Makefile](../Makefile), [scripts/ci.py](../scripts/ci.py) | Add editor setup snippets |
+| Style guide | [x] `p1` | clippy rules in [clippy.toml](../clippy.toml) and [Cargo.toml](../Cargo.toml), `cargo fmt` in [Makefile](../Makefile), dylint rules in [tools/dylint_lints/README.md](../tools/dylint_lints/README.md) | Expand language-agnostic style section |
+| Lint rules | [x] `p1` | [tools/dylint_lints/README.md](../tools/dylint_lints/README.md), [Makefile](../Makefile), [tools/scripts/ci.py](../tools/scripts/ci.py) | Add lint policy matrix by layer |
+| Formatting rules | [x] `p1` | [Makefile](../Makefile), [tools/scripts/ci.py](../tools/scripts/ci.py) | Add editor setup snippets |
 | Documentation standards | [x] `p1` | [docs/spec-templates/README.md](./spec-templates/README.md), [docs/checklists/README.md](./checklists/README.md) | Add docs style/lint enforcement rules |
-| Static analysis rules | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [dylint_lints/](../dylint_lints), [.github/workflows/codeql.yml](../.github/workflows/codeql.yml) | Add local static-analysis quickstart |
+| Static analysis rules | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [tools/dylint_lints/](../tools/dylint_lints), [.github/workflows/codeql.yml](../.github/workflows/codeql.yml) | Add local static-analysis quickstart |
 | Code complexity rules | [x] `p2` | Clippy `cognitive_complexity` (threshold: 20) in workspace [Cargo.toml](../Cargo.toml), [clippy.toml](../clippy.toml) | Add per-module complexity budget |
 | Commenting rules | [ ] `p3` | Partial conventions in existing guidelines | Add explicit comment policy document |
 | README standards | [ ] `p3` | Implicit via module QUICKSTART guidance in [docs/modkit_unified_system/](./modkit_unified_system/README.md) | Add README template + required sections |
@@ -98,16 +98,16 @@ Purpose: one concise map of repository artifacts that improve developer + AI pro
 |---|---|---|---|
 | Local development setup | [x] `p1` | [README.md](../README.md), [CONTRIBUTING.md](../CONTRIBUTING.md), [docs/QUICKSTART_GUIDE.md](./QUICKSTART_GUIDE.md) | Add one-command bootstrap doc |
 | Environment setup | [x] `p1` | [README.md](../README.md), [CONTRIBUTING.md](../CONTRIBUTING.md) | Add env matrix by scenario |
-| Tooling setup | [x] `p1` | [Makefile](../Makefile), [scripts/ci.py](../scripts/ci.py) | Add tool version pin policy |
+| Tooling setup | [x] `p1` | [Makefile](../Makefile), [tools/scripts/ci.py](../tools/scripts/ci.py) | Add tool version pin policy |
 | Required software | [x] `p1` | [README.md](../README.md), [CONTRIBUTING.md](../CONTRIBUTING.md) | Add OS-specific install scripts table |
-| Build process | [x] `p1` | [Makefile](../Makefile), [scripts/ci.py](../scripts/ci.py) | Add build profile selection guide |
+| Build process | [x] `p1` | [Makefile](../Makefile), [tools/scripts/ci.py](../tools/scripts/ci.py) | Add build profile selection guide |
 
 ## 9) CI & Quality Pipeline
 
 | Item | Status / Phase / ID | Implemented (where) | Planned |
 |---|---|---|---|
-| CI/CD pipeline | [x] `p1` | [.github/workflows/](../.github/workflows), [scripts/ci.py](../scripts/ci.py) | Add pipeline architecture diagram |
-| Required checks | [x] `p1` | [Makefile](../Makefile), [scripts/ci.py](../scripts/ci.py), [.github/workflows/](../.github/workflows) | Add required-checks policy doc |
+| CI/CD pipeline | [x] `p1` | [.github/workflows/](../.github/workflows), [tools/scripts/ci.py](../tools/scripts/ci.py) | Add pipeline architecture diagram |
+| Required checks | [x] `p1` | [Makefile](../Makefile), [tools/scripts/ci.py](../tools/scripts/ci.py), [.github/workflows/](../.github/workflows) | Add required-checks policy doc |
 | Failure handling | [x] `p2` | [docs/modkit_unified_system/05_errors_rfc9457.md](./modkit_unified_system/05_errors_rfc9457.md), [docs/ARCHITECTURE_MANIFEST.md](./ARCHITECTURE_MANIFEST.md) | Add incident response playbook |
 | Retry policies | [x] `p2` | ModKit HTTP ADR in [docs/modkit_unified_system/README.md](./modkit_unified_system/README.md) | Add shared retry policy matrix |
 
@@ -116,11 +116,11 @@ Purpose: one concise map of repository artifacts that improve developer + AI pro
 | Item | Status / Phase / ID | Implemented (where) | Planned |
 |---|---|---|---|
 | Testing strategy | [x] `p1` | [README.md](../README.md), [CONTRIBUTING.md](../CONTRIBUTING.md), [docs/security/SECURITY.md](./security/SECURITY.md) | Add single consolidated testing policy |
-| Unit testing rules | [x] `p1` | [CONTRIBUTING.md](../CONTRIBUTING.md), [scripts/ci.py](../scripts/ci.py) | Add unit-test layout examples |
+| Unit testing rules | [x] `p1` | [CONTRIBUTING.md](../CONTRIBUTING.md), [tools/scripts/ci.py](../tools/scripts/ci.py) | Add unit-test layout examples |
 | Integration testing rules | [x] `p1` | [CONTRIBUTING.md](../CONTRIBUTING.md), `ci.py all` flow | Add integration test standards page |
-| End-to-end testing rules | [x] `p1` | [README.md](../README.md), [scripts/ci.py](../scripts/ci.py), `.github/workflows/e2e.yml` | Add e2e flakiness policy |
+| End-to-end testing rules | [x] `p1` | [README.md](../README.md), [tools/scripts/ci.py](../tools/scripts/ci.py), `.github/workflows/e2e.yml` | Add e2e flakiness policy |
 | Coverage expectations | [x] `p1` | [README.md](../README.md), [CONTRIBUTING.md](../CONTRIBUTING.md), [Makefile](../Makefile) | Enforce threshold gates in CI |
-| Test structure | [x] `p2` | [docs/modkit_unified_system/](./modkit_unified_system/README.md), [dylint_lints/AGENTS.md](../dylint_lints/AGENTS.md) | Add repository-wide test taxonomy |
+| Test structure | [x] `p2` | [docs/modkit_unified_system/](./modkit_unified_system/README.md), [tools/dylint_lints/AGENTS.md](../tools/dylint_lints/AGENTS.md) | Add repository-wide test taxonomy |
 | Test data management | [ ] `p3` | Not centralized | Add test-fixture lifecycle guide |
 
 ## 11) Debugging, Logging & Observability
@@ -145,12 +145,12 @@ Purpose: one concise map of repository artifacts that improve developer + AI pro
 | Dependency security rules | [x] `p1` | [docs/security/SECURITY.md](./security/SECURITY.md), [Makefile](../Makefile), `cargo deny` | Add allow/deny decision log |
 | Vulnerability response | [x] `p1` | [SECURITY.md](../SECURITY.md) | Add incident severity matrix |
 | Secure ORM tenant scoping | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [docs/modkit_unified_system/06_authn_authz_secure_orm.md](./modkit_unified_system/06_authn_authz_secure_orm.md) | Add security-context propagation verification checks |
-| Static security linting (Clippy + Dylint) | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [dylint_lints/README.md](../dylint_lints/README.md), [clippy.toml](../clippy.toml) | Expand security-focused lint set |
+| Static security linting (Clippy + Dylint) | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [tools/dylint_lints/README.md](../tools/dylint_lints/README.md), [clippy.toml](../clippy.toml) | Expand security-focused lint set |
 | Secrets handling | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [docs/pr-review/README.md](./pr-review/README.md) token guidance | Add repository-wide secrets policy doc |
 | Data protection rules | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), secure ORM docs | Add data classification policy |
 | Access policies | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), auth architecture docs | Add policy authoring guide |
 | Security scanners in CI | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [.github/workflows/](../.github/workflows) | Add scanner findings triage runbook |
-| Continuous fuzzing | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [fuzz/](../fuzz) | Expand fuzz target coverage and schedules |
+| Continuous fuzzing | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [tools/fuzz/](../tools/fuzz) | Expand fuzz target coverage and schedules |
 | Security in PRD/DESIGN SDLC templates | [x] `p2` | [docs/security/SECURITY.md](./security/SECURITY.md), [docs/spec-templates/cf-sdlc/PRD/template.md](./spec-templates/cf-sdlc/PRD/template.md), [docs/spec-templates/cf-sdlc/DESIGN/template.md](./spec-templates/cf-sdlc/DESIGN/template.md) | Add explicit security checklists in templates |
 
 
@@ -174,9 +174,9 @@ Purpose: one concise map of repository artifacts that improve developer + AI pro
 
 | Item | Status / Phase / ID | Implemented (where) | Planned |
 |---|---|---|---|
-| Scripts usage | [x] `p1` | [Makefile](../Makefile), [scripts/ci.py](../scripts/ci.py) | Add script catalog document |
-| Automation rules | [x] `p2`| [Makefile](../Makefile), [scripts/ci.py](../scripts/ci.py), workflow files | Add automation safety policy |
-| Task automation guidelines | [x] `p2` | [scripts/ci.py](../scripts/ci.py), [Makefile](../Makefile) | Add “when to automate/not automate” guide |
+| Scripts usage | [x] `p1` | [Makefile](../Makefile), [tools/scripts/ci.py](../tools/scripts/ci.py) | Add script catalog document |
+| Automation rules | [x] `p2`| [Makefile](../Makefile), [tools/scripts/ci.py](../tools/scripts/ci.py), workflow files | Add automation safety policy |
+| Task automation guidelines | [x] `p2` | [tools/scripts/ci.py](../tools/scripts/ci.py), [Makefile](../Makefile) | Add “when to automate/not automate” guide |
 | Bot behavior rules | [x] `p2` | [docs/pr-review/README.md](./pr-review/README.md), workflow configs | Add standardized bot comment protocol |
 | Agents overview | [x] `p2` | [.cypilot/](../.cypilot), [.cypilot/config/](../.cypilot/config), [docs/pr-review/README.md](./pr-review/README.md) | Add central "AI operations" document |
 | Prompt guidelines | [x] `p2` | [.cypilot/](../.cypilot), [docs/checklists/README.md](./checklists/README.md) | Add universal prompt design guide |
@@ -202,8 +202,8 @@ Purpose: one concise map of repository artifacts that improve developer + AI pro
 | Code templates | [x] `p2` | [docs/modkit_unified_system/](./modkit_unified_system/README.md) module skeletons/patterns | Add dedicated starter templates folder |
 | PR templates | [x] `p2` | [CONTRIBUTING.md](../CONTRIBUTING.md) PR description template, [docs/pr-review/code-review-template.md](./pr-review/code-review-template.md) | Add `.github/PULL_REQUEST_TEMPLATE.md` |
 | Reference implementations | [x] `p2` | [examples/modkit](../examples/modkit), [docs/modkit_unified_system/](./modkit_unified_system/README.md) | Curate “golden reference modules” list |
-| Good examples | [x] `p2` | Lint/module examples in [dylint_lints/README.md](../dylint_lints/README.md), [examples/](../examples) | Add explicit tagged good examples index |
-| Bad examples | [x] `p2` | Dylint bad patterns in [dylint_lints/README.md](../dylint_lints/README.md) + UI tests | Add cross-domain anti-pattern examples |
+| Good examples | [x] `p2` | Lint/module examples in [tools/dylint_lints/README.md](../tools/dylint_lints/README.md), [examples/](../examples) | Add explicit tagged good examples index |
+| Bad examples | [x] `p2` | Dylint bad patterns in [tools/dylint_lints/README.md](../tools/dylint_lints/README.md) + UI tests | Add cross-domain anti-pattern examples |
 | Release checklist | [ ] `p3` | Partial in [docs/RELEASING.md](./RELEASING.md) | Add explicit release checklist doc |
 | Debug checklist | [ ] `p3` | Not formalized | Add debug triage checklist |
 | Issue templates | [ ] `p3` | Not found in `.github` | Add GitHub issue templates |
@@ -213,8 +213,8 @@ Purpose: one concise map of repository artifacts that improve developer + AI pro
 | Item | Status / Phase / ID | Implemented (where) | Planned |
 |---|---|---|---|
 | API guidelines | [x] `p1` | [guidelines/README.md](../guidelines/README.md), [docs/modkit_unified_system/](./modkit_unified_system/README.md), ModKit docs | Add API design quick-reference |
-| API versioning | [x] `p1` | Dylint DE0801 in [dylint_lints/README.md](../dylint_lints/README.md), [CONTRIBUTING.md](../CONTRIBUTING.md) | Add auto-check for docs/version sync |
-| Contract rules | [x] `p1` | Dylint DE01xx/DE02xx/DE03xx in [dylint_lints/README.md](../dylint_lints/README.md) | Expand contract lint set |
+| API versioning | [x] `p1` | Dylint DE0801 in [tools/dylint_lints/README.md](../tools/dylint_lints/README.md), [CONTRIBUTING.md](../CONTRIBUTING.md) | Add auto-check for docs/version sync |
+| Contract rules | [x] `p1` | Dylint DE01xx/DE02xx/DE03xx in [tools/dylint_lints/README.md](../tools/dylint_lints/README.md) | Expand contract lint set |
 | Error handling standards | [x] `p1` | [docs/modkit_unified_system/05_errors_rfc9457.md](./modkit_unified_system/05_errors_rfc9457.md), [docs/modkit_unified_system/](./modkit_unified_system/README.md) | Add repository-wide error taxonomy |
 | Configuration management | [x] `p1` | [README.md](../README.md) config section, [docs/modkit_unified_system/](./modkit_unified_system/README.md) | Add config schema validation policy |
 | Data model conventions | [x] `p2` | [docs/modkit_unified_system/](./modkit_unified_system/README.md), [docs/modkit_unified_system/02_module_layout_and_sdk_pattern.md](./modkit_unified_system/02_module_layout_and_sdk_pattern.md) | Add canonical model naming matrix |
@@ -248,9 +248,9 @@ Purpose: one concise map of repository artifacts that improve developer + AI pro
 | Contributor expectations | [x] `p1` | [CONTRIBUTING.md](../CONTRIBUTING.md) | Add expected turnaround/SLA guidance |
 | Decision records (ADR) | [x] `p1` | [docs/spec-templates/cf-sdlc/ADR/template.md](./spec-templates/cf-sdlc/ADR/template.md), [docs/adrs/](./adrs) | Add ADR index by domain |
 | Design documents | [x] `p1` | [docs/spec-templates/cf-sdlc/DESIGN/template.md](./spec-templates/cf-sdlc/DESIGN/template.md), module docs | Add quality gates for design docs |
-| Common workflows | [x] `p2` | [Makefile](../Makefile), [scripts/ci.py](../scripts/ci.py), [docs/pr-review/README.md](./pr-review/README.md) | Add workflow cookbook |
-| Anti-patterns | [x] `p2` | [docs/checklists/](./checklists), [dylint_lints/README.md](../dylint_lints/README.md) | Add unified anti-pattern catalog |
-| Common mistakes | [x] `p2` | [dylint_lints/AGENTS.md](../dylint_lints/AGENTS.md) pitfalls, checklists | Add “top mistakes” short guide |
+| Common workflows | [x] `p2` | [Makefile](../Makefile), [tools/scripts/ci.py](../tools/scripts/ci.py), [docs/pr-review/README.md](./pr-review/README.md) | Add workflow cookbook |
+| Anti-patterns | [x] `p2` | [docs/checklists/](./checklists), [tools/dylint_lints/README.md](../tools/dylint_lints/README.md) | Add unified anti-pattern catalog |
+| Common mistakes | [x] `p2` | [tools/dylint_lints/AGENTS.md](../tools/dylint_lints/AGENTS.md) pitfalls, checklists | Add “top mistakes” short guide |
 | Support / escalation paths | [x] `p2` | [SECURITY.md](../SECURITY.md), [CONTRIBUTING.md](../CONTRIBUTING.md) | Add general (non-security) escalation flow |
 | Proposal process | [x] `p2` | Spec-driven flow in [docs/spec-templates/README.md](./spec-templates/README.md) | Add formal RFC/proposal workflow |
 | Glossary | [ ] `p3` | Not centralized | Add glossary document |

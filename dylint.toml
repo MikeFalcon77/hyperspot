@@ -4,7 +4,7 @@
 [workspace.metadata.dylint]
 # Path to the local dylint linters
 libraries = [
-    { path = "dylint_lints/de*/de*" }
+    { path = "tools/dylint_lints/de*/de*" }
 ]
 
 # DE1101: Tests must be in separate files.

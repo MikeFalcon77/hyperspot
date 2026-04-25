@@ -107,6 +107,7 @@ PRD Section 3.4 (User Data Ownership) defines the ownership boundaries that this
 
 - **PRD**: [PRD.md](../PRD.md)
 - **DESIGN**: [DESIGN.md](../DESIGN.md)
+- **Related**: [ADR-0006](0006-cpt-cf-account-management-adr-idp-user-tenant-binding.md) — ADR-0005 establishes that AM maintains no local user table; ADR-0006 decides where the user-tenant binding lives within that constraint. Decided together on the same date.
 
 This decision directly addresses the following requirements and design elements:
 

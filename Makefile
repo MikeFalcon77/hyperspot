@@ -114,7 +114,7 @@ endef
 
 # Show the help message with list of commands (default target)
 help:
-	@python3 scripts/make_help.py Makefile
+	@python3 tools/scripts/make_help.py Makefile
 
 
 # -------- Set up --------
@@ -160,7 +160,7 @@ fmt:
 
 ## Validate module folder names follow kebab-case convention
 validate-module-names:
-	@python3 scripts/validate_module_names.py
+	@python3 tools/scripts/validate_module_names.py
 
 # -------- Code safety checks --------
 #
@@ -223,7 +223,7 @@ cypilot-validate:
 # Run markdown checks with 'lychee'
 lychee:
 	$(call check_tool,lychee)
-	lychee docs examples dylint_lints guidelines
+	lychee docs examples tools/dylint_lints guidelines
 
 ## The Kani Rust Verifier for checking safety of the code
 kani:
@@ -288,9 +288,9 @@ install-tools:
 gts-docs-test: install-tools
 	cargo nextest run -p gts-docs-validator
 
-## List all custom project compliance lints (see dylint_lints/README.md)
+## List all custom project compliance lints (see tools/dylint_lints/README.md)
 dylint-list:
-	@cd dylint_lints && \
+	@cd tools/dylint_lints && \
 	DYLINT_LIBS=$$(find target/release -maxdepth 1 \( -name "libde*@*.so" -o -name "libde*@*.dylib" -o -name "de*@*.dll" \) -type f | sort -u); \
 	if [ -z "$$DYLINT_LIBS" ]; then \
 		echo "ERROR: No dylint libraries found. Run 'make dylint' first to build them."; \
@@ -303,13 +303,13 @@ dylint-list:
 
 ## Test dylint lints on UI test cases (compile and verify violations)
 dylint-test: install-tools
-	@cd dylint_lints && cargo nextest run
+	@cd tools/dylint_lints && cargo nextest run
 
 # Run project compliance dylint lints on the workspace (see `make dylint-list`)
 dylint:
 	$(call check_tool,cargo-dylint)
 	$(call check_tool,dylint-link)
-	cargo +nightly-2025-09-18 dylint --all --workspace
+	cargo dylint --all --workspace
 
 # Run all code safety checks
 safety: clippy kani lint dylint # geiger
@@ -339,7 +339,7 @@ openapi:
 	mkdir -p $$(dirname "$(OPENAPI_OUT)") && \
 	curl -fsS "$(OPENAPI_URL)" -o "$(OPENAPI_OUT)" && \
 	echo "Sorting OpenAPI JSON for deterministic ordering..." && \
-	python3 scripts/sort_openapi_json.py "$(OPENAPI_OUT)" && \
+	python3 tools/scripts/sort_openapi_json.py "$(OPENAPI_OUT)" && \
 	echo "OpenAPI spec saved to $(OPENAPI_OUT)"
 
 # -------- Development and auto fix --------
@@ -448,19 +448,19 @@ e2e: e2e-docker
 
 ## Run E2E tests in Docker environment
 e2e-docker:
-	python3 scripts/ci.py e2e-docker $(E2E_ARGS)
+	python3 tools/scripts/ci.py e2e-docker $(E2E_ARGS)
 
 ## Run E2E smoke tests in Docker (only tests marked @pytest.mark.smoke)
 e2e-docker-smoke:
-	python3 scripts/ci.py e2e-docker $(E2E_ARGS) -- -m smoke
+	python3 tools/scripts/ci.py e2e-docker $(E2E_ARGS) -- -m smoke
 
 # Run E2E tests locally
 e2e-local:
-	python3 scripts/ci.py e2e-local
+	python3 tools/scripts/ci.py e2e-local
 
 ## Run E2E smoke tests locally (only tests marked @pytest.mark.smoke)
 e2e-local-smoke:
-	python3 scripts/ci.py e2e-local --smoke
+	python3 tools/scripts/ci.py e2e-local --smoke
 
 MINI_CHAT_FEATURES = mini-chat,static-authn,static-authz,single-tenant,static-credstore
 MINI_CHAT_K8S_FEATURES = $(MINI_CHAT_FEATURES),k8s
@@ -481,21 +481,21 @@ e2e-mini-chat:
 # Generate code coverage report (unit + e2e-local tests)
 coverage:
 	$(call check_tool,cargo-llvm-cov)
-	python3 scripts/coverage.py combined
+	python3 tools/scripts/coverage.py combined
 
 # Generate code coverage report (unit tests only)
 coverage-unit:
 	$(call check_tool,cargo-llvm-cov)
-	python3 scripts/coverage.py unit
+	python3 tools/scripts/coverage.py unit
 
 ## Ensure needed packages and programs installed for local e2e testing
 check-prereq-e2e-local:
-	python3 scripts/check_local_env.py --mode e2e-local
+	python3 tools/scripts/check_local_env.py --mode e2e-local
 
 # Generate code coverage report (e2e-local tests only)
 coverage-e2e-local: check-prereq-e2e-local
 	$(call check_tool,cargo-llvm-cov)
-	python3 scripts/coverage.py e2e-local
+	python3 tools/scripts/coverage.py e2e-local
 
 # -------- Fuzzing --------
 
@@ -507,11 +507,11 @@ fuzz-install:
 
 ## Build all fuzz targets
 fuzz-build: fuzz-install
-	cd fuzz && cargo +nightly fuzz build
+	cargo +nightly fuzz build --fuzz-dir tools/fuzz
 
 ## List all available fuzz targets
 fuzz-list: fuzz-install
-	cd fuzz && cargo +nightly fuzz list
+	cargo +nightly fuzz list --fuzz-dir tools/fuzz
 
 ## Run a specific fuzz target (use FUZZ_TARGET=name)
 ## Example: make fuzz-run FUZZ_TARGET=fuzz_odata_filter FUZZ_SECONDS=60
@@ -520,28 +520,27 @@ fuzz-run: fuzz-install
 		echo "ERROR: FUZZ_TARGET is required. Example: make fuzz-run FUZZ_TARGET=fuzz_odata_filter"; \
 		exit 1; \
 	fi
-	cd fuzz && cargo +nightly fuzz run $(FUZZ_TARGET) -- -max_total_time=$(or $(FUZZ_SECONDS),60)
+	cargo +nightly fuzz run --fuzz-dir tools/fuzz $(FUZZ_TARGET) -- -max_total_time=$(or $(FUZZ_SECONDS),60)
 
 ## Run all fuzz targets for a short time (smoke test)
 fuzz: fuzz-build
 	@echo "Running all fuzz targets for 30 seconds each..."
-	@cd fuzz && \
-	FAILED=0; \
-	for target in $$(cargo +nightly fuzz list); do \
+	@FAILED=0; \
+	for target in $$(cargo +nightly fuzz list --fuzz-dir tools/fuzz); do \
 		echo "=== Fuzzing $$target ==="; \
-		cargo +nightly fuzz run $$target -- -max_total_time=30 || FAILED=1; \
+		cargo +nightly fuzz run --fuzz-dir tools/fuzz $$target -- -max_total_time=30 || FAILED=1; \
 	done; \
 	if [ $$FAILED -ne 0 ]; then \
-		echo "Fuzzing found crashes. Check fuzz/artifacts/ for details."; \
+		echo "Fuzzing found crashes. Check tools/fuzz/artifacts/ for details."; \
 		exit 1; \
 	fi
 	@echo "Fuzzing complete. No crashes found."
 
 ## Clean fuzzing artifacts and corpus
 fuzz-clean:
-	rm -rf fuzz/artifacts/
-	rm -rf fuzz/corpus/*/
-	rm -rf fuzz/target/
+	rm -rf tools/fuzz/artifacts/
+	rm -rf tools/fuzz/corpus/*/
+	rm -rf tools/fuzz/target/
 
 ## Minimize corpus for a specific target
 fuzz-corpus: fuzz-install
@@ -549,7 +548,7 @@ fuzz-corpus: fuzz-install
 		echo "ERROR: FUZZ_TARGET is required. Example: make fuzz-corpus FUZZ_TARGET=fuzz_odata_filter"; \
 		exit 1; \
 	fi
-	cd fuzz && cargo +nightly fuzz cmin $(FUZZ_TARGET)
+	cargo +nightly fuzz cmin --fuzz-dir tools/fuzz $(FUZZ_TARGET)
 
 # -------- Main targets --------
 
@@ -699,9 +698,9 @@ ci_docs: lychee
 # Run CI pipeline locally, requires docker
 ci: fmt clippy test-no-macros test-macros test-db deny test-users-info-pg lychee dylint dylint-test
 
-# Build the hyperspot-server release binary using the stable toolchain.
+# Build the hyperspot-server release binary using a toolchain from the rust-toolchain.toml
 cargo-build:
-	cargo +stable build --release --bin hyperspot-server $(E2E_ARGS)
+	cargo build --release --bin hyperspot-server $(E2E_ARGS)
 
 # Split debug symbols into separate artifact(s) and strip the binary.
 # Requires platform tools: objcopy (Linux), dsymutil+strip (macOS).

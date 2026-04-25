@@ -1,4 +1,4 @@
-error[E0599]: the method `create` exists for struct `ResourceErrorBuilder<ResourceOptional, NeedsPreconditionViolation>`, but its trait bounds were not satisfied
+error[E0599]: the method `create` exists for struct `ResourceErrorBuilder<modkit_canonical_errors::builder::ResourceOptional, modkit_canonical_errors::builder::NeedsPreconditionViolation>`, but its trait bounds were not satisfied
   --> tests/ui/missing_precondition_violation_on_failed_precondition.rs:10:57
    |
 10 |     let _err = UserResourceError::failed_precondition().create();
@@ -7,7 +7,7 @@ error[E0599]: the method `create` exists for struct `ResourceErrorBuilder<Resour
   ::: src/builder.rs
    |
    | pub struct NeedsPreconditionViolation;
-   | ------------------------------------- doesn't satisfy `NeedsPreconditionViolation: ContextResolved`
+   | ------------------------------------- doesn't satisfy `_: ContextResolved`
    |
    = note: the following trait bounds were not satisfied:
-           `NeedsPreconditionViolation: ContextResolved`
+           `modkit_canonical_errors::builder::NeedsPreconditionViolation: modkit_canonical_errors::builder::ContextResolved`
