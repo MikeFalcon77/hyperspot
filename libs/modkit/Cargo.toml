@@ -61,6 +61,7 @@ modkit-db = { workspace = true, optional = true }
 sea-orm-migration = { workspace = true, optional = true }
 modkit-odata = { workspace = true }
 modkit-sdk = { workspace = true }
+modkit-contract = { workspace = true }
 cf-system-sdks = { workspace = true, features = ["directory"] }
 
 # Core deps

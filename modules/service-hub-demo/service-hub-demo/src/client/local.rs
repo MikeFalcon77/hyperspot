@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use modkit_canonical_errors::CanonicalError;
+use modkit_contract::ir::contract::{Idempotency, MethodKind};
 use modkit_security::SecurityContext;
-use modkit_service_hub::ir::contract::{Idempotency, MethodKind};
 use modkit_service_hub::policy::{PolicyContext, PolicyStack};
 use service_hub_demo_sdk::contract::{PaymentService, PaymentStream};
 use service_hub_demo_sdk::models::{

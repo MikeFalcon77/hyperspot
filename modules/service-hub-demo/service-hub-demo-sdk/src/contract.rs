@@ -8,7 +8,6 @@ use std::pin::Pin;
 use futures_core::Stream;
 use modkit_canonical_errors::CanonicalError;
 use modkit_security::SecurityContext;
-use modkit_service_hub::service_contract;
 
 use crate::models::{ChargeRequest, ChargeResponse, Invoice, ListPaymentsFilter, PaymentSummary};
 
@@ -19,7 +18,7 @@ pub type PaymentStream<T> = Pin<Box<dyn Stream<Item = Result<T, CanonicalError>>
 ///
 /// All parameter types are owned and `'static`-compatible.
 /// Registered in `ClientHub` as `Arc<dyn PaymentService>`.
-#[service_contract(module = "service-hub-demo", version = "v1")]
+#[modkit::contract(module = "service-hub-demo", version = "v1")]
 pub trait PaymentService: Send + Sync {
     /// Charge a payment. Non-idempotent write.
     ///

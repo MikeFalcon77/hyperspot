@@ -95,6 +95,11 @@ pub use registry::ModuleRegistry;
 
 // Re-export the macros from the proc-macro crate
 pub use modkit_macros::{ExpandVars, lifecycle, module};
+pub use modkit_contract::contract;
+
+pub mod contract_support {
+    pub use modkit_contract::*;
+}
 
 // Re-export var_expand module so derive-generated impls resolve via ::modkit::var_expand
 pub use modkit_utils::var_expand;

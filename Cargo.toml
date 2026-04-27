@@ -44,6 +44,8 @@ members = [
     "libs/modkit-node-info",
     "libs/modkit-transport-grpc",
     "libs/modkit-utils",
+    "libs/modkit-contract",
+    "libs/modkit-contract-macros",
     "libs/modkit-service-hub",
     "libs/modkit-service-hub-macros",
     "libs/system-sdks",
@@ -240,6 +242,8 @@ modkit-sdk = { package = "cf-modkit-sdk", version = "0.6.4", path = "libs/modkit
 modkit-security = { package = "cf-modkit-security", version = "0.7.0", path = "libs/modkit-security" }
 modkit-transport-grpc = { package = "cf-modkit-transport-grpc", version = "0.6.3", path = "libs/modkit-transport-grpc" }
 modkit-utils = { package = "cf-modkit-utils", version = "0.6.3", path = "libs/modkit-utils" }
+modkit-contract = { package = "cf-modkit-contract", version = "0.1.0", path = "libs/modkit-contract" }
+modkit-contract-macros = { package = "cf-modkit-contract-macros", version = "0.1.0", path = "libs/modkit-contract-macros" }
 modkit-service-hub = { package = "cf-modkit-service-hub", version = "0.1.0", path = "libs/modkit-service-hub" }
 modkit-service-hub-macros = { package = "cf-modkit-service-hub-macros", version = "0.1.0", path = "libs/modkit-service-hub-macros" }
 

@@ -3,9 +3,7 @@
 //! This lives in the module crate, NOT the SDK, because transport
 //! bindings are a provider concern.
 
-use modkit_service_hub::ir::binding::{
-    HttpBindingIr, HttpFieldBinding, HttpMethod, HttpMethodBindingIr,
-};
+use modkit_contract::ir::binding::{HttpBindingIr, HttpFieldBinding, HttpMethod, HttpMethodBindingIr};
 
 /// Build the HTTP binding projection for `PaymentService`.
 #[must_use]

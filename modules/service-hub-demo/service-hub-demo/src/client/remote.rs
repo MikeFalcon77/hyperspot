@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use modkit_canonical_errors::CanonicalError;
+use modkit_contract::ir::binding::{HttpBindingIr, HttpMethodBindingIr};
+use modkit_contract::http::dispatch::build_url;
 use modkit_http::HttpClient;
 use modkit_security::SecurityContext;
-use modkit_service_hub::http::dispatch::build_url;
-use modkit_service_hub::ir::binding::HttpBindingIr;
 use secrecy::ExposeSecret;
 use service_hub_demo_sdk::contract::{PaymentService, PaymentStream};
 use service_hub_demo_sdk::models::{
@@ -39,7 +39,7 @@ impl PaymentHttpClient {
     fn find_method(
         &self,
         name: &str,
-    ) -> Result<&modkit_service_hub::ir::binding::HttpMethodBindingIr, CanonicalError> {
+    ) -> Result<&HttpMethodBindingIr, CanonicalError> {
         self.binding.find_method(name).ok_or_else(|| {
             CanonicalError::internal(format!("missing HTTP binding for method '{name}'")).create()
         })

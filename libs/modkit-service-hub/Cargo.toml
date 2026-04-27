@@ -21,6 +21,7 @@ serde_json = { workspace = true }
 http = { workspace = true }
 modkit = { workspace = true }
 modkit-http = { workspace = true }
+modkit-contract = { workspace = true }
 async-trait = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }

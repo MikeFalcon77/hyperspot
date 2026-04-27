@@ -194,6 +194,7 @@ mod tests {
 
     static TEST_DESCRIPTOR: ServiceDescriptor = ServiceDescriptor {
         module: "billing",
+        contract: "PaymentService",
         service: "PaymentService",
         version: "v1",
         methods: &[crate::descriptor::MethodDescriptor {

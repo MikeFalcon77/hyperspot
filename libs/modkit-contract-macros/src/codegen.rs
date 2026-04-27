@@ -1,21 +1,18 @@
-//! Code generation from the internal model.
-//!
-//! Produces the trait definition (with `#[async_trait]`), the static
-//! [`ServiceDescriptor`], the IR builder function, and the
-//! [`ServiceContract`] impl.
-
 use heck::{ToShoutySnakeCase, ToSnakeCase};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::model::{Idempotency, MethodKind, MethodModel, ServiceContractModel};
+use crate::model::{ContractModel, Idempotency, MethodKind, MethodModel};
 
-/// Generate all output tokens from a parsed [`ServiceContractModel`].
-pub fn generate(model: &ServiceContractModel) -> TokenStream {
+const CONTRACT_PKG: &str = "cf-modkit-contract";
+const CONTRACT_LIB: &str = "modkit_contract";
+
+pub fn generate(model: &ContractModel) -> TokenStream {
+    let support = support_path();
     let trait_def = generate_trait(model);
-    let descriptor = generate_descriptor(model);
-    let ir_fn = generate_ir_function(model);
-    let contract_impl = generate_service_contract_impl(model);
+    let descriptor = generate_descriptor(model, &support);
+    let ir_fn = generate_ir_function(model, &support);
+    let contract_impl = generate_contract_impl(model, &support);
 
     quote! {
         #trait_def
@@ -25,12 +22,29 @@ pub fn generate(model: &ServiceContractModel) -> TokenStream {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 1. Trait definition
-// ---------------------------------------------------------------------------
+fn support_path() -> TokenStream {
+    for package_name in [CONTRACT_PKG, "modkit-contract"] {
+        if let Ok(found) = proc_macro_crate::crate_name(package_name) {
+            return match found {
+                proc_macro_crate::FoundCrate::Itself => quote!(::modkit_contract),
+                proc_macro_crate::FoundCrate::Name(name) => {
+                    let pkg_normalized = CONTRACT_PKG.replace('-', "_");
+                    let effective = if name == pkg_normalized {
+                        CONTRACT_LIB
+                    } else {
+                        &name
+                    };
+                    let ident = syn::Ident::new(effective, proc_macro2::Span::call_site());
+                    quote!(::#ident)
+                }
+            };
+        }
+    }
 
-/// Emit the trait with `#[async_trait]` and streaming return types rewritten.
-fn generate_trait(model: &ServiceContractModel) -> TokenStream {
+    quote!(::modkit::contract_support)
+}
+
+fn generate_trait(model: &ContractModel) -> TokenStream {
     let vis = &model.vis;
     let name = &model.trait_name;
     let supertraits = if model.supertraits.is_empty() {
@@ -40,7 +54,6 @@ fn generate_trait(model: &ServiceContractModel) -> TokenStream {
         quote!(: #bounds)
     };
     let attrs = &model.attrs;
-
     let methods: Vec<TokenStream> = model.methods.iter().map(generate_trait_method).collect();
 
     quote! {
@@ -52,18 +65,13 @@ fn generate_trait(model: &ServiceContractModel) -> TokenStream {
     }
 }
 
-/// Emit a single trait method, rewriting streaming return types.
 fn generate_trait_method(method: &MethodModel) -> TokenStream {
     let attrs = &method.attrs;
     let mut sig = method.sig.clone();
 
     match method.kind {
-        MethodKind::Unary => {
-            // Unary: keep the signature as-is (async fn ... -> Result<T, E>)
-        }
+        MethodKind::Unary => {}
         MethodKind::ServerStreaming => {
-            // Streaming: rewrite return type from Result<T, E> to
-            // Pin<Box<dyn Stream<Item = Result<T, E>> + Send + 'static>>
             let output = &method.output_type;
             let error = &method.error_type;
 
@@ -81,12 +89,7 @@ fn generate_trait_method(method: &MethodModel) -> TokenStream {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 2. Static ServiceDescriptor
-// ---------------------------------------------------------------------------
-
-/// Emit the `SCREAMING_SNAKE_DESCRIPTOR` static.
-fn generate_descriptor(model: &ServiceContractModel) -> TokenStream {
+fn generate_descriptor(model: &ContractModel, support: &TokenStream) -> TokenStream {
     let trait_name = &model.trait_name;
     let trait_name_str = trait_name.to_string();
     let descriptor_name = format_ident!("{}_DESCRIPTOR", trait_name_str.to_shouty_snake_case());
@@ -99,8 +102,8 @@ fn generate_descriptor(model: &ServiceContractModel) -> TokenStream {
         .iter()
         .map(|m| {
             let name_str = m.name.to_string();
-            let kind = method_kind_tokens(m.kind);
-            let idempotency = idempotency_tokens(m.idempotency);
+            let kind = method_kind_tokens(m.kind, support);
+            let idempotency = idempotency_tokens(m.idempotency, support);
             let input_type_str = m
                 .params
                 .last()
@@ -109,7 +112,7 @@ fn generate_descriptor(model: &ServiceContractModel) -> TokenStream {
             let output_type_str = type_name_str(&m.output_type);
 
             quote! {
-                ::modkit_service_hub::descriptor::MethodDescriptor {
+                #support::descriptor::MethodDescriptor {
                     name: #name_str,
                     kind: #kind,
                     idempotency: #idempotency,
@@ -123,8 +126,8 @@ fn generate_descriptor(model: &ServiceContractModel) -> TokenStream {
     let trait_doc = format!("Static descriptor for [`{trait_name_str}`].");
     quote! {
         #[doc = #trait_doc]
-        #vis static #descriptor_name: ::modkit_service_hub::descriptor::ServiceDescriptor =
-            ::modkit_service_hub::descriptor::ServiceDescriptor {
+        #vis static #descriptor_name: #support::descriptor::ContractDescriptor =
+            #support::descriptor::ContractDescriptor {
                 module: #module,
                 contract: #trait_name_str,
                 service: #trait_name_str,
@@ -136,27 +139,25 @@ fn generate_descriptor(model: &ServiceContractModel) -> TokenStream {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 3. IR builder function
-// ---------------------------------------------------------------------------
-
-/// Emit the `snake_case_ir()` function.
-fn generate_ir_function(model: &ServiceContractModel) -> TokenStream {
+fn generate_ir_function(model: &ContractModel, support: &TokenStream) -> TokenStream {
     let trait_name = &model.trait_name;
     let trait_name_str = trait_name.to_string();
     let fn_name = format_ident!("{}_ir", trait_name_str.to_snake_case());
     let module = &model.module;
     let version = &model.version;
     let vis = &model.vis;
-
-    let method_irs: Vec<TokenStream> = model.methods.iter().map(generate_method_ir).collect();
+    let method_irs: Vec<TokenStream> = model
+        .methods
+        .iter()
+        .map(|m| generate_method_ir(m, support))
+        .collect();
 
     let fn_doc = format!("Build the Contract IR for [`{trait_name_str}`].");
     quote! {
         #[doc = #fn_doc]
         #[must_use]
-        #vis fn #fn_name() -> ::modkit_service_hub::ir::contract::ServiceIr {
-            ::modkit_service_hub::ir::contract::ServiceIr {
+        #vis fn #fn_name() -> #support::ir::contract::ContractIr {
+            #support::ir::contract::ContractIr {
                 name: #trait_name_str.to_owned(),
                 module: #module.to_owned(),
                 version: #version.to_owned(),
@@ -168,21 +169,20 @@ fn generate_ir_function(model: &ServiceContractModel) -> TokenStream {
     }
 }
 
-/// Emit a single `MethodIr { ... }` expression.
-fn generate_method_ir(method: &MethodModel) -> TokenStream {
+fn generate_method_ir(method: &MethodModel, support: &TokenStream) -> TokenStream {
     let name_str = method.name.to_string();
-    let kind = method_kind_tokens(method.kind);
-    let idempotency = idempotency_tokens(method.idempotency);
+    let kind = method_kind_tokens(method.kind, support);
+    let idempotency = idempotency_tokens(method.idempotency, support);
 
     let fields: Vec<TokenStream> = method
         .params
         .iter()
         .map(|p| {
             let p_name = p.name.to_string();
-            let ty_ref = type_to_typeref(&p.ty);
+            let ty_ref = type_to_typeref(&p.ty, support);
             let is_optional = is_option_type(&p.ty);
             quote! {
-                ::modkit_service_hub::ir::contract::FieldIr {
+                #support::ir::contract::FieldIr {
                     name: #p_name.to_owned(),
                     ty: #ty_ref,
                     optional: #is_optional,
@@ -191,14 +191,14 @@ fn generate_method_ir(method: &MethodModel) -> TokenStream {
         })
         .collect();
 
-    let output_ref = type_to_typeref(&method.output_type);
-    let error_ref = type_to_typeref(&method.error_type);
+    let output_ref = type_to_typeref(&method.output_type, support);
+    let error_ref = type_to_typeref(&method.error_type, support);
 
     quote! {
-        ::modkit_service_hub::ir::contract::MethodIr {
+        #support::ir::contract::MethodIr {
             name: #name_str.to_owned(),
             kind: #kind,
-            input: ::modkit_service_hub::ir::contract::InputShape {
+            input: #support::ir::contract::InputShape {
                 fields: vec![
                     #(#fields),*
                 ],
@@ -210,116 +210,94 @@ fn generate_method_ir(method: &MethodModel) -> TokenStream {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 4. ServiceContract impl
-// ---------------------------------------------------------------------------
-
-/// Emit the `ServiceContract` impl for `dyn TraitName`.
-fn generate_service_contract_impl(model: &ServiceContractModel) -> TokenStream {
+fn generate_contract_impl(model: &ContractModel, support: &TokenStream) -> TokenStream {
     let trait_name = &model.trait_name;
     let trait_name_str = trait_name.to_string();
     let descriptor_name = format_ident!("{}_DESCRIPTOR", trait_name_str.to_shouty_snake_case());
     let fn_name = format_ident!("{}_ir", trait_name_str.to_snake_case());
 
     quote! {
-        impl ::modkit_service_hub::contract_trait::ServiceContract for dyn #trait_name {
-            fn descriptor() -> &'static ::modkit_service_hub::descriptor::ServiceDescriptor {
+        impl #support::contract::Contract for dyn #trait_name {
+            fn descriptor() -> &'static #support::descriptor::ContractDescriptor {
                 &#descriptor_name
             }
-            fn contract_ir() -> ::modkit_service_hub::ir::contract::ServiceIr {
+
+            fn contract_ir() -> #support::ir::contract::ContractIr {
                 #fn_name()
             }
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Convert a [`MethodKind`] to its fully-qualified token representation.
-fn method_kind_tokens(kind: MethodKind) -> TokenStream {
+fn method_kind_tokens(kind: MethodKind, support: &TokenStream) -> TokenStream {
     match kind {
-        MethodKind::Unary => {
-            quote!(::modkit_service_hub::ir::contract::MethodKind::Unary)
-        }
-        MethodKind::ServerStreaming => {
-            quote!(::modkit_service_hub::ir::contract::MethodKind::ServerStreaming)
-        }
+        MethodKind::Unary => quote!(#support::ir::contract::MethodKind::Unary),
+        MethodKind::ServerStreaming => quote!(#support::ir::contract::MethodKind::ServerStreaming),
     }
 }
 
-/// Convert an [`Idempotency`] to its fully-qualified token representation.
-fn idempotency_tokens(idempotency: Idempotency) -> TokenStream {
+fn idempotency_tokens(idempotency: Idempotency, support: &TokenStream) -> TokenStream {
     match idempotency {
-        Idempotency::SafeRead => {
-            quote!(::modkit_service_hub::ir::contract::Idempotency::SafeRead)
-        }
+        Idempotency::SafeRead => quote!(#support::ir::contract::Idempotency::SafeRead),
         Idempotency::IdempotentWrite => {
-            quote!(::modkit_service_hub::ir::contract::Idempotency::IdempotentWrite)
+            quote!(#support::ir::contract::Idempotency::IdempotentWrite)
         }
         Idempotency::NonIdempotentWrite => {
-            quote!(::modkit_service_hub::ir::contract::Idempotency::NonIdempotentWrite)
+            quote!(#support::ir::contract::Idempotency::NonIdempotentWrite)
         }
     }
 }
 
-/// Convert a `syn::Type` to a token stream that constructs a `TypeRef`.
-fn type_to_typeref(ty: &syn::Type) -> TokenStream {
-    let ir = quote!(::modkit_service_hub::ir::contract);
-
+fn type_to_typeref(ty: &syn::Type, support: &TokenStream) -> TokenStream {
     if let syn::Type::Path(type_path) = ty
         && let Some(last_seg) = type_path.path.segments.last()
     {
         let ident_str = last_seg.ident.to_string();
         match ident_str.as_str() {
             "String" => {
-                return quote!(#ir::TypeRef::Primitive(#ir::PrimitiveType::String));
+                return quote!(#support::ir::contract::TypeRef::Primitive(#support::ir::contract::PrimitiveType::String));
             }
             "i32" => {
-                return quote!(#ir::TypeRef::Primitive(#ir::PrimitiveType::I32));
+                return quote!(#support::ir::contract::TypeRef::Primitive(#support::ir::contract::PrimitiveType::I32));
             }
             "i64" => {
-                return quote!(#ir::TypeRef::Primitive(#ir::PrimitiveType::I64));
+                return quote!(#support::ir::contract::TypeRef::Primitive(#support::ir::contract::PrimitiveType::I64));
             }
             "u64" => {
-                return quote!(#ir::TypeRef::Primitive(#ir::PrimitiveType::U64));
+                return quote!(#support::ir::contract::TypeRef::Primitive(#support::ir::contract::PrimitiveType::U64));
             }
             "f64" => {
-                return quote!(#ir::TypeRef::Primitive(#ir::PrimitiveType::F64));
+                return quote!(#support::ir::contract::TypeRef::Primitive(#support::ir::contract::PrimitiveType::F64));
             }
             "bool" => {
-                return quote!(#ir::TypeRef::Primitive(#ir::PrimitiveType::Bool));
+                return quote!(#support::ir::contract::TypeRef::Primitive(#support::ir::contract::PrimitiveType::Bool));
             }
             "Uuid" => {
-                return quote!(#ir::TypeRef::Primitive(#ir::PrimitiveType::Uuid));
+                return quote!(#support::ir::contract::TypeRef::Primitive(#support::ir::contract::PrimitiveType::Uuid));
             }
             "Option" => {
                 if let Some(inner) = extract_single_generic_arg(last_seg) {
-                    let inner_ref = type_to_typeref(inner);
-                    return quote!(#ir::TypeRef::Optional(Box::new(#inner_ref)));
+                    let inner_ref = type_to_typeref(inner, support);
+                    return quote!(#support::ir::contract::TypeRef::Optional(Box::new(#inner_ref)));
                 }
             }
             "Vec" => {
                 if let Some(inner) = extract_single_generic_arg(last_seg) {
-                    let inner_ref = type_to_typeref(inner);
-                    return quote!(#ir::TypeRef::List(Box::new(#inner_ref)));
+                    let inner_ref = type_to_typeref(inner, support);
+                    return quote!(#support::ir::contract::TypeRef::List(Box::new(#inner_ref)));
                 }
             }
             other => {
                 let name = (*other).to_owned();
-                return quote!(#ir::TypeRef::Named(#name.to_owned()));
+                return quote!(#support::ir::contract::TypeRef::Named(#name.to_owned()));
             }
         }
     }
 
-    // Fallback: stringify the type
     let name = quote!(#ty).to_string();
-    quote!(::modkit_service_hub::ir::contract::TypeRef::Named(#name.to_owned()))
+    quote!(#support::ir::contract::TypeRef::Named(#name.to_owned()))
 }
 
-/// Extract the single generic type argument from a path segment
-/// (e.g., `Option<T>` -> `T`, `Vec<T>` -> `T`).
 fn extract_single_generic_arg(seg: &syn::PathSegment) -> Option<&syn::Type> {
     let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
         return None;
@@ -331,7 +309,6 @@ fn extract_single_generic_arg(seg: &syn::PathSegment) -> Option<&syn::Type> {
     Some(ty)
 }
 
-/// Check whether a type is `Option<T>`.
 fn is_option_type(ty: &syn::Type) -> bool {
     if let syn::Type::Path(type_path) = ty
         && let Some(last_seg) = type_path.path.segments.last()
@@ -341,7 +318,6 @@ fn is_option_type(ty: &syn::Type) -> bool {
     false
 }
 
-/// Extract a human-readable type name string for the descriptor.
 fn type_name_str(ty: &syn::Type) -> String {
     if let syn::Type::Path(type_path) = ty
         && let Some(last_seg) = type_path.path.segments.last()

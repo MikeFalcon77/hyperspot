@@ -194,6 +194,7 @@ mod tests {
 
     static DEMO_DESCRIPTOR: ServiceDescriptor = ServiceDescriptor {
         module: "demo",
+        contract: "DemoService",
         service: "DemoService",
         version: "v1",
         methods: &[MethodDescriptor {

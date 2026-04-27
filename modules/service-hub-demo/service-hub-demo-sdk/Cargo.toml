@@ -12,7 +12,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-modkit-service-hub.workspace = true
+modkit.workspace = true
 modkit-canonical-errors.workspace = true
 modkit-canonical-errors-macro.workspace = true
 modkit-security.workspace = true
