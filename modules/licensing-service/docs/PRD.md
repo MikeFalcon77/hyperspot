@@ -8,30 +8,32 @@ PURPOSE: Define WHAT the system must do and WHY — business requirements,
 functional capabilities, and quality attributes.
 
 SCOPE:
-  ✓ Business goals and success criteria
-  ✓ Actors (users, systems) that interact with this module
-  ✓ Functional requirements (WHAT, not HOW)
-  ✓ Non-functional requirements (quality attributes, SLOs)
-  ✓ Scope boundaries (in/out of scope)
-  ✓ Assumptions, dependencies, risks
+✓ Business goals and success criteria
+✓ Actors (users, systems) that interact with this module
+✓ Functional requirements (WHAT, not HOW)
+✓ Non-functional requirements (quality attributes, SLOs)
+✓ Scope boundaries (in/out of scope)
+✓ Assumptions, dependencies, risks
 
 NOT IN THIS DOCUMENT (see other templates):
-  ✗ Stakeholder needs (managed at project/task level by steering committee)
-  ✗ Technical architecture, design decisions → DESIGN.md
-  ✗ Why a specific technical approach was chosen → ADR/
-  ✗ Detailed implementation flows, algorithms → features/
+✗ Stakeholder needs (managed at project/task level by steering committee)
+✗ Technical architecture, design decisions → DESIGN.md
+✗ Why a specific technical approach was chosen → ADR/
+✗ Detailed implementation flows, algorithms → features/
 
 STANDARDS ALIGNMENT:
-  - IEEE 830 / ISO/IEC/IEEE 29148:2018 (requirements specification)
-  - IEEE 1233 (system requirements)
-  - ISO/IEC 15288 / 12207 (requirements definition)
+
+- IEEE 830 / ISO/IEC/IEEE 29148:2018 (requirements specification)
+- IEEE 1233 (system requirements)
+- ISO/IEC 15288 / 12207 (requirements definition)
 
 REQUIREMENT LANGUAGE:
-  - Use "MUST" or "SHALL" for mandatory requirements (implicit default)
-  - Do not use "SHOULD" or "MAY" — use priority p2/p3 instead
-  - Be specific and clear; no fluff, bloat, duplication, or emoji
-=============================================================================
--->
+
+- Use "MUST" or "SHALL" for mandatory requirements (implicit default)
+- Do not use "SHOULD" or "MAY" — use priority p2/p3 instead
+- Be specific and clear; no fluff, bloat, duplication, or emoji
+  =============================================================================
+  -->
 
 ## Table of Contents
 
@@ -107,6 +109,7 @@ determinism, and deeper auditability.
 #### Priority p1 (Minimal Viable Enforcement)
 
 Scope:
+
 - canonical licensing facade and authority routing
 - entitlement read model sufficient for online checks
 - basic quota enforcement
@@ -116,6 +119,7 @@ Scope:
 - minimal runtime API surface: `Check`, `CheckAndReserve`, `Commit`
 
 Out of scope:
+
 - canonical request equality
 - byte-identical cross-node determinism
 - full reconciliation semantics
@@ -127,6 +131,7 @@ Out of scope:
 #### Priority p2 (Operational Maturity)
 
 Scope:
+
 - `released` lifecycle semantics
 - reconciliation workflows and usage-summary views
 - stricter idempotency matching
@@ -137,6 +142,7 @@ Scope:
 #### Priority p3 (Deterministic & Auditable System)
 
 Scope:
+
 - canonical determinism across replay, audit, and comparison
 - full explanation graph and structured attribution
 - hierarchical / expanded policy resolution
@@ -145,8 +151,11 @@ Scope:
 - advanced auditability and recovery semantics
 
 Interpretation rules:
-- `Priority` on an FR identifies the earliest delivery priority tier in which that requirement becomes part of the delivery contract.
-- `Strictness = REQUIRED` means the relevant priority exit depends on implementing the requirement as written for that tier.
+
+- `Priority` on an FR identifies the earliest delivery priority tier in which that requirement becomes part of the
+  delivery contract.
+- `Strictness = REQUIRED` means the relevant priority exit depends on implementing the requirement as written for that
+  tier.
 - `Strictness = RELAXED` means the requirement is a target-state constraint; lower-priority tiers may implement an
   intentionally simpler form documented in §4.6.
 - `Priority` on an NFR identifies the earliest tier at which the NFR is **tracked**, not necessarily the tier
@@ -158,64 +167,65 @@ Interpretation rules:
 
 ### 1.5 Glossary
 
-| Term | Definition |
-|------|------------|
-| Authority | The system that is currently authoritative for a licensing scope. |
-| Licensing Scope | The product, offering item, tenant scope, deployment environment, or equivalent key used to route authority and decisions. |
-| Feature | Atomic capability that may be enabled or denied for a subject or resource context. |
-| Offering Item | The commercial or operational unit that bundles one or more enabled features and limit semantics.  |
-| Entitlement Grant | A canonical record that a scope is allowed to use an offering item or feature subject to policy and limit state. |
-| Entitlement Grant Renewal Grace | Optional metadata attribute of an entitlement grant (`renewable_until: RFC3339_UTC_ms`) indicating the wall-clock instant up to which the resolving authority will accept a renewal (re-activation) of the same commercial entitlement. `renewable_until` is **informational only**: it does **NOT** alter the entitlement-grant lifecycle state closed set, does **NOT** alter admission, `decision_outcome`, `policy_effect`, or `reason_code`, and does **NOT** participate in any capacity arithmetic. Authorities that cannot distinguish a renewal grace window omit the field, and Licensing Service then emits no `renewable_until` on decision responses for scopes routed to that authority. Concrete propagation rules are specified in `cpt-cf-licensing-service-fr-entitlement-grant-renewal-grace`. |
-| Effective Limit | The resolved usage or quantity restriction applicable to the current licensing scope. |
-| Feature Activity Type | Runtime integration classification hint for a licensed feature or usage dimension; closed set `persisted` or `transient`. `persisted` indicates durable state that remains linked to ongoing entitlement or quota commitment, while `transient` indicates bounded work settled without durable existence semantics. |
-| Quantity Model | Runtime integration classification hint; closed set `counted`, `incremental`, or `absolute`. It determines how the quota layer interprets quantity changes for a usage dimension. `counted` dimensions increment a per-window counter by the policy's `counted_unit` on each admitted event; `incremental` dimensions add a caller-supplied `delta` to a per-window counter on each admitted event; `absolute` dimensions record a reporter-supplied current level and do not use a quota window. |
-| Durable Idempotency Policy | Runtime integration policy indicating whether replay protection for a feature or usage dimension must survive process restarts and terminal settlement through durable records or an equivalent durable index. |
-| Archive Policy | Runtime integration policy indicating whether settled usage or terminal runtime records are copied to historical archive storage and under which retention policy. Archive retention is distinct from online idempotency lookup requirements. |
-| Archive Duration | Historical retention period for archived settled usage or terminal runtime records used for audit and reconciliation, but not for the online idempotency path. |
-| Decision Explanation | Structured metadata describing why a request was allowed or denied and which `policy_effect`, if any, modified the returned decision. |
-| Normalized Licensing Scope | Canonical tuple `(tenant_scope, subject_scope, product_family, offering_item_or_feature, deployment_environment, usage_dimension)` used consistently for routing, cache identity, audit identity, and shadow comparison. When a dimension does not apply, the tuple uses the **canonical null-equivalent literal** for that component (see *Canonical Null-Equivalent Literal* below) rather than omitting the dimension. |
-| Canonical Null-Equivalent Literal | Reserved string literal stored in a normalized-licensing-scope component when that component does not carry a meaningful value for the request. The closed set is: `_scope_root_` for `subject_scope` when a dimension has no meaningful per-subject breakdown (e.g., scope-level reporters); `_none_` for every other tuple component (`tenant_scope`, `product_family`, `offering_item_or_feature`, `deployment_environment`, `usage_dimension`) that does not apply. These literals are case-sensitive and are the only permitted null-equivalent values; empty string, `null`, `"*"`, and other conventions are **NOT** permitted in any canonical tuple storage, hashing, or equality comparison. The `_any_` wildcard used by `scope_pattern` matching (see *Scope Pattern* below) is **disjoint** from null-equivalents: `_any_` is a policy-side wildcard never written into request-side tuples. |
-| Scope Pattern | Closed-schema policy-side declaration that specifies which requests a quota policy applies to. `scope_pattern` is an object with exactly six components matching the normalized-licensing-scope tuple: `tenant_scope`, `subject_scope`, `product_family`, `offering_item_or_feature`, `deployment_environment`, `usage_dimension`. Each component is either a concrete string literal or the reserved wildcard `_any_`. Matching rule: a policy matches a request iff every `scope_pattern` component is either `_any_` or equal (case-sensitive) to the corresponding request-side tuple component. The eight scope axes referenced by `cpt-cf-licensing-service-fr-hierarchical-scope-evaluation` (platform, region, tenant, project, user, api_key, model_family, model) project into this six-component tuple as follows: `platform` and `region` are both carried by `deployment_environment` (encoded as `<platform>/<region>`, or `_none_` when not applicable); `tenant` is carried by `tenant_scope`; subject-like axes (`project`, `user`, `api_key`, plus any registered **Subject Kind** per `cpt-cf-licensing-service-fr-subject-kind-registry`) are each carried by `subject_scope` using the canonical encoding `<subject_kind>:<opaque_id>` where `<subject_kind>` is drawn from the Subject Kind registry (`project`, `user`, `api_key` are pre-registered built-ins preserving the original encodings `project:<id>`, `user:<id>`, `api_key:<id>`), or `_scope_root_` when the dimension is not per-subject; `model_family` and `model` are each carried by `product_family` and `offering_item_or_feature` respectively (with `_any_` on the policy side or `_none_` on the request side when not applicable). Future scope axes whose domain is one concrete subject identity per request **MUST** be added by registering a new Subject Kind rather than by extending the eight-axis closed set; scope axes that are not subject-like (new top-level dimensions) require a PRD update as before. **Candidate-tuple expansion for hierarchical evaluation.** Because a single request has at most one concrete value per subject axis (one `user`, one `project`, one `api_key` identity), but `cpt-cf-licensing-service-fr-hierarchical-scope-evaluation` requires the request to participate in policies targeting **any** of the eight axes, the policy resolver deterministically expands each incoming request into a set of **candidate request tuples** (one per applicable axis), obtained by holding the non-subject components fixed and substituting the appropriate `subject_scope` encoding (`project:<id>`, `user:<id>`, `api_key:<id>`, or `_scope_root_`) for subject axes; for non-subject axes (platform, region, tenant, model_family, model) the request tuple already pins the corresponding component. A policy's `scope_pattern` is matched against every candidate tuple; if it matches any, the policy enters `P_applicable`. Candidate-tuple generation **MUST** be deterministic, bounded (at most eight tuples per request in p1), and produce byte-identical inputs across implementations so that `P_applicable` is stable. |@@
-| Operation Type | Closed-set string discriminator used for runtime idempotency. The minimal p1 set is `{ check, check_and_reserve, commit }`. Lower-priority tiers extend it additively with `{ release, update, acquire_lease, renew_lease, release_lease }`. Lookup operations never create idempotency records and MAY carry identifiers for correlation only. |
-| Policy Store Snapshot | Logical read view over quota-policy records used by the resolver for one evaluation. All precedence filtering, masking, warning/cap/downgrade evaluation, and explanation fields for that evaluation **MUST** be computed against one internally consistent set of policy records; policy mutations observed after evaluation starts **MUST NOT** partially affect that evaluation. Version tokens and storage-level snapshot identifiers are implementation details. |
-| Canonical Serialization (of `P_applicable`) | Deterministic representation of the effective policy set used for audit replay and comparison in later tiers. When this PRD requires byte-stable comparison or before/after snapshots, the same semantic `P_applicable` set **MUST** serialize identically, policies **MUST** be ordered lexicographically by `policy_id`, and a field that this PRD requires to be absent **MUST NOT** be serialized with a sentinel substitute. The future-only `scope_pattern_sort_key` (see below) governs deterministic ordering of `scope_pattern` objects themselves when a later PRD version extends that grammar; it does **NOT** replace the lexicographic `policy_id` ordering of `P_applicable`. The concrete wire or storage format is implementation detail. |
-| Scope Pattern Sort Key | Deterministic six-component tuple key of a `scope_pattern` object in the fixed component order `(tenant_scope, subject_scope, product_family, offering_item_or_feature, deployment_environment, usage_dimension)`. Each component is compared as its canonical string literal, with `_any_` participating as the literal string `_any_`; no wildcard-specific secondary order exists. This key is reserved for future grammar extensions that need to compare or order `scope_pattern` objects themselves; in the current PRD it does **NOT** affect `P_applicable` ordering, which remains lexicographic by `policy_id`. |
-| Current Quota Window | For a quota policy with `period ∈ { hourly, daily, weekly, monthly, billing_cycle }`, the half-open interval `[window_start, window_end)` that contains `now_at_evaluation`. Boundary alignment is fixed and UTC-based: `hourly` starts at the top of the current hour; `daily` at `00:00:00` of the current calendar day; `weekly` at `00:00:00` of the most recent Monday; `monthly` at `00:00:00` of the first day of the current calendar month; `billing_cycle` at `00:00:00` of the most recent occurrence of `billing_anchor_day`, where `billing_anchor_day ∈ [1, 28]`. An event at `window_end` belongs to the next window. A window is **closed** once `window_end <= now_at_evaluation`; admission and counter arithmetic **MUST** exclude reservations and committed-usage records whose `accepted_at` falls in a closed prior window. |
-| Authority Emission Timestamp | Wall-clock instant (RFC3339 UTC, millisecond precision) at which the resolving authority produced the observed canonical entitlement or effective-limit record. Per-mode source rules are normative: for `native_authoritative` scopes, this is the authoritative transaction commit timestamp (`committed_at`) of the native entitlement store; for `legacy_authoritative` scopes, this is the legacy adapter's `last_successful_refresh_at` for the enclosing projection; for fast-path-cached values, this is the pass-through value from the underlying authority (cache ingestion time is **NOT** permitted as an authority-emission source). |
-| Allowed Clock Skew Seconds | Module-wide startup-configurable boundary-tolerance constant used by §4.4 Clock authority for every comparison of a persisted or derived timestamp against local "now". Integer seconds; p1 default `5`; allowed range `[0, 60]`; every node in one deployment **MUST** use the same configured value. For a threshold `T` separating a less-severe class from a more-severe class, any computed excess `<= allowed_clock_skew_seconds` remains in the less-severe class; only an excess `> allowed_clock_skew_seconds` crosses into the more-severe class. |
-| Max Reservation TTL Seconds | Module-wide startup-configurable hard ceiling on reservation TTL. Integer seconds; p1 default `900`; allowed range `[1, 86_400]`. Every policy field `default_reservation_ttl_seconds` and every effective reservation TTL **MUST** be `<= max_reservation_ttl_seconds`. |
-| Settlement Grace Period Seconds | Module-wide startup-configurable post-settlement replay grace added to *Max Reservation TTL Seconds* to form the online replay horizon. Integer seconds; p1 default `300`; allowed range `[0, 3_600]`. |
-| Archive Retention Seconds | Module-wide startup-configurable retention horizon for historical settled-usage and terminal runtime records used for audit and reconciliation, independent of the online replay horizon. Integer seconds; p1 default `7_776_000` (90 days); allowed range `[2_592_000, 31_536_000]` (30 days to 1 year). `archive_retention_seconds` governs long-term storage only and **MUST NOT** be used as the online idempotency replay lookup horizon. |
-| Decision Outcome | Final business decision returned to the caller; closed set `allow` or `deny`. |
-| Policy Effect | Closed-set non-outcome modifier applied to a decision; `none`, `capped`, `downgraded`, `deferred`, or `warned`. |
-| Admission Outcome | Quota-layer-specific closed-set label describing the runtime admission result of a quota-governed operation; closed set `admitted`, `admitted_with_warning`, `admitted_with_cap`, `admitted_with_downgrade`, or `rejected`. Admission outcomes are an additional field on quota decision responses and map deterministically onto the canonical `decision_outcome` and `policy_effect` pair. |
-| Decision State | Quality state of the decision evidence; closed set `authoritative` or `degraded`. |
-| Reason Code | Closed-set machine-readable code explaining the primary cause of a decision or degraded condition. |
-| Correlation ID | Stable request-scoped identifier that links decision responses, logs, audits, and shadow comparison records. Type `String`; charset `^[A-Za-z0-9._:\-]+$`; length `1..=128`; case-sensitive; compared byte-wise (no Unicode normalization, no case-folding). When the caller omits it, the module **MUST** generate a UUIDv7 and emit it in the canonical RFC 4122 / RFC 9562 §4 string form (lowercase, 8-4-4-4-12 hex groups separated by hyphens, e.g. `018f4b2c-7c1e-73a8-9d6e-2b4c5e1f9a01`), which conforms to the charset. Values outside the charset or length are rejected with `error_code = invalid_correlation_id`. |
-| Client Operation ID | Stable business-level operation identifier supplied by the caller to correlate preview, enforcement, recovery, and settlement attempts for the same real-world action across retries and partial failures. Type `String`; charset and length identical to *Correlation ID*; case-sensitive; byte-wise comparison. Uniqueness is **caller-scoped**: the caller is responsible for producing values that are unique within the `(tenant_scope, subject_scope)` it addresses; the module **MUST NOT** de-duplicate across callers but **MUST** enforce per-call equality under the idempotency-record rules of `cpt-cf-licensing-service-fr-idempotent-lifecycle`. Distinct from `idempotency_key`: a single `client_operation_id` correlates multiple distinct API calls (preview, reserve, commit, release) for one business operation, whereas each `idempotency_key` deduplicates a single API call. |
-| Idempotency Key | Transport-level per-call deduplication identifier supplied by the caller for a single API invocation (for example, one `CheckAndReserve` call) so that network retries of that same call do not produce duplicate side effects. Type `String`; charset and length identical to *Correlation ID*; case-sensitive; byte-wise comparison. Uniqueness scope is the full idempotency-record key `(client_operation_id, operation_type, idempotency_key)` per `cpt-cf-licensing-service-fr-idempotent-lifecycle`; values outside the charset or length are rejected with `error_code = invalid_request`. Distinct from `client_operation_id`, which correlates across different API calls of the same business operation. |
-| Evaluation Clock Instants | Names used in this PRD for time reads and persisted boundary timestamps. `now_at_module` is the evaluating node's wall-clock read; `now_at_evaluation` is the single `now_at_module` value reused throughout one admission, lookup, or admin-mutation validation. `created_at`, `accepted_at`, and `first_acquired_at` are persisted record-creation instants written once by the fast-path state store. `committed_at` and `released_at` are persisted terminal-transition instants written once when those terminal transitions are accepted. `expired_at` is the persisted terminal-transition instant written once at the first accepted transition that classifies the record as `expired`; readers **MUST NOT** recompute `expired_at` from `expires_at` against local wall-clock. Boundary comparisons in this PRD use these names exactly and follow §4.4 Clock authority. |
-| Freshness State | Indicator of authority-data freshness; closed set `fresh`, `stale_within_policy`, or `stale_beyond_policy`. |
-| Service Error | Failure to produce a semantically valid licensing decision due to invalid input, unresolved routing, dependency failure without permitted degraded handling, or internal processing failure. |
-| Shadow Comparison Bucket | Closed-set classification (`shadow_comparison_bucket`) of how an authoritative decision differs from its shadow decision; full set defined in `cpt-cf-licensing-service-fr-shadow-observability`. |
-| Quota Policy | A rule that defines limits, scope, behavior, and priority for a resource-governed action. |
-| Resource Type | A governed measurement dimension such as requests, input tokens, output tokens, storage bytes, cost units, or a custom unit. |
-| Reservation | A temporary hold on quota capacity before an operation completes. |
-| Usage Event | A record of estimated or actual resource consumption tied to a subject, action, and lifecycle state. |
-| Effective Quota | The resolved set of applicable limits after inheritance, overrides, and scope evaluation. |
-| Soft Quota | A limit that triggers non-terminal behavior such as warning, downgrade, or capping. |
-| Hard Quota | A limit that blocks execution when violated. |
-| Reconciliation | The process that repairs divergence between fast-path reservation state and durable authoritative accounting. |
-| Bounded Overshoot | The explicitly tolerated gap between ideal quota enforcement and observed real-world consumption under distributed conditions. |
-| Registry Cache TTL | Short-duration fast-path cache for resource-type registry declarations used by admission, shadow comparison, and audit-record emission. Governed by module-wide constants `registry_cache_ttl_seconds` (p1 default `300`, range `[10, 3600]`) and `registry_cache_invalidation_deadline_seconds` (p1 default `10`). When the registry publishes a new or retired declaration, nodes observing the invalidation event **MUST** drop the cached entry within the invalidation deadline; when no invalidation event has been observed, a node **MUST** refetch before serving a request after `registry_cache_ttl_seconds` elapses. Cache lifetime is **not** an authority-freshness source; canonical-unit semantics are authoritative in the durable registry per `cpt-cf-licensing-service-fr-resource-types`. |
-| Counter Retention | Retention horizon for per-window quota counters in the fast-path state store after the window has closed. The horizon is the compound value `counter_retention_seconds = max_retry_after_seconds + allowed_clock_skew_seconds` so that late admissions at the boundary still observe the prior-window counter when needed before asynchronous expiry. Counters are **not** actively cleared at the window boundary — admission logic keys counters by `window_start`, and a fresh window yields a new counter key that reads `0`. A closed-window counter addressed by its exact `(normalized_licensing_scope, policy_id, window_start)` key **MUST** remain readable until at least `window_end + counter_retention_seconds`; after that horizon it MAY be deleted asynchronously. A lookup for the current window **MUST NOT** fall back to a prior-window counter key. |
-| Policy Identifier (`policy_id`) | Stable string identifier for a `QuotaPolicy` record. Type `String`; charset `^[A-Za-z0-9._:\-]+$`; length `1..=128`; case-sensitive; compared byte-wise (no Unicode normalization, no case-folding). Used pervasively as a deterministic final tie-breaker for total orders in admission (`cpt-cf-licensing-service-fr-soft-threshold-mechanics`), precedence filtering (`cpt-cf-licensing-service-fr-quota-policy-resolution`), and as a sort key in audit and response fields (`limiting_policy_ids`, `target_policy_ids`, `contributing_policies[*].policy_id`, `masked_policies[*].policy_id`). Any policy submission with a `policy_id` outside this domain **MUST** be rejected at policy admission with `error_code = policy_config_conflict`. Two implementations reading the same admission inputs therefore produce byte-identical ordered lists of `policy_id` values. |
-| Scope Level | Closed-set enumeration of the eight canonical scope axes used wherever a `scope_level` field appears in request, policy, or response payloads. The closed set, in the canonical scope-narrowness total order (narrowest → widest) defined in `cpt-cf-licensing-service-fr-soft-threshold-mechanics`, is `{ model, api_key, user, project, model_family, tenant, region, platform }`. Values outside this set **MUST NOT** appear in any canonical payload; audit comparators and shadow comparators **MUST** treat any out-of-set value as a payload defect (`invalid_request` on ingress, mismatch on egress). Future additive extensions of this enum require a PRD update and an ADR per the extension rule already stated for the scope-narrowness total order. |
-| Subject Kind | Registered namespaced identifier used as the prefix of a concrete `subject_scope` value, forming the canonical encoding `<subject_kind>:<opaque_id>`. `subject_kind` is drawn from a platform-wide registry governed by `cpt-cf-licensing-service-fr-subject-kind-registry`, with syntax `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` and length `3..=128`. Built-in pre-registered kinds in p1 are `project`, `user`, `api_key` (preserving the original scope-axis encodings). Canonical equality over `subject_scope` is byte-wise over the full `<subject_kind>:<opaque_id>` string; case-sensitive; no normalization. The reserved literals `_scope_root_` (dimension is not per-subject) and `_none_` (component does not apply) are **not** subject-kind values and remain governed by *Canonical Null-Equivalent Literal*. Registration of a new subject kind is additive and non-breaking; unregistering or re-mapping an existing kind is breaking and requires a PRD update. |
+| Term                                        | Definition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+|---------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Authority                                   | The system that is currently authoritative for a licensing scope.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Licensing Scope                             | The product, offering item, tenant scope, deployment environment, or equivalent key used to route authority and decisions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Feature                                     | Atomic capability that may be enabled or denied for a subject or resource context.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Offering Item                               | The commercial or operational unit that bundles one or more enabled features and limit semantics.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Entitlement Grant                           | A canonical record that a scope is allowed to use an offering item or feature subject to policy and limit state.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Entitlement Grant Renewal Grace             | Optional metadata attribute of an entitlement grant (`renewable_until: RFC3339_UTC_ms`) indicating the wall-clock instant up to which the resolving authority will accept a renewal (re-activation) of the same commercial entitlement. `renewable_until` is **informational only**: it does **NOT** alter the entitlement-grant lifecycle state closed set, does **NOT** alter admission, `decision_outcome`, `policy_effect`, or `reason_code`, and does **NOT** participate in any capacity arithmetic. Authorities that cannot distinguish a renewal grace window omit the field, and Licensing Service then emits no `renewable_until` on decision responses for scopes routed to that authority. Concrete propagation rules are specified in `cpt-cf-licensing-service-fr-entitlement-grant-renewal-grace`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Effective Limit                             | The resolved usage or quantity restriction applicable to the current licensing scope.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Feature Activity Type                       | Runtime integration classification hint for a licensed feature or usage dimension; closed set `persisted` or `transient`. `persisted` indicates durable state that remains linked to ongoing entitlement or quota commitment, while `transient` indicates bounded work settled without durable existence semantics.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Quantity Model                              | Runtime integration classification hint; closed set `counted`, `incremental`, or `absolute`. It determines how the quota layer interprets quantity changes for a usage dimension. `counted` dimensions increment a per-window counter by the policy's `counted_unit` on each admitted event; `incremental` dimensions add a caller-supplied `delta` to a per-window counter on each admitted event; `absolute` dimensions record a reporter-supplied current level and do not use a quota window.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Durable Idempotency Policy                  | Runtime integration policy indicating whether replay protection for a feature or usage dimension must survive process restarts and terminal settlement through durable records or an equivalent durable index.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Archive Policy                              | Runtime integration policy indicating whether settled usage or terminal runtime records are copied to historical archive storage and under which retention policy. Archive retention is distinct from online idempotency lookup requirements.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Archive Duration                            | Historical retention period for archived settled usage or terminal runtime records used for audit and reconciliation, but not for the online idempotency path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Decision Explanation                        | Structured metadata describing why a request was allowed or denied and which `policy_effect`, if any, modified the returned decision.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Normalized Licensing Scope                  | Canonical tuple `(tenant_scope, subject_scope, product_family, offering_item_or_feature, deployment_environment, usage_dimension)` used consistently for routing, cache identity, audit identity, and shadow comparison. When a dimension does not apply, the tuple uses the **canonical null-equivalent literal** for that component (see *Canonical Null-Equivalent Literal* below) rather than omitting the dimension.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Canonical Null-Equivalent Literal           | Reserved string literal stored in a normalized-licensing-scope component when that component does not carry a meaningful value for the request. The closed set is: `_scope_root_` for `subject_scope` when a dimension has no meaningful per-subject breakdown (e.g., scope-level reporters); `_none_` for every other tuple component (`tenant_scope`, `product_family`, `offering_item_or_feature`, `deployment_environment`, `usage_dimension`) that does not apply. These literals are case-sensitive and are the only permitted null-equivalent values; empty string, `null`, `"*"`, and other conventions are **NOT** permitted in any canonical tuple storage, hashing, or equality comparison. The `_any_` wildcard used by `scope_pattern` matching (see *Scope Pattern* below) is **disjoint** from null-equivalents: `_any_` is a policy-side wildcard never written into request-side tuples.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Scope Pattern                               | Closed-schema policy-side declaration that specifies which requests a quota policy applies to. `scope_pattern` is an object with exactly six components matching the normalized-licensing-scope tuple: `tenant_scope`, `subject_scope`, `product_family`, `offering_item_or_feature`, `deployment_environment`, `usage_dimension`. Each component is either a concrete string literal or the reserved wildcard `_any_`. Matching rule: a policy matches a request iff every `scope_pattern` component is either `_any_` or equal (case-sensitive) to the corresponding request-side tuple component. The canonical scope levels referenced by `cpt-cf-licensing-service-fr-hierarchical-scope-evaluation` project into this six-component tuple as follows: `platform` and `region` are both carried by `deployment_environment` (encoded as `<platform>/<region>`, or `_none_` when not applicable); `tenant` is carried by `tenant_scope`; subject levels such as `project` and `user`, plus any registered **Subject Kind** per `cpt-cf-licensing-service-fr-subject-kind-registry`, are carried by `subject_scope` using the canonical encoding `<subject_kind>:<opaque_id>`, or `_scope_root_` when the dimension is not per-subject. Domain-specific caller identities, credentials, installations, agents, devices, namespaces, buckets, provider accounts, or similar per-subject identities **MUST** be represented as registered `subject_kind` values rather than as new global scope levels. Domain-specific target or resource dimensions such as target class, storage class, vector index class, provider SKU, or workload class **MUST** be represented through `product_family`, `offering_item_or_feature`, and/or `usage_dimension` with registered resource-type semantics, not by extending the global `Scope Level` enum. **Candidate-tuple expansion for hierarchical evaluation.** The policy resolver deterministically expands each incoming request into a bounded set of **candidate request tuples** by holding product, offering, deployment, and usage-dimension components fixed and substituting each available subject identity (`project:<id>`, `user:<id>`, registered custom subject identities, or `_scope_root_`) into `subject_scope`; platform, region, and tenant policies match through their corresponding tuple components. A policy's `scope_pattern` is matched against every candidate tuple; if it matches any, the policy enters `P_applicable`. Candidate-tuple generation **MUST** be deterministic, bounded by the number of subject identities supplied in the request plus the `_scope_root_` tuple, and produce byte-identical inputs across implementations so that `P_applicable` is stable. |
+| Operation Type                              | Closed-set string discriminator used for runtime idempotency. The minimal p1 set is `{ check, check_and_reserve, commit }`. Lower-priority tiers extend it additively with `{ release, update, acquire_lease, renew_lease, release_lease }`. Lookup operations never create idempotency records and MAY carry identifiers for correlation only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Policy Store Snapshot                       | Logical read view over quota-policy records used by the resolver for one evaluation. All precedence filtering, masking, warning/cap/downgrade evaluation, and explanation fields for that evaluation **MUST** be computed against one internally consistent set of policy records; policy mutations observed after evaluation starts **MUST NOT** partially affect that evaluation. Version tokens and storage-level snapshot identifiers are implementation details.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Canonical Serialization (of `P_applicable`) | Deterministic representation of the effective policy set used for audit replay and comparison in later tiers. When this PRD requires byte-stable comparison or before/after snapshots, the same semantic `P_applicable` set **MUST** serialize identically, policies **MUST** be ordered lexicographically by `policy_id`, and a field that this PRD requires to be absent **MUST NOT** be serialized with a sentinel substitute. The future-only `scope_pattern_sort_key` (see below) governs deterministic ordering of `scope_pattern` objects themselves when a later PRD version extends that grammar; it does **NOT** replace the lexicographic `policy_id` ordering of `P_applicable`. The concrete wire or storage format is implementation detail.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Scope Pattern Sort Key                      | Deterministic six-component tuple key of a `scope_pattern` object in the fixed component order `(tenant_scope, subject_scope, product_family, offering_item_or_feature, deployment_environment, usage_dimension)`. Each component is compared as its canonical string literal, with `_any_` participating as the literal string `_any_`; no wildcard-specific secondary order exists. This key is reserved for future grammar extensions that need to compare or order `scope_pattern` objects themselves; in the current PRD it does **NOT** affect `P_applicable` ordering, which remains lexicographic by `policy_id`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Current Quota Window                        | For a quota policy with `period ∈ { hourly, daily, weekly, monthly, billing_cycle }`, the half-open interval `[window_start, window_end)` that contains `now_at_evaluation`. Boundary alignment is fixed and UTC-based: `hourly` starts at the top of the current hour; `daily` at `00:00:00` of the current calendar day; `weekly` at `00:00:00` of the most recent Monday; `monthly` at `00:00:00` of the first day of the current calendar month; `billing_cycle` at `00:00:00` of the most recent occurrence of `billing_anchor_day`, where `billing_anchor_day ∈ [1, 28]`. An event at `window_end` belongs to the next window. A window is **closed** once `window_end <= now_at_evaluation`; admission and counter arithmetic **MUST** exclude reservations and committed-usage records whose `accepted_at` falls in a closed prior window.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Authority Emission Timestamp                | Wall-clock instant (RFC3339 UTC, millisecond precision) at which the resolving authority produced the observed canonical entitlement or effective-limit record. Per-mode source rules are normative: for `native_authoritative` scopes, this is the authoritative transaction commit timestamp (`committed_at`) of the native entitlement store; for `legacy_authoritative` scopes, this is the legacy adapter's `last_successful_refresh_at` for the enclosing projection; for fast-path-cached values, this is the pass-through value from the underlying authority (cache ingestion time is **NOT** permitted as an authority-emission source).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Allowed Clock Skew Seconds                  | Module-wide startup-configurable boundary-tolerance constant used by §4.4 Clock authority for every comparison of a persisted or derived timestamp against local "now". Integer seconds; p1 default `5`; allowed range `[0, 60]`; every node in one deployment **MUST** use the same configured value. For a threshold `T` separating a less-severe class from a more-severe class, any computed excess `<= allowed_clock_skew_seconds` remains in the less-severe class; only an excess `> allowed_clock_skew_seconds` crosses into the more-severe class.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Max Reservation TTL Seconds                 | Module-wide startup-configurable hard ceiling on reservation TTL. Integer seconds; p1 default `900`; allowed range `[1, 86_400]`. Every policy field `default_reservation_ttl_seconds` and every effective reservation TTL **MUST** be `<= max_reservation_ttl_seconds`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Settlement Grace Period Seconds             | Module-wide startup-configurable post-settlement replay grace added to *Max Reservation TTL Seconds* to form the online replay horizon. Integer seconds; p1 default `300`; allowed range `[0, 3_600]`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Archive Retention Seconds                   | Module-wide startup-configurable retention horizon for historical settled-usage and terminal runtime records used for audit and reconciliation, independent of the online replay horizon. Integer seconds; p1 default `7_776_000` (90 days); allowed range `[2_592_000, 31_536_000]` (30 days to 1 year). `archive_retention_seconds` governs long-term storage only and **MUST NOT** be used as the online idempotency replay lookup horizon.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Decision Outcome                            | Final business decision returned to the caller; closed set `allow` or `deny`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Policy Effect                               | Closed-set non-outcome modifier applied to a decision; `none`, `capped`, `downgraded`, `deferred`, or `warned`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Admission Outcome                           | Quota-layer-specific closed-set label describing the runtime admission result of a quota-governed operation; closed set `admitted`, `admitted_with_warning`, `admitted_with_cap`, `admitted_with_downgrade`, or `rejected`. Admission outcomes are an additional field on quota decision responses and map deterministically onto the canonical `decision_outcome` and `policy_effect` pair.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Decision State                              | Quality state of the decision evidence; closed set `authoritative` or `degraded`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Reason Code                                 | Closed-set machine-readable code explaining the primary cause of a decision or degraded condition.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Correlation ID                              | Stable request-scoped identifier that links decision responses, logs, audits, and shadow comparison records. Type `String`; charset `^[A-Za-z0-9._:\-]+$`; length `1..=128`; case-sensitive; compared byte-wise (no Unicode normalization, no case-folding). When the caller omits it, the module **MUST** generate a UUIDv7 and emit it in the canonical RFC 4122 / RFC 9562 §4 string form (lowercase, 8-4-4-4-12 hex groups separated by hyphens, e.g. `018f4b2c-7c1e-73a8-9d6e-2b4c5e1f9a01`), which conforms to the charset. Values outside the charset or length are rejected with `error_code = invalid_correlation_id`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Client Operation ID                         | Stable business-level operation identifier supplied by the caller to correlate preview, enforcement, recovery, and settlement attempts for the same real-world action across retries and partial failures. Type `String`; charset and length identical to *Correlation ID*; case-sensitive; byte-wise comparison. Uniqueness is **caller-scoped**: the caller is responsible for producing values that are unique within the `(tenant_scope, subject_scope)` it addresses; the module **MUST NOT** de-duplicate across callers but **MUST** enforce per-call equality under the idempotency-record rules of `cpt-cf-licensing-service-fr-idempotent-lifecycle`. Distinct from `idempotency_key`: a single `client_operation_id` correlates multiple distinct API calls (preview, reserve, commit, release) for one business operation, whereas each `idempotency_key` deduplicates a single API call.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Idempotency Key                             | Transport-level per-call deduplication identifier supplied by the caller for a single API invocation (for example, one `CheckAndReserve` call) so that network retries of that same call do not produce duplicate side effects. Type `String`; charset and length identical to *Correlation ID*; case-sensitive; byte-wise comparison. Uniqueness scope is the full idempotency-record key `(client_operation_id, operation_type, idempotency_key)` per `cpt-cf-licensing-service-fr-idempotent-lifecycle`; values outside the charset or length are rejected with `error_code = invalid_request`. Distinct from `client_operation_id`, which correlates across different API calls of the same business operation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Evaluation Clock Instants                   | Names used in this PRD for time reads and persisted boundary timestamps. `now_at_module` is the evaluating node's wall-clock read; `now_at_evaluation` is the single `now_at_module` value reused throughout one admission, lookup, or admin-mutation validation. `created_at`, `accepted_at`, and `first_acquired_at` are persisted record-creation instants written once by the fast-path state store. `committed_at` and `released_at` are persisted terminal-transition instants written once when those terminal transitions are accepted. `expired_at` is the persisted terminal-transition instant written once at the first accepted transition that classifies the record as `expired`; readers **MUST NOT** recompute `expired_at` from `expires_at` against local wall-clock. Boundary comparisons in this PRD use these names exactly and follow §4.4 Clock authority.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Freshness State                             | Indicator of authority-data freshness; closed set `fresh`, `stale_within_policy`, or `stale_beyond_policy`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Service Error                               | Failure to produce a semantically valid licensing decision due to invalid input, unresolved routing, dependency failure without permitted degraded handling, or internal processing failure.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Shadow Comparison Bucket                    | Closed-set classification (`shadow_comparison_bucket`) of how an authoritative decision differs from its shadow decision; full set defined in `cpt-cf-licensing-service-fr-shadow-observability`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Quota Policy                                | A rule that defines limits, scope, behavior, and priority for a resource-governed action.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Resource Type                               | A governed measurement dimension such as requests, input tokens, output tokens, storage bytes, cost units, or a custom unit.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Reservation                                 | A temporary hold on quota capacity before an operation completes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Usage Event                                 | A record of estimated or actual resource consumption tied to a subject, action, and lifecycle state.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Effective Quota                             | The resolved set of applicable limits after inheritance, overrides, and scope evaluation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Soft Quota                                  | A limit that triggers non-terminal behavior such as warning, downgrade, or capping.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Hard Quota                                  | A limit that blocks execution when violated.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Reconciliation                              | The process that repairs divergence between fast-path reservation state and durable authoritative accounting.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Bounded Overshoot                           | The explicitly tolerated gap between ideal quota enforcement and observed real-world consumption under distributed conditions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Registry Cache TTL                          | Short-duration fast-path cache for resource-type registry declarations used by admission, shadow comparison, and audit-record emission. Governed by module-wide constants `registry_cache_ttl_seconds` (p1 default `300`, range `[10, 3600]`) and `registry_cache_invalidation_deadline_seconds` (p1 default `10`). When the registry publishes a new or retired declaration, nodes observing the invalidation event **MUST** drop the cached entry within the invalidation deadline; when no invalidation event has been observed, a node **MUST** refetch before serving a request after `registry_cache_ttl_seconds` elapses. Cache lifetime is **not** an authority-freshness source; canonical-unit semantics are authoritative in the durable registry per `cpt-cf-licensing-service-fr-resource-types`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Counter Retention                           | Retention horizon for per-window quota counters in the fast-path state store after the window has closed. The horizon is the compound value `counter_retention_seconds = max_retry_after_seconds + allowed_clock_skew_seconds` so that late admissions at the boundary still observe the prior-window counter when needed before asynchronous expiry. Counters are **not** actively cleared at the window boundary — admission logic keys counters by `window_start`, and a fresh window yields a new counter key that reads `0`. A closed-window counter addressed by its exact `(normalized_licensing_scope, policy_id, window_start)` key **MUST** remain readable until at least `window_end + counter_retention_seconds`; after that horizon it MAY be deleted asynchronously. A lookup for the current window **MUST NOT** fall back to a prior-window counter key.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Policy Identifier (`policy_id`)             | Stable string identifier for a `QuotaPolicy` record. Type `String`; charset `^[A-Za-z0-9._:\-]+$`; length `1..=128`; case-sensitive; compared byte-wise (no Unicode normalization, no case-folding). Used pervasively as a deterministic final tie-breaker for total orders in admission (`cpt-cf-licensing-service-fr-soft-threshold-mechanics`), precedence filtering (`cpt-cf-licensing-service-fr-quota-policy-resolution`), and as a sort key in audit and response fields (`limiting_policy_ids`, `target_policy_ids`, `contributing_policies[*].policy_id`, `masked_policies[*].policy_id`). Any policy submission with a `policy_id` outside this domain **MUST** be rejected at policy admission with `error_code = policy_config_conflict`. Two implementations reading the same admission inputs therefore produce byte-identical ordered lists of `policy_id` values.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Scope Level                                 | Closed-set enumeration of the canonical scope levels used wherever a `scope_level` field appears in request, policy, or response payloads. The closed set, in the canonical scope-narrowness total order (narrowest → widest) defined in `cpt-cf-licensing-service-fr-soft-threshold-mechanics`, is `{ user, project, tenant, region, platform }`. Values outside this set **MUST NOT** appear in any canonical payload; audit comparators and shadow comparators **MUST** treat any out-of-set value as a payload defect (`invalid_request` on ingress, mismatch on egress). Domain-specific identities and target/resource classes **MUST NOT** be added to this enum solely to model product-specific quotas; use `subject_scope` with a registered Subject Kind for per-subject identities and `usage_dimension` with a registered resource type for quota dimensions. Future additive extensions of this enum require a PRD update and an ADR per the extension rule already stated for the scope-narrowness total order.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Subject Kind                                | Registered namespaced identifier used as the prefix of a concrete `subject_scope` value, forming the canonical encoding `<subject_kind>:<opaque_id>`. `subject_kind` is drawn from a platform-wide registry governed by `cpt-cf-licensing-service-fr-subject-kind-registry`, with syntax `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` and length `3..=128`. Built-in pre-registered kinds in p1 are `project` and `user`. Canonical equality over `subject_scope` is byte-wise over the full `<subject_kind>:<opaque_id>` string; case-sensitive; no normalization. The reserved literals `_scope_root_` (dimension is not per-subject) and `_none_` (component does not apply) are **not** subject-kind values and remain governed by *Canonical Null-Equivalent Literal*. Registration of a new subject kind is additive and non-breaking; unregistering or re-mapping an existing kind is breaking and requires a PRD update.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ## 2. Actors
 
-> **Note**: Stakeholder needs are managed at project/task level by steering committee. Document **actors** (users, systems) that interact with this module.
+> **Note**: Stakeholder needs are managed at project/task level by steering committee. Document **actors** (users,
+> systems) that interact with this module.
 
 ### 2.1 Human Actors
 
@@ -279,23 +289,29 @@ Interpretation rules:
 
 **ID**: `cpt-cf-licensing-service-actor-legacy-vendora-licensing`
 
-- **Role**: Acts as the authoritative commercial source for legacy-controlled scopes and supplies source data through the legacy adapter.
+- **Role**: Acts as the authoritative commercial source for legacy-controlled scopes and supplies source data through
+  the legacy adapter.
 
 #### Native Licensing Store
 
 **ID**: `cpt-cf-licensing-service-actor-native-licensing-store`
 
-- **Role**: Persists native-authoritative entitlement grants, offering-item associations, and effective limits for platform-native scopes.
+- **Role**: Persists native-authoritative entitlement grants, offering-item associations, and effective limits for
+  platform-native scopes.
 
 ## 3. Operational Concept & Environment
 
-> **Note**: Project-wide runtime, OS, architecture, lifecycle policy, and integration patterns defined in root PRD. Document only module-specific deviations here. **Delete this section if no special constraints.**
+> **Note**: Project-wide runtime, OS, architecture, lifecycle policy, and integration patterns defined in root PRD.
+> Document only module-specific deviations here. **Delete this section if no special constraints.**
 
 ### 3.1 Module-Specific Environment Constraints
 
-- The module must support deployments both inside legacy VendorA data center environments and in platform-native environments.
-- Hot-path licensing decisions must rely on local projections, caches, or native stores rather than deep synchronous traversal of legacy authority graphs.
-- Degraded behavior must preserve explicit authority identity, freshness state, and limiting-factor information when upstream authority data is stale or unavailable.
+- The module must support deployments both inside legacy VendorA data center environments and in platform-native
+  environments.
+- Hot-path licensing decisions must rely on local projections, caches, or native stores rather than deep synchronous
+  traversal of legacy authority graphs.
+- Degraded behavior must preserve explicit authority identity, freshness state, and limiting-factor information when
+  upstream authority data is stale or unavailable.
 - The module operates in a multi-tenant platform environment and every runtime decision request includes subject, scope,
   action, resource dimensions, and idempotency metadata.
 - The module requires a low-latency enforcement path for preview and reservation decisions and a separate durable path
@@ -310,28 +326,32 @@ Interpretation rules:
 - Canonical licensing and quota API and SDK for platform consumers.
 - Authority routing between legacy-authoritative and native-authoritative scopes.
 - Canonical read model for feature entitlements, offering items, and effective limits.
-- Legacy VendorA licensing adapter as a ModKit plugin boundary behind the Licensing Service public API and normalization boundary.
+- Legacy VendorA licensing adapter as a ModKit plugin boundary behind the Licensing Service public API and normalization
+  boundary.
 - Native licensing authority mode for platform-native scopes.
 - Decision explanation that identifies authority, limiting factor, and policy basis.
 - Shadow-mode comparison support during migration.
 - Licensing-health observability, reconciliation hooks, and sync status visibility.
 - Quota policy administration for default plans, scoped policies, overrides, and expiration.
-- Deterministic policy resolution across platform, region, tenant, project, user, API key, model family, and model
-  scopes.
+- Deterministic policy resolution across platform, region, tenant, and subject scopes, with product, offering,
+  deployment, and usage-dimension filters carried by the normalized licensing scope.
 - Multi-dimensional quota evaluation across requests, tokens, storage, cost units, concurrency, and extensible custom
   resource types.
 - Soft and hard quota behaviors including warning, downgrade, capping, reject, and retry-after responses.
 - Reservation-based enforcement flows with estimated and actual usage settlement.
 - Durable usage accounting, aggregate usage summaries, and reconciliation of reservation drift.
 - Explainable decision responses for preview, reserve, effective quota, and usage visibility operations.
-- AI and LLM-specific quota coverage including request, token, budget, concurrency, and model-scoped governance.
+- AI and LLM workload quota coverage including request, token, budget, concurrency, and product- or
+  offering-scoped governance without AI-specific global scope levels.
 - Reusable support for non-AI consumers such as uploads, storage, vector operations, and job execution.
 
 ### 4.2 Out of Scope
 
-- License key generation and serial-number pool operations; owned by legacy VendorA licensing or a future dedicated licensing backoffice.
+- License key generation and serial-number pool operations; owned by legacy VendorA licensing or a future dedicated
+  licensing backoffice.
 - Billing, invoicing, taxation, and payment processing; owned by billing and commercial systems.
-- Direct per-module legacy API integrations; forbidden by architecture because modules must use the licensing-service SDK.
+- Direct per-module legacy API integrations; forbidden by architecture because modules must use the licensing-service
+  SDK.
 - Detailed reseller, distributor, OEM, and perpetual-license backoffice workflows unless explicitly adopted later.
 - Generic feature flag management unrelated to licensing or entitlements.
 - A mandatory single inline choke point through which all system traffic must synchronously pass.
@@ -354,13 +374,13 @@ history for this PRD. They are **informative traceability artifacts**, not norma
 contract semantics. If a requirement in this PRD cannot be understood without opening a companion document, the
 PRD text **MUST** be expanded rather than delegating the contract to `DESIGN.md` or an ADR.
 
-| Document | Role | Use |
-|----------|------|-----|
-| [DESIGN.md](./DESIGN.md) | Technical design | Architecture, data model, transaction boundaries, storage layout, and implementation realization of the PRD requirements |
-| [ADR/0001](./ADR/0001-cpt-cf-licensing-service-adr-federated-licensing-authority.md) | Federated authority model | Historical rationale and trade-offs for the federated authority approach |
-| [ADR/0002](./ADR/0002-cpt-cf-licensing-service-adr-unified-licensing-quota-module.md) | Unified licensing + quota module | Historical rationale and trade-offs for unifying quota governance into Licensing Service |
-| [ADR/0003](./ADR/0003-cpt-cf-licensing-service-adr-reservation-lifecycle-and-reconciled-semantics.md) | Reservation lifecycle + `reconciled` semantics | Historical rationale and implementation notes for `released` / `reconciled` evolution |
-| [ADR/0004](./ADR/0004-cpt-cf-licensing-service-adr-online-idempotency-ttl-scope.md) | Online idempotency TTL scope | Historical rationale for the module-wide idempotency TTL choice |
+| Document                                                                                              | Role                                           | Use                                                                                                                      |
+|-------------------------------------------------------------------------------------------------------|------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|
+| [DESIGN.md](./DESIGN.md)                                                                              | Technical design                               | Architecture, data model, transaction boundaries, storage layout, and implementation realization of the PRD requirements |
+| [ADR/0001](./ADR/0001-cpt-cf-licensing-service-adr-federated-licensing-authority.md)                  | Federated authority model                      | Historical rationale and trade-offs for the federated authority approach                                                 |
+| [ADR/0002](./ADR/0002-cpt-cf-licensing-service-adr-unified-licensing-quota-module.md)                 | Unified licensing + quota module               | Historical rationale and trade-offs for unifying quota governance into Licensing Service                                 |
+| [ADR/0003](./ADR/0003-cpt-cf-licensing-service-adr-reservation-lifecycle-and-reconciled-semantics.md) | Reservation lifecycle + `reconciled` semantics | Historical rationale and implementation notes for `released` / `reconciled` evolution                                    |
+| [ADR/0004](./ADR/0004-cpt-cf-licensing-service-adr-online-idempotency-ttl-scope.md)                   | Online idempotency TTL scope                   | Historical rationale for the module-wide idempotency TTL choice                                                          |
 
 Use these documents after the PRD requirement is already clear. They explain how the platform realizes the
 contract, not what the contract means.
@@ -480,16 +500,20 @@ pertains only to `now_at_module` comparisons, not to fast-path object visibility
 - **External inconsistency**: upstream authority changes can lag local projections and caches.
 - **Reservation leakage**: incomplete settlement or consumer crashes can hold capacity longer than intended.
 - **Policy misconfiguration**: bad limits or bad precedence can deny valid work or admit too much work.
-- **Performance degradation under load**: centralized decisioning can become a latency bottleneck without warm-path discipline.
+- **Performance degradation under load**: centralized decisioning can become a latency bottleneck without warm-path
+  discipline.
 
 ## 5. Functional Requirements
 
-> **Testing strategy**: All requirements verified via automated tests (unit, integration, e2e) targeting 90%+ code coverage unless otherwise specified. Document verification method only for non-test approaches (analysis, inspection, demonstration).
+> **Testing strategy**: All requirements verified via automated tests (unit, integration, e2e) targeting 90%+ code
+> coverage unless otherwise specified. Document verification method only for non-test approaches (analysis, inspection,
+> demonstration).
 
 Functional requirements define WHAT the system must do. Group by feature area or priority tier.
 
 Each functional requirement declares `Priority` and `Strictness`. `Priority` defines the earliest delivery
-priority tier in which the requirement becomes contractually in-scope. `Strictness` distinguishes priority-exit requirements from
+priority tier in which the requirement becomes contractually in-scope. `Strictness` distinguishes priority-exit
+requirements from
 target-state guidance that may be intentionally simplified in lower-priority tiers.
 
 ### 5.1 Canonical API and Domain Model
@@ -506,7 +530,8 @@ The minimum p1 runtime surface is `Check`, `CheckAndReserve`, and `Commit`. Late
 `Release`, `Update`, effective-quota introspection, usage summaries, and lease operations without changing
 the core integration model.
 
-- **Rationale**: Modules need one stable integration surface that remains valid across legacy-authoritative and native-authoritative deployments.
+- **Rationale**: Modules need one stable integration surface that remains valid across legacy-authoritative and
+  native-authoritative deployments.
 - **Actors**: `cpt-cf-licensing-service-actor-consumer-module`
 
 #### Canonical Domain Model
@@ -530,16 +555,18 @@ limit, authority, and decision explanation concepts without leaking raw legacy V
 - **Strictness**: REQUIRED
 
 The system **MUST** define a canonical decision contract for decision-producing operations.
+
 - p1 requires `decision_outcome`, `decision_state`, `resolved_authority_mode`, normalized licensing scope
   identifier, primary `reason_code`, `freshness_state`, and `correlation_id`, plus enough metadata to
   separate a business decision from a service error.
 - p2 adds `policy_effect`, `contributing_reason_codes`, and basic structured explanation metadata.
 - p3 requires the full structured decision contract, canonical-equality behavior, and deterministic payload
   shape across replay, audit, and shadow-comparison paths.
-Serialized field order is not contractually significant unless a later p3 data-contract requirement explicitly
-marks a surface as byte-stable for comparison.
+  Serialized field order is not contractually significant unless a later p3 data-contract requirement explicitly
+  marks a surface as byte-stable for comparison.
 
-- **Rationale**: A stable decision contract is required so multiple modules and reviewers do not infer different semantics from the same response.
+- **Rationale**: A stable decision contract is required so multiple modules and reviewers do not infer different
+  semantics from the same response.
 - **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`
 
 #### Decision Outcome Semantics
@@ -552,11 +579,15 @@ marks a surface as byte-stable for comparison.
 The system **MUST** use `decision_outcome = allow` only when the licensing service determines that the request is
 permitted by entitlement and applicable limit policy, and **MUST** use `decision_outcome = deny` only when the
 licensing service determines that the request is not permitted. Decision outcomes **MUST NOT** encode invalid request,
-routing failure, or internal processing failure semantics. `capped`, `downgraded`, `deferred`, and `warned` **MUST NOT** be
+routing failure, or internal processing failure semantics. `capped`, `downgraded`, `deferred`, and `warned` **MUST NOT**
+be
 represented as decision outcomes; they **MUST** be represented only through `policy_effect` while preserving
-`decision_outcome = allow` or `decision_outcome = deny`. `policy_effect = capped`, `downgraded`, `deferred`, or `warned` **MUST** be returned only with `decision_outcome = allow`. `decision_outcome = deny` **MUST** use `policy_effect = none`.
+`decision_outcome = allow` or `decision_outcome = deny`. `policy_effect = capped`, `downgraded`, `deferred`, or `warned`
+**MUST** be returned only with `decision_outcome = allow`. `decision_outcome = deny` **MUST** use
+`policy_effect = none`.
 
-- **Rationale**: Consumers need stable business meaning for allow and deny without overloading outcomes to represent transport or processing failures.
+- **Rationale**: Consumers need stable business meaning for allow and deny without overloading outcomes to represent
+  transport or processing failures.
 - **Actors**: `cpt-cf-licensing-service-actor-consumer-module`
 
 #### Lookup Response Contract Semantics
@@ -567,14 +598,16 @@ represented as decision outcomes; they **MUST** be represented only through `pol
 - **Strictness**: REQUIRED
 
 The system **MUST** define canonical response contracts for `GetEffectiveEntitlements` and `GetEffectiveLimits`.
+
 - p1 requires normalized licensing scope identity, resolved authority mode, `correlation_id`, the lookup-specific
   payload, and clear separation between successful responses and service errors.
 - p2 adds explicit freshness / degraded metadata and compatibility with the canonical decision contract.
 - p3 requires the closed-field-set and deterministic payload-shape guarantees used for replay and comparison.
-Transport-level field order and serialization format are implementation details; the contract is the required
-field set, field meanings, and presence / absence rules stated in this PRD.
+  Transport-level field order and serialization format are implementation details; the contract is the required
+  field set, field meanings, and presence / absence rules stated in this PRD.
 
-- **Rationale**: Read-only lookup operations must not force consumers to guess whether freshness, degraded handling, and error semantics differ from decision-producing operations.
+- **Rationale**: Read-only lookup operations must not force consumers to guess whether freshness, degraded handling, and
+  error semantics differ from decision-producing operations.
 - **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`
 
 #### Reason and Error Semantics
@@ -621,11 +654,13 @@ cross-tier vocabulary is: `invalid_request`, `invalid_correlation_id`, `invalid_
 `authority_unavailable`, `internal_failure`, `idempotency_conflict`, `idempotency_record_expired`,
 `reservation_expired`, `reservation_not_found`, `policy_config_conflict`, `dimension_set_mismatch`,
 `commit_exceeds_reservation`, `overshoot_capacity_exhausted`, `lease_expired`, `lease_already_released`,
-`lease_not_found`, `lease_cumulative_lifetime_exceeded`. `reservation_not_found` **MUST** be returned when a `Commit` or `Release`
+`lease_not_found`, `lease_cumulative_lifetime_exceeded`. `reservation_not_found` **MUST** be returned when a `Commit` or
+`Release`
 references a `reservation_id` that is not present in the fast-path state store and does not match any
 idempotency replay record; `lease_not_found` **MUST** be returned analogously for `RenewLease` or
 `ReleaseLease` against an unknown `lease_id`. These codes are disjoint from the terminal-state codes
-(`reservation_expired`, `lease_expired`, `lease_already_released`) and from `idempotency_record_expired`. The enumeration above is the reserved cross-tier vocabulary for this PRD. Every listed code **MUST** preserve the
+(`reservation_expired`, `lease_expired`, `lease_already_released`) and from `idempotency_record_expired`. The
+enumeration above is the reserved cross-tier vocabulary for this PRD. Every listed code **MUST** preserve the
 semantics specified here when its owning requirement priority tier is delivered, and PRD-declared codes **MUST NOT**
 be dropped or repurposed by downstream documents. The
 vocabulary is versioned-extensible rather than strictly closed: additive `error_code` values MAY be
@@ -639,12 +674,14 @@ When the module implements the behavior an additive code refers to, the code
 by this PRD version include `invalid_correlation_id`, `dimension_set_mismatch`, `commit_exceeds_reservation`,
 `overshoot_capacity_exhausted`, `policy_config_conflict` (see
 `cpt-cf-licensing-service-fr-quota-policy-resolution`), `lease_expired`,
-`lease_cumulative_lifetime_exceeded` (see `cpt-cf-licensing-service-fr-concurrency-leases`), `internal_audit_failed` (see
+`lease_cumulative_lifetime_exceeded` (see `cpt-cf-licensing-service-fr-concurrency-leases`), `internal_audit_failed` (
+see
 `cpt-cf-licensing-service-fr-audit-coverage`), `stale_write` (see
 `cpt-cf-licensing-service-fr-absolute-stale-write-protection`; returned when an absolute-model write
 carries a `version` that is not strictly greater than the persisted per-subject `version` on the same
 normalized licensing scope, so the write is rejected without mutating state), and the pair
-`invalid_subject_kind` / `invalid_subject_opaque_id` (see `cpt-cf-licensing-service-fr-subject-kind-registry`). The additive list
+`invalid_subject_kind` / `invalid_subject_opaque_id` (see `cpt-cf-licensing-service-fr-subject-kind-registry`). The
+additive list
 above is not reopened to mean that PRD-declared codes may be dropped; the PRD set is the minimum
 guaranteed vocabulary for consumers.
 
@@ -668,14 +705,14 @@ the class (not on the individual code, which may be extended additively). Becaus
 required to carry an assigned class at definition time, SDK logic keyed on the class remains stable across
 all additive extensions:
 
-| Class | Retry guidance | Codes |
-|-------|----------------|-------|
-| `client_error` | Not retryable without caller correction. Caller **MUST** fix the request before resubmission; blind retry loops against this class indicate a consumer bug. | `invalid_request`, `invalid_correlation_id`, `invalid_subject_kind`, `invalid_subject_opaque_id`, `dimension_set_mismatch`, `commit_exceeds_reservation` |
-| `state_conflict` | Not retryable against the same target record. Caller **MUST** start a new operation (fresh `CheckAndReserve` / `AcquireLease` / absolute-write with a strictly greater `version`). | `reservation_expired`, `reservation_not_found`, `lease_expired`, `lease_not_found`, `lease_already_released`, `lease_cumulative_lifetime_exceeded`, `idempotency_conflict`, `idempotency_record_expired`, `stale_write` |
-| `config_conflict` | Not retryable by the caller; operator remediation (policy / authority configuration) is required. Caller SHOULD surface the `correlation_id` to operators and back off indefinitely until operator action. | `scope_unresolved`, `conflicting_authority_configuration`, `policy_config_conflict` |
-| `capacity` | Retryable after the binding quota window turns over or capacity is returned by expiry/reconciliation. Caller SHOULD honour advertised `retry_after_seconds` when present. | `overshoot_capacity_exhausted` |
-| `dependency` | Retryable with exponential backoff; upstream authority or degraded path is transiently unavailable. | `authority_unavailable` |
-| `internal` | Retryable with exponential backoff; transient module failure. Persistent occurrence escalates to operator paging via telemetry. | `internal_failure`, `internal_audit_failed` |
+| Class             | Retry guidance                                                                                                                                                                                             | Codes                                                                                                                                                                                                                   |
+|-------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `client_error`    | Not retryable without caller correction. Caller **MUST** fix the request before resubmission; blind retry loops against this class indicate a consumer bug.                                                | `invalid_request`, `invalid_correlation_id`, `invalid_subject_kind`, `invalid_subject_opaque_id`, `dimension_set_mismatch`, `commit_exceeds_reservation`                                                                |
+| `state_conflict`  | Not retryable against the same target record. Caller **MUST** start a new operation (fresh `CheckAndReserve` / `AcquireLease` / absolute-write with a strictly greater `version`).                         | `reservation_expired`, `reservation_not_found`, `lease_expired`, `lease_not_found`, `lease_already_released`, `lease_cumulative_lifetime_exceeded`, `idempotency_conflict`, `idempotency_record_expired`, `stale_write` |
+| `config_conflict` | Not retryable by the caller; operator remediation (policy / authority configuration) is required. Caller SHOULD surface the `correlation_id` to operators and back off indefinitely until operator action. | `scope_unresolved`, `conflicting_authority_configuration`, `policy_config_conflict`                                                                                                                                     |
+| `capacity`        | Retryable after the binding quota window turns over or capacity is returned by expiry/reconciliation. Caller SHOULD honour advertised `retry_after_seconds` when present.                                  | `overshoot_capacity_exhausted`                                                                                                                                                                                          |
+| `dependency`      | Retryable with exponential backoff; upstream authority or degraded path is transiently unavailable.                                                                                                        | `authority_unavailable`                                                                                                                                                                                                 |
+| `internal`        | Retryable with exponential backoff; transient module failure. Persistent occurrence escalates to operator paging via telemetry.                                                                            | `internal_failure`, `internal_audit_failed`                                                                                                                                                                             |
 
 Every additive `error_code` introduced by a future PRD revision **MUST** be classified into exactly one
 existing class by that PRD revision; introducing a new class requires a PRD update and an
@@ -684,8 +721,10 @@ ADR. The mapping is normative for SDK retry logic and for operator runbooks. Cod
 `capacity`, `dependency`, or `internal` **MAY** carry it, and when present it is advisory per the rules
 of `cpt-cf-licensing-service-fr-retry-after-semantics`.
 
-- **Rationale**: Fixed codes are required for reliable downstream handling, audit analysis, and cross-team interoperability.
-- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-migration-engineer`
+- **Rationale**: Fixed codes are required for reliable downstream handling, audit analysis, and cross-team
+  interoperability.
+- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`,
+  `cpt-cf-licensing-service-actor-migration-engineer`
 
 ### 5.2 Federated Authority Routing
 
@@ -702,8 +741,10 @@ entitlement or effective-limit lookup. The normalized scope **MUST** use the can
 The same normalized scope tuple **MUST** be used for authority routing, cache identity, audit records, and shadow
 comparison for the same logical request.
 
-- **Rationale**: Routing, caching, auditing, and migration comparison are unsafe if different teams normalize the same request differently.
-- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-migration-engineer`
+- **Rationale**: Routing, caching, auditing, and migration comparison are unsafe if different teams normalize the same
+  request differently.
+- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`,
+  `cpt-cf-licensing-service-actor-migration-engineer`
 
 #### Subject Kind Registry
 
@@ -729,14 +770,13 @@ no trimming.
 
 ##### Built-in subject kinds (p1)
 
-The registry is pre-populated with three built-in kinds that preserve the encoding previously defined inline
+The registry is pre-populated with two built-in kinds that preserve the generic subject encodings defined inline
 in the Glossary entry *Scope Pattern*:
 
-| `subject_kind` | Semantics |
-|----------------|-----------|
-| `project` | Carries the `project` scope-axis identity per `cpt-cf-licensing-service-fr-hierarchical-scope-evaluation`. |
-| `user` | Carries the `user` scope-axis identity per the same FR. |
-| `api_key` | Carries the `api_key` scope-axis identity per the same FR. |
+| `subject_kind` | Semantics                                                                                                  |
+|----------------|------------------------------------------------------------------------------------------------------------|
+| `project`      | Carries the `project` scope-axis identity per `cpt-cf-licensing-service-fr-hierarchical-scope-evaluation`. |
+| `user`         | Carries the `user` scope-axis identity per the same FR.                                                    |
 
 Built-in kinds are pre-registered at module start-up and **MUST NOT** be unregistered; they exist independently
 of any consumer-module registration.
@@ -748,14 +788,14 @@ below. Submissions that omit a REQUIRED field or that carry an illegal value are
 `error_code = policy_config_conflict`; conflicting re-registration attempts are rejected with
 `error_code = policy_config_conflict`.
 
-| Field | Type | Presence | Semantics |
-|-------|------|----------|-----------|
-| `subject_kind` | `String` | REQUIRED | Matches `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`, length `3..=128`. Case-insensitive collisions (e.g. `ams` vs `AMS`) are rejected at registration with `error_code = policy_config_conflict`. |
-| `owning_module_id` | `String` | REQUIRED | Identifier of the module that owns the semantic meaning of `<opaque_id>` values in this kind. Used for deregistration authorization and for operator attribution. |
-| `semver` | `String` | REQUIRED | SemVer 2.0.0 version of this registration. Additive-only evolution is non-breaking; changing `opaque_id_pattern` or `opaque_id_max_length` in a way that rejects previously accepted values is breaking and requires a major-version bump. |
-| `opaque_id_pattern` | `String` | OPTIONAL, default `^[A-Za-z0-9._:\-]+$` | ECMAScript-style regex that every `<opaque_id>` of this kind must satisfy. Narrowing the default pattern is permitted; widening it requires a major-version bump. |
-| `opaque_id_max_length` | `uint32` | OPTIONAL, default `256` | Upper length bound for `<opaque_id>` strings of this kind. |
-| `retired_at` | `RFC3339_UTC_ms` | OPTIONAL | When present and `<= now_at_evaluation` under §4.4 Clock authority, new policies and new request-side writes whose `subject_scope` uses this kind **MUST** be rejected. Existing records remain readable for audit and reconciliation. |
+| Field                  | Type             | Presence                                | Semantics                                                                                                                                                                                                                                  |
+|------------------------|------------------|-----------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `subject_kind`         | `String`         | REQUIRED                                | Matches `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`, length `3..=128`. Case-insensitive collisions (e.g. `ams` vs `AMS`) are rejected at registration with `error_code = policy_config_conflict`.                                              |
+| `owning_module_id`     | `String`         | REQUIRED                                | Identifier of the module that owns the semantic meaning of `<opaque_id>` values in this kind. Used for deregistration authorization and for operator attribution.                                                                          |
+| `semver`               | `String`         | REQUIRED                                | SemVer 2.0.0 version of this registration. Additive-only evolution is non-breaking; changing `opaque_id_pattern` or `opaque_id_max_length` in a way that rejects previously accepted values is breaking and requires a major-version bump. |
+| `opaque_id_pattern`    | `String`         | OPTIONAL, default `^[A-Za-z0-9._:\-]+$` | ECMAScript-style regex that every `<opaque_id>` of this kind must satisfy. Narrowing the default pattern is permitted; widening it requires a major-version bump.                                                                          |
+| `opaque_id_max_length` | `uint32`         | OPTIONAL, default `256`                 | Upper length bound for `<opaque_id>` strings of this kind.                                                                                                                                                                                 |
+| `retired_at`           | `RFC3339_UTC_ms` | OPTIONAL                                | When present and `<= now_at_evaluation` under §4.4 Clock authority, new policies and new request-side writes whose `subject_scope` uses this kind **MUST** be rejected. Existing records remain readable for audit and reconciliation.     |
 
 Re-submitting an identical `(subject_kind, semver)` pair with byte-identical field values is idempotent (no-op).
 Two submissions sharing the same `subject_kind` but differing in `owning_module_id`, `opaque_id_pattern`, or
@@ -791,13 +831,13 @@ On the policy side, `scope_pattern.subject_scope` is either the reserved wildcar
 request-side `subject_scope` value) or a concrete encoded value (`_scope_root_`, `_none_`, or
 `<subject_kind>:<opaque_id>` drawn from the same encoding rules). "Wildcard over a subject kind only"
 (e.g. "any opaque_id of kind `ams`") is **NOT** supported in p1; policies that need such semantics must be
-expressed through one or more explicit patterns or through the hierarchical-scope-evaluation axes. Extending
-the pattern grammar to support kind-scoped wildcards is a non-breaking future extension provided the canonical
-serialization rules of `scope_pattern_sort_key` (Glossary) are extended in lockstep.
+expressed through one or more explicit patterns. Extending the pattern grammar to support kind-scoped wildcards
+is a non-breaking future extension provided the canonical serialization rules of `scope_pattern_sort_key`
+(Glossary) are extended in lockstep.
 
 ##### Non-goal
 
-The Subject Kind registry does **not** expand the eight-axis scope enumeration defined in Glossary
+The Subject Kind registry does **not** expand the closed scope-level enumeration defined in Glossary
 *Scope Level*. Scope axes and subject kinds serve different purposes: axes define which `scope_level` label
 attaches to admission decisions, whereas subject kinds define the grammar of concrete per-subject identifiers
 within `subject_scope`. A consumer module that needs a new **scope axis** (not a new subject identity) must
@@ -805,23 +845,25 @@ still pursue a PRD update per the extension rule on *Scope Level*.
 
 ##### Interaction with hierarchical-scope candidate-tuple expansion
 
-A request-side `subject_scope` value whose `<subject_kind>` is **not** one of the three built-in axes
-(`project`, `user`, `api_key`) does **not** produce additional candidate tuples in the hierarchical-scope
-expansion defined in Glossary *Scope Pattern*. Specifically, for a request carrying
-`subject_scope = <kind>:<id>` where `<kind> ∉ { project, user, api_key }`, the candidate-tuple set contributed
-by the `subject_scope` component is exactly `{ <kind>:<id>, _scope_root_ }`; the substitutions
-`project:<id>`, `user:<id>`, and `api_key:<id>` are **not** synthesized from a non-built-in `subject_scope`
-because those identities must come from the request's own context fields (typed project/user/api_key IDs)
-and are `_scope_root_`-equivalent when absent. This rule preserves the "at most eight tuples per request in
-p1" bound stated in Glossary *Scope Pattern*: a request carrying one non-built-in subject kind plus zero or
-more built-in subject-axis identities still yields at most eight candidate tuples after deduplication.
-Policies that need to match a non-built-in subject kind **MUST** declare either the literal
-`scope_pattern.subject_scope = <kind>:<id>` or the wildcard `_any_` (pending the kind-scoped wildcard
-extension noted under *Policy-side wildcarding* above); they cannot piggyback on the built-in axis-expansion
-path.
+A request may carry zero or more per-subject identities through request context fields whose values encode as
+`subject_scope = <kind>:<id>`. Candidate-tuple expansion is purely mechanical: for each supplied subject identity,
+the resolver contributes one candidate tuple with that exact encoded `subject_scope`, and it always contributes the
+scope-root tuple using `subject_scope = _scope_root_`. The resolver **MUST NOT** synthesize identities of another
+kind from an existing `subject_scope` value. For example, `subject_scope = credential:<id>` contributes
+`credential:<id>` only when `credential` is registered and supplied by the request; it does not imply `user:<id>` or
+`project:<id>`. Policies that need to match a domain-specific subject kind **MUST** declare either the literal
+`scope_pattern.subject_scope = <kind>:<id>` or the wildcard `_any_` (pending the kind-scoped wildcard extension
+noted under *Policy-side wildcarding* above).
 
-- **Rationale**: Consumer modules consistently need to carry per-subject identities whose semantic type is not one of the eight built-in axes (installations, agents, devices, namespaces, pods, buckets, accounts, projects-in-third-party-systems). Without a registry these identities either get smashed into existing axes (losing type safety) or force repeated PRD updates to expand the axis closed set. A registered subject-kind prefix gives consumers a universal, type-tagged encoding within `subject_scope` without widening the admission or audit contract, and matches established industry patterns (AWS ARN, Kubernetes GVK, OpenTelemetry resource attributes) for extensible typed identifiers under a fixed canonical structure.
-- **Actors**: `cpt-cf-licensing-service-actor-service-integrator`, `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-control-plane`
+- **Rationale**: Consumer modules consistently need to carry per-subject identities whose semantic type is not one of
+  the generic platform scope levels (credentials, installations, agents, devices, namespaces, pods, buckets, accounts,
+  projects-in-third-party-systems). Without a registry these identities either get smashed into existing axes (losing
+  type safety) or force repeated PRD updates to expand the scope-level closed set. A registered subject-kind prefix gives
+  consumers a universal, type-tagged encoding within `subject_scope` without widening the admission or audit contract,
+  and matches established industry patterns (AWS ARN, Kubernetes GVK, OpenTelemetry resource attributes) for extensible
+  typed identifiers under a fixed canonical structure.
+- **Actors**: `cpt-cf-licensing-service-actor-service-integrator`, `cpt-cf-licensing-service-actor-platform-operator`,
+  `cpt-cf-licensing-service-actor-control-plane`
 
 #### Explicit Authority Mode per Licensing Scope
 
@@ -837,7 +879,8 @@ return a service error rather than implicitly selecting an authority. For the sa
 **MUST NOT** depend on caller-local normalization or undocumented defaults.
 
 - **Rationale**: Hybrid deployments require deterministic routing and migration behavior rather than implicit fallback.
-- **Actors**: `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-migration-engineer`
+- **Actors**: `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-consumer-module`,
+  `cpt-cf-licensing-service-actor-migration-engineer`
 
 #### Single Authority per Scope
 
@@ -864,7 +907,8 @@ canonical decision with `decision_outcome = deny`, `decision_state = authoritati
 disabled`, `policy_effect = none`, and primary `reason_code = scope_disabled`. The system **MUST NOT** convert a
 resolved `disabled` mode into a service error unless the request itself is invalid.
 
-- **Rationale**: `disabled` must have one stable product meaning so callers do not interpret it as either business denial or infrastructure failure depending on team implementation.
+- **Rationale**: `disabled` must have one stable product meaning so callers do not interpret it as either business
+  denial or infrastructure failure depending on team implementation.
 - **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`
 
 #### No Cross-Authority Failover
@@ -904,8 +948,10 @@ introducing such a path requires a PRD update); `stale_within_policy` data **MUS
 or a service error; `stale_beyond_policy` data **MUST** produce either `decision_state = degraded` (only when
 product policy explicitly marks the scope as degraded-eligible for that operation class) or a service error.
 
-- **Rationale**: Freshness semantics must be explicit so consumers can distinguish valid authoritative outcomes from tolerated degraded outcomes.
-- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-migration-engineer`
+- **Rationale**: Freshness semantics must be explicit so consumers can distinguish valid authoritative outcomes from
+  tolerated degraded outcomes.
+- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`,
+  `cpt-cf-licensing-service-actor-migration-engineer`
 
 #### Degraded Eligibility by Operation Class
 
@@ -925,7 +971,8 @@ and **MUST** be evaluated using the same normalized licensing scope and operatio
 `{fresh, stale_within_policy, stale_beyond_policy}` defined in `cpt-cf-licensing-service-fr-freshness-semantics`:
 `fresh_threshold` (inclusive upper bound of `fresh`: staleness `s` satisfies `s <= fresh_threshold`) and
 `stale_policy_threshold` (inclusive upper bound of `stale_within_policy`: staleness satisfies
-`fresh_threshold < s <= stale_policy_threshold`). Both are expressed in integer seconds. Module-wide fallback defaults for these thresholds **MAY** exist but
+`fresh_threshold < s <= stale_policy_threshold`). Both are expressed in integer seconds. Module-wide fallback defaults
+for these thresholds **MAY** exist but
 **MUST NOT** be used to elevate a product family to degraded-eligible in the absence of explicit per-product-family
 configuration. Any fallback defaults are startup configuration conveniences only and **MUST** satisfy
 `0 <= fresh_threshold <= stale_policy_threshold`; policy admission for a degraded-eligible product family **MUST**
@@ -936,8 +983,10 @@ evaluation is unavailable they **MUST** return service errors. Until degraded el
 have been configured for a product family, the module **MUST NOT** return `decision_state = degraded` for that
 product family and **MUST** return service errors when fresh authoritative evaluation is unavailable.
 
-- **Rationale**: Read-only decision paths and state-changing operations need different safety rules under stale or unavailable authority data.
-- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-native-licensing-store`
+- **Rationale**: Read-only decision paths and state-changing operations need different safety rules under stale or
+  unavailable authority data.
+- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`,
+  `cpt-cf-licensing-service-actor-native-licensing-store`
 
 #### Authority-Aware Explanation
 
@@ -947,18 +996,22 @@ product family and **MUST** return service errors when fresh authoritative evalu
 - **Strictness**: REQUIRED
 
 The system **MUST** return explanation metadata, and the required depth follows the p1/p2/p3 priority model.
+
 - p1: every decision MUST expose `decision_outcome`, primary `reason_code`, `correlation_id`, and enough
   metadata to distinguish entitlement-driven denial from quota-driven denial.
 - p2: decisions MUST additionally surface `policy_effect`, resolved authority identity, freshness context,
   and a basic structured explanation suitable for operator diagnostics.
 - p3: decisions MUST carry the full `decision_explanation` graph, including limiting scopes, policy
   identifiers, contributing and masked policies, effective limits, and deterministic field-shape rules.
-The PRD owns the required fields and presence rules named by the relevant interface and feature requirements.
-Serialization format, internal builder structure, and transport-specific field ordering are implementation
-details and are not p1 exit criteria unless an FR explicitly marks a byte-stable comparison surface.
+  The PRD owns the required fields and presence rules named by the relevant interface and feature requirements.
+  Serialization format, internal builder structure, and transport-specific field ordering are implementation
+  details and are not p1 exit criteria unless an FR explicitly marks a byte-stable comparison surface.
 
-- **Rationale**: Operators and integrators need to understand whether a denial or restriction came from legacy entitlement, native entitlement, or runtime quota enforcement; and need a machine-comparable explanation payload so audit replay, shadow analysis, and operator tooling agree on what the module emitted.
-- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-tenant-administrator`
+- **Rationale**: Operators and integrators need to understand whether a denial or restriction came from legacy
+  entitlement, native entitlement, or runtime quota enforcement; and need a machine-comparable explanation payload so
+  audit replay, shadow analysis, and operator tooling agree on what the module emitted.
+- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`,
+  `cpt-cf-licensing-service-actor-tenant-administrator`
 
 #### Error and Degraded Decision Distinction
 
@@ -972,7 +1025,8 @@ semantically valid licensing decision can be produced. A degraded decision **MUS
 decision contract, **MUST** carry `decision_state = degraded`, and **MUST** include the reason that non-authoritative
 evaluation was used.
 
-- **Rationale**: Consumers and reviewers must not confuse degraded business decisions with failures to produce any decision at all.
+- **Rationale**: Consumers and reviewers must not confuse degraded business decisions with failures to produce any
+  decision at all.
 - **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`
 
 ### 5.3 Legacy VendorA Integration
@@ -990,7 +1044,8 @@ reach consuming modules. Platform consumers **MUST NOT** depend on or consume th
 **MUST** access licensing behavior only through the Licensing Service public API and SDK.
 
 - **Rationale**: Direct exposure of legacy VendorA structures would spread coupling and hinder future migration.
-- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-legacy-vendora-licensing`
+- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`,
+  `cpt-cf-licensing-service-actor-legacy-vendora-licensing`
 
 #### Plugin Isolation for Authority Adapters
 
@@ -1004,8 +1059,10 @@ future authority adapter plugin **MUST** be discoverable and selectable only by 
 mechanisms, and **MUST NOT** create a separate consumer-facing contract that bypasses the Licensing Service public API,
 canonical routing rules, decision contract, or audit semantics.
 
-- **Rationale**: Plugin isolation preserves swappable authority implementations without exposing vendor-specific behavior or bypassing canonical product semantics.
-- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-legacy-vendora-licensing`
+- **Rationale**: Plugin isolation preserves swappable authority implementations without exposing vendor-specific
+  behavior or bypassing canonical product semantics.
+- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-platform-operator`,
+  `cpt-cf-licensing-service-actor-legacy-vendora-licensing`
 
 #### Legacy Projection Read Model
 
@@ -1017,8 +1074,10 @@ canonical routing rules, decision contract, or audit semantics.
 The system **MUST** maintain a normalized read model or equivalent projection for legacy-authoritative entitlement and
 effective-limit data suitable for low-latency read access by the licensing service.
 
-- **Rationale**: Hot-path licensing decisions should not require synchronous deep legacy graph traversal on every request.
-- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-legacy-vendora-licensing`
+- **Rationale**: Hot-path licensing decisions should not require synchronous deep legacy graph traversal on every
+  request.
+- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`,
+  `cpt-cf-licensing-service-actor-legacy-vendora-licensing`
 
 #### Sync Status Visibility
 
@@ -1036,20 +1095,21 @@ The exposed payload **MUST** conform to the closed schema below. `source_version
 correctness input (admission uses `authority_emission_timestamp` and `freshness_state` per this PRD); its purpose
 is operator-facing monotonic ordering, drift detection, and migration triage.
 
-| Field | Type | Presence | Semantics |
-|-------|------|----------|-----------|
-| `authority_mode` | enum `{ legacy_authoritative, native_authoritative }` | REQUIRED | Equals `resolved_authority_mode` for the scope. |
-| `source_version` | `String` | REQUIRED | Opaque token monotonically orderable by lexicographic comparison within one `(authority_mode, shard_identifier)` pair. Length `1..=128`. |
-| `source_version_kind` | enum `{ pg_lsn, refresh_generation, opaque }` | REQUIRED | Discriminates how operators interpret `source_version`. `pg_lsn` denotes a PostgreSQL-style commit LSN encoded as `XX/XXXXXXXX` hex; `refresh_generation` denotes a monotonic `uint64` encoded as unpadded decimal prefixed with `gen-`; `opaque` denotes a value whose ordering is defined only within one `shard_identifier`. |
-| `last_successful_refresh_at` | `RFC3339_UTC_ms` | REQUIRED for `authority_mode = legacy_authoritative`; OPTIONAL for `authority_mode = native_authoritative` | Timestamp of the last successful upstream refresh observation. For native, the authority commit timestamp **MAY** be surfaced in `freshness_details.authority_emission_timestamp` instead. |
-| `staleness_seconds` | `uint32` | REQUIRED | Non-negative integer; computed as `max(0, now_at_module - freshness_source_timestamp)`, where `freshness_source_timestamp = last_successful_refresh_at` for legacy-authoritative values and `freshness_source_timestamp = authority_emission_timestamp` for native-authoritative values, including fast-path-cached values whose timestamp is passed through from the underlying authority. Cache ingestion time **MUST NOT** be used as `freshness_source_timestamp`. Clamping at `0` absorbs skew within `allowed_clock_skew_seconds`. |
-| `shard_identifier` | `String` | CONDITIONAL: REQUIRED iff `source_version_kind = opaque`, OR the resolving adapter declares itself sharded through the Legacy VendorA Adapter Plugin Contract's `is_sharded = true` flag; absent otherwise | Length `1..=64`. Identifies the shard within which `source_version` is monotonic. Cross-shard `source_version` comparison is undefined. When present, every sync-status or decision payload for scopes resolved by the same shard **MUST** carry the same `shard_identifier` value; a single resolved scope emitting two distinct values is a configuration conflict surfaced as an operator telemetry event. |
+| Field                        | Type                                                  | Presence                                                                                                                                                                                                   | Semantics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+|------------------------------|-------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `authority_mode`             | enum `{ legacy_authoritative, native_authoritative }` | REQUIRED                                                                                                                                                                                                   | Equals `resolved_authority_mode` for the scope.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `source_version`             | `String`                                              | REQUIRED                                                                                                                                                                                                   | Opaque token monotonically orderable by lexicographic comparison within one `(authority_mode, shard_identifier)` pair. Length `1..=128`.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `source_version_kind`        | enum `{ pg_lsn, refresh_generation, opaque }`         | REQUIRED                                                                                                                                                                                                   | Discriminates how operators interpret `source_version`. `pg_lsn` denotes a PostgreSQL-style commit LSN encoded as `XX/XXXXXXXX` hex; `refresh_generation` denotes a monotonic `uint64` encoded as unpadded decimal prefixed with `gen-`; `opaque` denotes a value whose ordering is defined only within one `shard_identifier`.                                                                                                                                                                                                          |
+| `last_successful_refresh_at` | `RFC3339_UTC_ms`                                      | REQUIRED for `authority_mode = legacy_authoritative`; OPTIONAL for `authority_mode = native_authoritative`                                                                                                 | Timestamp of the last successful upstream refresh observation. For native, the authority commit timestamp **MAY** be surfaced in `freshness_details.authority_emission_timestamp` instead.                                                                                                                                                                                                                                                                                                                                               |
+| `staleness_seconds`          | `uint32`                                              | REQUIRED                                                                                                                                                                                                   | Non-negative integer; computed as `max(0, now_at_module - freshness_source_timestamp)`, where `freshness_source_timestamp = last_successful_refresh_at` for legacy-authoritative values and `freshness_source_timestamp = authority_emission_timestamp` for native-authoritative values, including fast-path-cached values whose timestamp is passed through from the underlying authority. Cache ingestion time **MUST NOT** be used as `freshness_source_timestamp`. Clamping at `0` absorbs skew within `allowed_clock_skew_seconds`. |
+| `shard_identifier`           | `String`                                              | CONDITIONAL: REQUIRED iff `source_version_kind = opaque`, OR the resolving adapter declares itself sharded through the Legacy VendorA Adapter Plugin Contract's `is_sharded = true` flag; absent otherwise | Length `1..=64`. Identifies the shard within which `source_version` is monotonic. Cross-shard `source_version` comparison is undefined. When present, every sync-status or decision payload for scopes resolved by the same shard **MUST** carry the same `shard_identifier` value; a single resolved scope emitting two distinct values is a configuration conflict surfaced as an operator telemetry event.                                                                                                                            |
 
 The payload is carried on sync-status responses and **MAY** additionally be surfaced on decision responses as
 part of `decision_explanation.freshness_details`; the two are compatible but not required to be byte-identical
 (the decision-response form omits shard-internal operator metadata).
 
-- **Rationale**: Operators need visibility into projection freshness and migration health, and downstream tooling must be able to sort watermark events without implementation-specific parsing.
+- **Rationale**: Operators need visibility into projection freshness and migration health, and downstream tooling must
+  be able to sort watermark events without implementation-specific parsing.
 - **Actors**: `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-migration-engineer`
 
 ### 5.4 Native Authority Management
@@ -1078,7 +1138,8 @@ The system **MUST** allow native-authoritative management of entitlement grants,
 effective limits for supported scopes.
 
 - **Rationale**: Native-authoritative scopes require first-class management rather than adapter-only behavior.
-- **Actors**: `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-tenant-administrator`, `cpt-cf-licensing-service-actor-native-licensing-store`
+- **Actors**: `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-tenant-administrator`,
+  `cpt-cf-licensing-service-actor-native-licensing-store`
 
 ### 5.5 Internal Ownership and Decision Orchestration
 
@@ -1099,7 +1160,8 @@ modifiers, and usage-summary / remaining-capacity views derived from quota enfor
 **MUST NOT** mutate entitlement truth unless a product-specific extension to this PRD explicitly reclassifies that
 usage class before implementation for that product family.
 
-- **Rationale**: Unified module does not mean merged ownership; internal layers must preserve clear authority boundaries.
+- **Rationale**: Unified module does not mean merged ownership; internal layers must preserve clear authority
+  boundaries.
 - **Actors**: `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-migration-engineer`
 
 #### Feature Semantics Metadata
@@ -1144,7 +1206,10 @@ state.
 - **Strictness**: REQUIRED
 
 The system **MUST** allow authorized control-plane clients to list, create, update, disable, and expire quota policies
-for platform, region, tenant, project, user, API key, model family, and model scopes.
+for platform, region, tenant, project, and user scopes. Policies **MAY** further narrow applicability through
+`scope_pattern.subject_scope` for registered domain-specific subject kinds and through `product_family`,
+`offering_item_or_feature`, `deployment_environment`, and `usage_dimension` components of the normalized licensing
+scope.
 
 Every quota policy record carries a lifecycle field `policy_state` drawn from the closed set
 `{ active, disabled, expired }`, orthogonal to the `category` enum defined in
@@ -1190,6 +1255,7 @@ above **MUST** also be rejected with `error_code = policy_config_conflict`.
 - **Strictness**: RELAXED
 
 The system **MUST** resolve effective quota policy according to a priority-tiered model.
+
 - p1: support flat/default policies and a simple scoped override model sufficient for `Check`,
   `CheckAndReserve`, and `Commit`. p1 does not require full candidate-tuple expansion, byte-identical
   serialization of `P_applicable`, or total-order equivalence across independent implementations.
@@ -1197,10 +1263,10 @@ The system **MUST** resolve effective quota policy according to a priority-tiere
   operational administration.
 - p3: support the full normalized-scope hierarchy, deterministic expansion, precedence, and replay / audit
   determinism of the effective policy set.
-Across all delivered tiers, resolution **MUST** be deterministic for identical inputs: the same normalized
-licensing scope, requested dimensions, and policy catalog **MUST** produce the same `P_applicable`, the same
-precedence / masking outcome, and the same tie-break result. Internal snapshot identifiers, storage version
-tokens, and serialization format are implementation details.
+  Across all delivered tiers, resolution **MUST** be deterministic for identical inputs: the same normalized
+  licensing scope, requested dimensions, and policy catalog **MUST** produce the same `P_applicable`, the same
+  precedence / masking outcome, and the same tie-break result. Internal snapshot identifiers, storage version
+  tokens, and serialization format are implementation details.
 
 - **Rationale**: Consumer modules and operators need predictable enforcement and a stable explanation for every quota
   decision; two independent implementations must construct the same `P_applicable` for identical inputs so that
@@ -1289,9 +1355,12 @@ observability is governed by `cpt-cf-licensing-service-nfr-observability` and
 - **Priority**: p3
 - **Strictness**: RELAXED
 
-The system **MUST** evaluate all applicable scopes for a request, including platform, region, tenant, project, user, API
-key, model family, and model, and **MUST** compute effective remaining quota from the most restrictive applicable hard
-constraint while preserving applicable soft-limit signals separately.
+The system **MUST** evaluate all applicable platform, region, tenant, project, and user scopes for a request and
+**MUST** compute effective remaining quota from the most restrictive applicable hard constraint while preserving
+applicable soft-limit signals separately. Domain-specific quota constraints (for example per credential, per
+installation, per device, per target class, per storage class, or per provider SKU) **MUST** participate through
+`scope_pattern` matching over registered `subject_scope`, `product_family`, `offering_item_or_feature`, and
+`usage_dimension` values rather than through additional global scope levels.
 
 - **Rationale**: Hierarchical quotas are only safe when all applicable scopes participate in a deterministic evaluation
   model.
@@ -1316,19 +1385,19 @@ Every resource-type declaration submitted to the Licensing Service policy regist
 schema below. Submissions that omit a REQUIRED field or that carry an illegal value are rejected at policy
 admission time with `error_code = policy_config_conflict`.
 
-| Field | Type | Presence | Semantics |
-|-------|------|----------|-----------|
-| `resource_type_id` | `String` | REQUIRED | Namespaced identifier matching `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` (e.g. `modkit.tokens.input`). Length `3..=128`. |
-| `semver` | `String` | REQUIRED | Semantic version string conforming to SemVer 2.0.0. Major-version bump is required for any change that breaks canonical unit, `quantity_model`, `activity_type`, or the minimum observable-value contract. |
-| `canonical_unit` | enum `{ bytes, tokens, requests, cost_micros, seconds, items, custom }` | REQUIRED | When `custom`, `canonical_unit_label` **MUST** be provided and registered in the resource-type registry. Cost dimensions **MUST** use `cost_micros`; floating-point cost arithmetic is forbidden. |
-| `canonical_unit_label` | `String` | CONDITIONAL: REQUIRED when `canonical_unit = custom`; absent otherwise | Length `1..=32`, matching `^[a-z][a-z0-9_]*$`. Case-sensitive; registration is global per resource-type registry — two submissions whose `(resource_type_id, semver)` differ but that share a `canonical_unit_label` value are permitted, but two submissions sharing both `canonical_unit_label` and conflicting semantics (different `quantity_model` or numeric interpretation) are rejected at policy admission with `error_code = policy_config_conflict`. Re-submitting an identical `(resource_type_id, semver, canonical_unit_label)` triple is idempotent (no-op). Case-insensitive collision (e.g. `tokens_prompt` vs `Tokens_Prompt`) is **not** permitted — the registry rejects case-variant duplicates with `error_code = policy_config_conflict`. |
-| `quantity_model` | enum `{ counted, incremental, absolute }` | REQUIRED | Same semantics as `cpt-cf-licensing-service-fr-feature-semantics`. |
-| `activity_type` | enum `{ persisted, transient }` | REQUIRED | Same semantics as `cpt-cf-licensing-service-fr-feature-semantics`. |
-| `requires_idempotent_settlement` | `bool` | REQUIRED | When `true`, settlement paths for this resource type **MUST** apply `cpt-cf-licensing-service-fr-idempotent-lifecycle` replay semantics. |
-| `min_observable_value` | `uint64` | OPTIONAL, default `0` | Lower bound of reported values; admission rejects writes below this value with `error_code = invalid_request`. |
-| `max_observable_value` | `uint64` | OPTIONAL, default `2^63 - 1` | Upper bound; used to detect misreports. |
-| `backward_compatible_with` | `List<semver>` | OPTIONAL | Declares which prior major or minor versions of the same `resource_type_id` this version is wire-compatible with; an empty list means "only this version". Policies referencing a prior version that is not in this list are rejected at policy admission. |
-| `retired_at` | `RFC3339_UTC_ms` | OPTIONAL | When present and `<= now_at_evaluation` under §4.4 Clock authority, new policies targeting this resource type are rejected; existing policies continue until explicitly retired. |
+| Field                            | Type                                                                    | Presence                                                               | Semantics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+|----------------------------------|-------------------------------------------------------------------------|------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `resource_type_id`               | `String`                                                                | REQUIRED                                                               | Namespaced identifier matching `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` (e.g. `modkit.tokens.input`). Length `3..=128`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `semver`                         | `String`                                                                | REQUIRED                                                               | Semantic version string conforming to SemVer 2.0.0. Major-version bump is required for any change that breaks canonical unit, `quantity_model`, `activity_type`, or the minimum observable-value contract.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `canonical_unit`                 | enum `{ bytes, tokens, requests, cost_micros, seconds, items, custom }` | REQUIRED                                                               | When `custom`, `canonical_unit_label` **MUST** be provided and registered in the resource-type registry. Cost dimensions **MUST** use `cost_micros`; floating-point cost arithmetic is forbidden.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `canonical_unit_label`           | `String`                                                                | CONDITIONAL: REQUIRED when `canonical_unit = custom`; absent otherwise | Length `1..=32`, matching `^[a-z][a-z0-9_]*$`. Case-sensitive; registration is global per resource-type registry — two submissions whose `(resource_type_id, semver)` differ but that share a `canonical_unit_label` value are permitted, but two submissions sharing both `canonical_unit_label` and conflicting semantics (different `quantity_model` or numeric interpretation) are rejected at policy admission with `error_code = policy_config_conflict`. Re-submitting an identical `(resource_type_id, semver, canonical_unit_label)` triple is idempotent (no-op). Case-insensitive collision (e.g. `tokens_prompt` vs `Tokens_Prompt`) is **not** permitted — the registry rejects case-variant duplicates with `error_code = policy_config_conflict`. |
+| `quantity_model`                 | enum `{ counted, incremental, absolute }`                               | REQUIRED                                                               | Same semantics as `cpt-cf-licensing-service-fr-feature-semantics`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `activity_type`                  | enum `{ persisted, transient }`                                         | REQUIRED                                                               | Same semantics as `cpt-cf-licensing-service-fr-feature-semantics`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `requires_idempotent_settlement` | `bool`                                                                  | REQUIRED                                                               | When `true`, settlement paths for this resource type **MUST** apply `cpt-cf-licensing-service-fr-idempotent-lifecycle` replay semantics.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `min_observable_value`           | `uint64`                                                                | OPTIONAL, default `0`                                                  | Lower bound of reported values; admission rejects writes below this value with `error_code = invalid_request`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `max_observable_value`           | `uint64`                                                                | OPTIONAL, default `2^63 - 1`                                           | Upper bound; used to detect misreports.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `backward_compatible_with`       | `List<semver>`                                                          | OPTIONAL                                                               | Declares which prior major or minor versions of the same `resource_type_id` this version is wire-compatible with; an empty list means "only this version". Policies referencing a prior version that is not in this list are rejected at policy admission.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `retired_at`                     | `RFC3339_UTC_ms`                                                        | OPTIONAL                                                               | When present and `<= now_at_evaluation` under §4.4 Clock authority, new policies targeting this resource type are rejected; existing policies continue until explicitly retired.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 Forward-compatibility rule: adding new OPTIONAL fields to this schema in a future version is non-breaking;
 introducing new REQUIRED fields or narrowing enum sets is breaking and requires a PRD update and a major
@@ -1336,6 +1405,36 @@ version bump of the resource-type registry contract.
 
 - **Rationale**: The platform must govern more than fixed request counters and must support evolving resource dimensions
   across modules; a single concrete schema prevents divergent resource-type representations across product families.
+- **Actors**: `cpt-cf-licensing-service-actor-service-integrator`, `cpt-cf-licensing-service-actor-platform-operator`,
+  `cpt-cf-licensing-service-actor-control-plane`
+
+#### Domain-Specific Quota Dimensions
+
+- [ ] `p2` - **ID**: `cpt-cf-licensing-service-fr-domain-specific-dimensions`
+
+- **Priority**: p2
+- **Strictness**: REQUIRED
+
+The system **MUST** support product-specific quota semantics without adding product-specific values to the global
+`Scope Level` enum. A product-specific quota dimension **MUST** be represented by one or more of the following
+canonical mechanisms:
+
+1. A registered `subject_kind` inside `subject_scope` when the dimension identifies the caller, owner, installation,
+   device, credential, account, namespace, or another per-subject identity.
+2. A `product_family` or `offering_item_or_feature` value when the dimension selects the licensed product, commercial
+   offering, feature, SKU, capability, or provider-specific target class being governed.
+3. A registered `usage_dimension` backed by `cpt-cf-licensing-service-fr-resource-types` when the dimension measures
+   consumed capacity, such as requests, bytes, tokens, cost units, seats, jobs, storage items, or another integer
+   quantity.
+
+Quota-policy admission **MUST** reject a product-specific quota policy that attempts to encode a new domain concept by
+using an out-of-set `scope_level`. Product-specific dimensions participate in `P_applicable` only through normal
+`scope_pattern` matching over the normalized licensing scope and through `governs(p, d)` for registered resource
+dimensions. They do **not** create extra scope-narrowness levels; when two binding policies tie on normalized shortfall
+and canonical scope level, the deterministic tie-break remains `policy_id` lexicographic order.
+
+- **Rationale**: Licensing Service must remain a reusable platform module. Domain concepts belong in registries and
+  normalized-scope values owned by the consuming product, not in the global scope hierarchy.
 - **Actors**: `cpt-cf-licensing-service-actor-service-integrator`, `cpt-cf-licensing-service-actor-platform-operator`,
   `cpt-cf-licensing-service-actor-control-plane`
 
@@ -1431,6 +1530,7 @@ be correlated by a shared `client_operation_id` even when each call carries its 
 - **Strictness**: REQUIRED
 
 The system **MUST** support reservation lifecycle semantics, but delivery is staged.
+
 - p1: reservations use the simplified closed set `{ reserved, committed, expired }`. `Commit` settles a live
   reservation. Expiry returns held capacity. Double-commit, commit against unknown reservations, and commit
   against expired reservations are rejected.
@@ -1440,7 +1540,7 @@ The system **MUST** support reservation lifecycle semantics, but delivery is sta
   orthogonal to lifecycle state: setting it **MUST NOT** change lifecycle state or capacity arithmetic, and it
   **MUST NOT** create a fifth lifecycle state. Overshoot handling, when delivered, is evaluated on `Commit`
   against the reservation originally admitted and **MUST NOT** create a new lifecycle state.
-p1 deliberately does not require the full production-grade distributed recovery state machine.
+  p1 deliberately does not require the full production-grade distributed recovery state machine.
 
 - **Rationale**: Reservation-based enforcement is only reliable when lifecycle transitions are explicit, bounded, and
   safe under retries.
@@ -1489,7 +1589,8 @@ semantic annotation that **MUST** be:
    successful-versus-failed-versus-cancelled releases without parsing free-form explanation text. The
    breakdown **MUST NOT** be summed with the four lifecycle-state quantities as if it were a fifth disjoint
    bucket; it partitions the existing `released` bucket.
-4. Included in the idempotency canonical-equality comparison for `Release` and `ReleaseLease`: a replay supplying a different `release_outcome` than the originally
+4. Included in the idempotency canonical-equality comparison for `Release` and `ReleaseLease`: a replay supplying a
+   different `release_outcome` than the originally
    accepted call **MUST** be rejected with `error_code = idempotency_conflict`.
 
 Expiry-driven transitions (`expired`) carry no `release_outcome` because the caller never invoked `Release`
@@ -1499,8 +1600,13 @@ lifecycle state, and any `release_outcome` observed on an `expired` record is an
 `cpt-cf-licensing-service-fr-reconciliation` is orthogonal to `release_outcome`: a record may carry any
 combination (e.g., `released = failed` with `reconciled = true`).
 
-- **Rationale**: The lifecycle state `released` alone cannot distinguish "operation completed normally and returned unused capacity" from "operation failed mid-flight" or "operation was cancelled before execution". This information has direct operational value (reconciliation classification, consumer health monitoring, incident analysis) but does not affect admission, accounting, or recovery correctness; surfacing it as an explicit optional field preserves the clean decision contract without widening the lifecycle state machine or the shared recovery state machine.
-- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-reconciliation-worker`, `cpt-cf-licensing-service-actor-platform-operator`
+- **Rationale**: The lifecycle state `released` alone cannot distinguish "operation completed normally and returned
+  unused capacity" from "operation failed mid-flight" or "operation was cancelled before execution". This information
+  has direct operational value (reconciliation classification, consumer health monitoring, incident analysis) but does
+  not affect admission, accounting, or recovery correctness; surfacing it as an explicit optional field preserves the
+  clean decision contract without widening the lifecycle state machine or the shared recovery state machine.
+- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-reconciliation-worker`,
+  `cpt-cf-licensing-service-actor-platform-operator`
 
 #### Admission Outcome and Decision Mapping
 
@@ -1785,7 +1891,8 @@ Emission rules:
 - When present, the value **MUST** be a wall-clock instant on the same UTC clock source and precision used for
   other server-assigned timestamps (RFC3339 UTC, millisecond precision; see §4.4 Clock authority).
 - Shadow comparison **MUST** treat `renewable_until` as an **additive, non-comparative** field in p1: it is
-  excluded from `cpt-cf-licensing-service-fr-shadow-observability` canonical-equality buckets so that two authorities that differ only on
+  excluded from `cpt-cf-licensing-service-fr-shadow-observability` canonical-equality buckets so that two authorities
+  that differ only on
   renewability semantics do not create mismatch noise during migration. Including `renewable_until` in shadow
   equality is an additive, non-breaking future extension.
 - Shadow comparison **MUST** additionally flag the combination `state = active` with
@@ -1800,8 +1907,14 @@ only `active` / `expired` / `revoked`) **MUST** omit the field; Licensing Servic
 `renewable_until` for scopes routed to that authority, and consumers interpret the absence as "renewal grace
 semantics unavailable from this authority" rather than as "renewal grace = 0".
 
-- **Rationale**: Commercial licensing lifecycles in the industry (SaaS dunning, post-expiration renewal windows, offline payment grace) routinely need to distinguish "entitlement over, and renewable" from "entitlement over, and terminally closed". Widening the lifecycle state closed set to add a fifth state couples this orthogonal signal with every consumer of the state machine (recovery, shadow, reconciliation, audit). A purely informational attribute keeps admission, state machine, and shadow comparison unchanged while giving consumers enough information to drive renewal UX and back-office workflows.
-- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-tenant-administrator`, `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-migration-engineer`
+- **Rationale**: Commercial licensing lifecycles in the industry (SaaS dunning, post-expiration renewal windows, offline
+  payment grace) routinely need to distinguish "entitlement over, and renewable" from "entitlement over, and terminally
+  closed". Widening the lifecycle state closed set to add a fifth state couples this orthogonal signal with every
+  consumer of the state machine (recovery, shadow, reconciliation, audit). A purely informational attribute keeps
+  admission, state machine, and shadow comparison unchanged while giving consumers enough information to drive renewal
+  UX and back-office workflows.
+- **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-tenant-administrator`,
+  `cpt-cf-licensing-service-actor-platform-operator`, `cpt-cf-licensing-service-actor-migration-engineer`
 
 #### Preview versus Strict Reservation Semantics
 
@@ -1957,7 +2070,12 @@ accepted result and **MUST NOT** advance counters or versions a second time. Cro
 `idempotency_key` is **NOT** a replay and is **NOT** a conflict, per `cpt-cf-licensing-service-fr-idempotent-
 lifecycle`.
 
-- **Rationale**: Persisted activities (features enabled on a device, entitlements allocated to a subject, storage levels reported by a reporter) do not require reservation-based pre-allocation. Forcing every such consumer through `CheckAndReserve` + `Commit` is boilerplate that does not improve correctness, duplicates idempotency-record storage, and obscures the natural semantics of "advance the current count" or "set the current level". A direct `Update` path sharing admission math, idempotency rules, and decision contract with the reservation-based path preserves every admission and lifecycle invariant while simplifying the consumer contract for the persisted case.
+- **Rationale**: Persisted activities (features enabled on a device, entitlements allocated to a subject, storage levels
+  reported by a reporter) do not require reservation-based pre-allocation. Forcing every such consumer through
+  `CheckAndReserve` + `Commit` is boilerplate that does not improve correctness, duplicates idempotency-record storage,
+  and obscures the natural semantics of "advance the current count" or "set the current level". A direct `Update` path
+  sharing admission math, idempotency rules, and decision contract with the reservation-based path preserves every
+  admission and lifecycle invariant while simplifying the consumer contract for the persisted case.
 - **Actors**: `cpt-cf-licensing-service-actor-consumer-module`, `cpt-cf-licensing-service-actor-service-integrator`
 
 ### 5.8 Usage Accounting and Reconciliation
@@ -1970,6 +2088,7 @@ lifecycle`.
 - **Strictness**: REQUIRED
 
 The system **MUST** maintain durable authoritative accounting separately from any fast-path enforcement state.
+
 - p1 requires durable records for the simplified lifecycle in scope for p1 (`reserved`, `committed`, `expired`).
 - p2 adds `released` records and operator-facing settlement visibility.
 - p3 adds full audit overlays such as `reconciled` and deterministic post-failure reconstruction semantics.
@@ -1985,7 +2104,9 @@ The system **MUST** maintain durable authoritative accounting separately from an
 - **Priority**: p1
 - **Strictness**: REQUIRED
 
-The system **MUST** provide idempotency for state-changing runtime operations, and the strength follows the p1/p2/p3 priority model.
+The system **MUST** provide idempotency for state-changing runtime operations, and the strength follows the p1/p2/p3
+priority model.
+
 - p1: the minimal runtime surface (`CheckAndReserve`, `Commit`) MUST use stable `client_operation_id` and
   `idempotency_key` values for key-based deduplication and best-effort replay. When a valid replay record
   exists, the previously accepted result MUST be returned instead of applying a second side effect.
@@ -1993,14 +2114,15 @@ The system **MUST** provide idempotency for state-changing runtime operations, a
   (`Release`, `Update`, lease operations) are added.
 - p3: canonical request equality and deterministic replay semantics are required across structurally different
   but semantically equal payloads.
-Omitting required identifiers on a state-changing call in the currently active priority tier is `invalid_request`. Exact
-replay equality is defined over the client-supplied semantically relevant request fields of the addressed
-operation after the PRD's own default normalizations are applied. Server-assigned identifiers and timestamps are
-excluded from replay equality. Array order is significant unless a field's owning requirement declares a canonical
-sort rule, and numeric quantities are compared as integers in their declared canonical unit. A replay using the
-same `(client_operation_id, operation_type, idempotency_key)` triple with a canonically equal request **MUST**
-return the original outcome; the same triple with a canonically non-equal request **MUST** be rejected with
-`error_code = idempotency_conflict`. ADR-0004's stricter online TTL model applies from p2 onward.
+  Omitting required identifiers on a state-changing call in the currently active priority tier is `invalid_request`.
+  Exact
+  replay equality is defined over the client-supplied semantically relevant request fields of the addressed
+  operation after the PRD's own default normalizations are applied. Server-assigned identifiers and timestamps are
+  excluded from replay equality. Array order is significant unless a field's owning requirement declares a canonical
+  sort rule, and numeric quantities are compared as integers in their declared canonical unit. A replay using the
+  same `(client_operation_id, operation_type, idempotency_key)` triple with a canonically equal request **MUST**
+  return the original outcome; the same triple with a canonically non-equal request **MUST** be rejected with
+  `error_code = idempotency_conflict`. ADR-0004's stricter online TTL model applies from p2 onward.
 
 - **Rationale**: Network retries, streamed workloads, and consumer recovery flows are normal platform behavior and must
   not corrupt quota state; stable operation identity is also required for cross-attempt correlation during recovery.
@@ -2014,6 +2136,7 @@ return the original outcome; the same triple with a canonically non-equal reques
 - **Strictness**: REQUIRED
 
 The system **MUST** keep online replay protection logically separate from long-term archival.
+
 - p1: replay protection may be implemented as a module-local best-effort TTL sufficient for operational safety.
 - p2: explicit online-versus-archive separation and a module-wide TTL policy are required. The online replay
   horizon is `idempotency_ttl_seconds = max_reservation_ttl_seconds + settlement_grace_period_seconds`; a replay
@@ -2021,9 +2144,9 @@ The system **MUST** keep online replay protection logically separate from long-t
   `error_code = idempotency_record_expired`. Both terms are module-wide startup-configurable constants defined in
   the Glossary, and every node in one deployment **MUST** evaluate the same `idempotency_ttl_seconds` value.
 - p3: replay retention may be tightened into deterministic audit / replay invariants.
-Historical archive retention is independent: `archive_retention_seconds` governs long-term storage only and
-**MUST NOT** be used as the online replay lookup horizon. Physical storage layout and retention enforcement
-mechanics are implementation details. ADR-0004 records the rationale for the module-wide TTL choice.
+  Historical archive retention is independent: `archive_retention_seconds` governs long-term storage only and
+  **MUST NOT** be used as the online replay lookup horizon. Physical storage layout and retention enforcement
+  mechanics are implementation details. ADR-0004 records the rationale for the module-wide TTL choice.
 
 - **Rationale**: Online replay protection and historical audit retention have different availability, latency, and
   completeness requirements and cannot share a single storage path without ambiguous correctness semantics.
@@ -2063,7 +2186,8 @@ The admission formula is stated per `quantity_model` and per quota class as foll
 
 - **`counted` and `incremental` (windowed)**: "outstanding reservation" and "committed usage" are scoped to the
   **current quota window** as defined in the Glossary entry *Current Quota Window* (half-open interval
-  `[window_start, window_end)`). Reservations or committed-usage records from **closed prior windows** (Glossary) **MUST NOT** be
+  `[window_start, window_end)`). Reservations or committed-usage records from **closed prior windows** (Glossary) **MUST
+  NOT** be
   counted against capacity in the current window, **regardless of whether the record is still in a non-terminal
   lifecycle state** (`reserved` with `accepted_at ∈ W_prior` and `expires_at ∈ W_current`). A reservation that
   straddles the boundary continues to count against the window identified by its `accepted_at` until it reaches
@@ -2178,17 +2302,19 @@ atomically so that partial acceptance is never observable.
 - **Priority**: p2
 - **Strictness**: REQUIRED
 
-The system **MUST** provide aggregated usage summaries and remaining-quota views, and their fidelity follows the p1/p2/p3 priority model.
+The system **MUST** provide aggregated usage summaries and remaining-quota views, and their fidelity follows the
+p1/p2/p3 priority model.
+
 - p1: basic remaining-capacity visibility is optional and not a priority exit criterion.
 - p2: usage summaries distinguish the lifecycle states in scope for delivered runtime operations and expose
   enough data for operator interpretation.
 - p3: summaries additionally expose reconciliation overlays and deterministic breakdown semantics without
   double-counting.
-At minimum, p2 summaries **MUST** keep the delivered lifecycle buckets distinct rather than collapsing them into
-one total: `reserved`, `committed`, `expired`, and, once release semantics are in scope, `released`; remaining-
-quota views **MUST** be derived from the same admission arithmetic that governs enforcement. At p3,
-`reconciled` is exposed only as an overlay or sub-breakdown on terminal records and **MUST NOT** be counted as a
-fifth disjoint lifecycle bucket. ADR-0003 records the rationale for the overlay model.
+  At minimum, p2 summaries **MUST** keep the delivered lifecycle buckets distinct rather than collapsing them into
+  one total: `reserved`, `committed`, `expired`, and, once release semantics are in scope, `released`; remaining-
+  quota views **MUST** be derived from the same admission arithmetic that governs enforcement. At p3,
+  `reconciled` is exposed only as an overlay or sub-breakdown on terminal records and **MUST NOT** be counted as a
+  fifth disjoint lifecycle bucket. ADR-0003 records the rationale for the overlay model.
 
 - **Rationale**: Governance, planning, and user-facing feedback require queryable aggregate state rather than raw
   lifecycle events only.
@@ -2376,7 +2502,7 @@ each of which is optional with a safe default that preserves strict admission wh
   warning signal. The comparison is performed using integer-only arithmetic to avoid floating-point drift: the
   firing condition is
   `(committed_usage[p,d] + outstanding_reserved[p,d] + requested_quantity[d]) * 100 >= warn_threshold_percent
-  * effective_limit[p,d]`
+    * effective_limit[p,d]`
   evaluated for the max-reducing dimension `d`. Overflow guard: the left-hand side is evaluated in 128-bit
   intermediate precision and the result is rejected with `error_code = invalid_request` if the intermediate
   product exceeds `2^127 - 1` before comparison. Division by zero: when `effective_limit[p,d] = 0`, policy `p`
@@ -2419,10 +2545,11 @@ absent from the map.
 ##### Hierarchical scope composition
 
 Let `P_applicable` denote the set of applicable quota policies for the request across all scope levels evaluated
-under `cpt-cf-licensing-service-fr-hierarchical-scope-evaluation` (platform, region, tenant, project, user, API
-key, model family, and model). Let `P_binding ⊆ P_applicable` be the subset of policies under which the request
-does not entirely fit (i.e., `requested_quantity[d] > remaining_capacity_under_p[d]` for some requested
-dimension `d`). The degenerate single-policy case `|P_applicable| = 1` follows these rules trivially.
+under `cpt-cf-licensing-service-fr-hierarchical-scope-evaluation` (platform, region, tenant, project, and user),
+plus any policies that match registered subject kinds and product/resource filters through `scope_pattern`. Let
+`P_binding ⊆ P_applicable` be the subset of policies under which the request does not entirely fit (i.e.,
+`requested_quantity[d] > remaining_capacity_under_p[d]` for some requested dimension `d`). The degenerate
+single-policy case `|P_applicable| = 1` follows these rules trivially.
 
 Evaluation order **MUST** proceed deterministically as follows:
 
@@ -2436,86 +2563,89 @@ Evaluation order **MUST** proceed deterministically as follows:
    return `admitted` with primary `reason_code = none`.
 3. **Does not fit everywhere** (`P_binding ≠ ∅`):
    a. **Cap path**: if every `p ∈ P_binding` has `cap_enabled = true`, compute the composed admitted magnitude
-      per requested dimension as
-      `admitted_magnitude[d] = min_{p ∈ P_applicable : p governs dimension d}(remaining_capacity_under_p[d])`.
-      The min is restricted to policies that actually govern dimension `d`; policies that do not govern `d`
-      are excluded from that dimension's min because they never constrain `d`. By the coverage invariant
-      of `cpt-cf-licensing-service-fr-reserved-consumed-independence`, every requested `d` has at least
-      one `p ∈ P_applicable` with `governs(p, d) = true`, so the min is always well-defined: a request
-      whose `P_applicable` covers only a strict subset of the requested dimensions is rejected with
-      `error_code = policy_config_conflict` before this step is reached, and the "no governing policy for
-      `d`" branch is therefore unreachable. If `admitted_magnitude[d] >= 1` for **every** requested
-      dimension (strict-cap rule), return `admitted_with_cap` with that magnitude and primary
-      `reason_code = quota_capped`. If any requested dimension would yield `admitted_magnitude[d] = 0`, cap
-      is not available; fall through. If any `p ∈ P_binding` has `cap_enabled = false`, cap is not available;
-      fall through.
+   per requested dimension as
+   `admitted_magnitude[d] = min_{p ∈ P_applicable : p governs dimension d}(remaining_capacity_under_p[d])`.
+   The min is restricted to policies that actually govern dimension `d`; policies that do not govern `d`
+   are excluded from that dimension's min because they never constrain `d`. By the coverage invariant
+   of `cpt-cf-licensing-service-fr-reserved-consumed-independence`, every requested `d` has at least
+   one `p ∈ P_applicable` with `governs(p, d) = true`, so the min is always well-defined: a request
+   whose `P_applicable` covers only a strict subset of the requested dimensions is rejected with
+   `error_code = policy_config_conflict` before this step is reached, and the "no governing policy for
+   `d`" branch is therefore unreachable. If `admitted_magnitude[d] >= 1` for **every** requested
+   dimension (strict-cap rule), return `admitted_with_cap` with that magnitude and primary
+   `reason_code = quota_capped`. If any requested dimension would yield `admitted_magnitude[d] = 0`, cap
+   is not available; fall through. If any `p ∈ P_binding` has `cap_enabled = false`, cap is not available;
+   fall through.
    b. **Downgrade path**: if every `p ∈ P_binding` has `downgrade_target_policy_id` set, compose a recursive
-      applicable set `P_applicable_inner = (P_applicable \ P_binding) ∪ P_targets`, where
-      `P_targets = { resolve_policy(p.downgrade_target_policy_id) | p ∈ P_binding }`. This merge preserves
-      every non-binding scope's hard constraints so that a downgrade cannot silently bypass a higher-scope
-      ceiling that was already satisfied. Re-evaluate the request against `P_applicable_inner` at
-      `depth = 1` using this same composition rule (without further downgrades). If the recursive evaluation
-      admits (including with inner warn or cap), return `admitted_with_downgrade` with primary
-      `reason_code = quota_downgraded`, `target_policy_ids` populated from `P_targets` (see ordering rule
-      below), and `admitted_magnitude` carried through unchanged from the recursive evaluation (when the
-      target evaluation itself admitted with cap, the target-level composed magnitude is the value carried).
-      Any inner `quota_warned` or `quota_capped` signal produced at the target level is absorbed by the
-      outer `admitted_with_downgrade` per the severity order below and contributes to
-      `contributing_reason_codes` per `cpt-cf-licensing-service-fr-soft-hard-outcomes`. If any
-      `p ∈ P_binding` has `downgrade_target_policy_id` unset, downgrade is not available; fall through.
+   applicable set `P_applicable_inner = (P_applicable \ P_binding) ∪ P_targets`, where
+   `P_targets = { resolve_policy(p.downgrade_target_policy_id) | p ∈ P_binding }`. This merge preserves
+   every non-binding scope's hard constraints so that a downgrade cannot silently bypass a higher-scope
+   ceiling that was already satisfied. Re-evaluate the request against `P_applicable_inner` at
+   `depth = 1` using this same composition rule (without further downgrades). If the recursive evaluation
+   admits (including with inner warn or cap), return `admitted_with_downgrade` with primary
+   `reason_code = quota_downgraded`, `target_policy_ids` populated from `P_targets` (see ordering rule
+   below), and `admitted_magnitude` carried through unchanged from the recursive evaluation (when the
+   target evaluation itself admitted with cap, the target-level composed magnitude is the value carried).
+   Any inner `quota_warned` or `quota_capped` signal produced at the target level is absorbed by the
+   outer `admitted_with_downgrade` per the severity order below and contributes to
+   `contributing_reason_codes` per `cpt-cf-licensing-service-fr-soft-hard-outcomes`. If any
+   `p ∈ P_binding` has `downgrade_target_policy_id` unset, downgrade is not available; fall through.
    c. Otherwise, return `admission_outcome = rejected`. The primary `reason_code` on rejection is selected
-      from the **most restrictive binding policy** under the following total order (evaluated per `p ∈
+   from the **most restrictive binding policy** under the following total order (evaluated per `p ∈
       P_binding`, where `P_binding` is computed in Step 1):
 
-      i. **Normalized shortfall**: for each binding policy `p`, compute its per-dimension shortfall ratio
-         `shortfall[p, d] = max(0, requested_quantity[d] - remaining_capacity_under_p[d]) * 10_000 /
-         max(1, requested_quantity[d])` (non-negative 128-bit integer math; the division rounds toward zero,
-         equivalently `floor` because all operands are non-negative; clamping the numerator at `0` keeps the ratio in the
-         range `[0, 10_000]` basis points regardless of whether dimension `d` is itself binding under `p`)
-         for every `d ∈ request` with `governs(p, d)`. Reduce across `d` as
-         `policy_shortfall[p] = max_d shortfall[p, d]`. Because `p ∈ P_binding`, at least one governed
-         dimension satisfies `requested_quantity[d] > remaining_capacity_under_p[d]`, so
-         `policy_shortfall[p] > 0` is guaranteed. Larger `policy_shortfall` is more restrictive.
-      ii. **Scope narrowness**: if two policies tie on `policy_shortfall`, the narrower scope wins per the
-          canonical scope-narrowness total order
-          (`model > api_key > user > project > model_family > tenant > region > platform`).
-      iii. **`policy_id` lex ascending**: if two policies tie on both `policy_shortfall` and scope narrowness,
-          the lexicographically smaller `policy_id` wins. This total order is deterministic by construction
-          (no ties remain).
+   i. **Normalized shortfall**: for each binding policy `p`, compute its per-dimension shortfall ratio
+   `shortfall[p, d] = max(0, requested_quantity[d] - remaining_capacity_under_p[d]) * 10_000 /
+   max(1, requested_quantity[d])` (non-negative 128-bit integer math; the division rounds toward zero,
+   equivalently `floor` because all operands are non-negative; clamping the numerator at `0` keeps the ratio in the
+   range `[0, 10_000]` basis points regardless of whether dimension `d` is itself binding under `p`)
+   for every `d ∈ request` with `governs(p, d)`. Reduce across `d` as
+   `policy_shortfall[p] = max_d shortfall[p, d]`. Because `p ∈ P_binding`, at least one governed
+   dimension satisfies `requested_quantity[d] > remaining_capacity_under_p[d]`, so
+   `policy_shortfall[p] > 0` is guaranteed. Larger `policy_shortfall` is more restrictive.
+   ii. **Scope narrowness**: if two policies tie on `policy_shortfall`, the narrower scope wins per the
+   canonical scope-narrowness total order
+   (`user > project > tenant > region > platform`).
+   iii. **`policy_id` lex ascending**: if two policies tie on both `policy_shortfall` and scope narrowness,
+   the lexicographically smaller `policy_id` wins. This total order is deterministic by construction
+   (no ties remain).
 
-      The winning policy's `rejection_reason_code` is the primary `reason_code` on the response. When
-      `reason_code ∈ R_temporal`, the advertised `retry_after_seconds` **MUST** be the
-      `max` across the per-policy derivations of `retry_after_seconds` for every `p ∈ P_binding` with
-      `p.rejection_reason_code ∈ R_temporal` (non-temporal binding policies contribute nothing to the max).
-      Taking the max is the conservative choice: it guarantees the caller does not re-enter admission
-      while any binding policy is still exhausted, avoiding retry storms that would otherwise hit the
-      narrowest window early. The advertised value is a **floor, not a deadline**: the caller MUST NOT retry earlier
-      than `retry_after_seconds`, and MAY retry later. Callers SHOULD add randomized jitter to the
-      advertised value before scheduling the retry (the platform-recommended jitter is a uniform random
-      addend in `[0, 0.2 * retry_after_seconds]` seconds) to de-synchronize the retry cohort that was
-      rejected in the same tick; without jitter, a large fan-out of simultaneously-rejected callers would
-      re-enter admission at the same instant and produce a second synchronized rejection burst. Jitter is
-      a client-side obligation; the module does not randomize the advertised value because the floor
-      semantics must remain deterministic for audit replay and shadow comparison.
-      `rejection_reason_code` is an **optional per-quota-policy field** drawn from the closed set
-      `R_temporal ∪ { policy_denied }` (i.e. the temporal rejection causes defined in
-      `cpt-cf-licensing-service-fr-retry-after-semantics` plus the single non-temporal cause that a quota policy
-      can legitimately produce). The remaining members of `R_non_temporal`
-      (`feature_not_entitled`, `offering_item_missing`, `scope_disabled`, `authority_data_stale`) are
-      entitlement-layer causes and **MUST NOT** be declared by a quota policy; doing so would make the
-      quota layer impersonate an entitlement-layer denial and would contradict `limiting_layer = quota` in
-      `decision_explanation`. When the policy does not declare `rejection_reason_code`, the module-wide
-      default `quota_rejected` is applied. A policy **MUST NOT** declare `rejection_reason_code` as a value
-      outside the permitted closed set; such declarations are rejected at policy admission with
-      `error_code = policy_config_conflict`. Explanation metadata
-      (`decision_explanation.contributing_policies`) lists **all** binding scopes regardless of which one
-      won attribution.
+   The winning policy's `rejection_reason_code` is the primary `reason_code` on the response. When
+   `reason_code ∈ R_temporal`, the advertised `retry_after_seconds` **MUST** be the
+   `max` across the per-policy derivations of `retry_after_seconds` for every `p ∈ P_binding` with
+   `p.rejection_reason_code ∈ R_temporal` (non-temporal binding policies contribute nothing to the max).
+   Taking the max is the conservative choice: it guarantees the caller does not re-enter admission
+   while any binding policy is still exhausted, avoiding retry storms that would otherwise hit the
+   narrowest window early. The advertised value is a **floor, not a deadline**: the caller MUST NOT retry earlier
+   than `retry_after_seconds`, and MAY retry later. Callers SHOULD add randomized jitter to the
+   advertised value before scheduling the retry (the platform-recommended jitter is a uniform random
+   addend in `[0, 0.2 * retry_after_seconds]` seconds) to de-synchronize the retry cohort that was
+   rejected in the same tick; without jitter, a large fan-out of simultaneously-rejected callers would
+   re-enter admission at the same instant and produce a second synchronized rejection burst. Jitter is
+   a client-side obligation; the module does not randomize the advertised value because the floor
+   semantics must remain deterministic for audit replay and shadow comparison.
+   `rejection_reason_code` is an **optional per-quota-policy field** drawn from the closed set
+   `R_temporal ∪ { policy_denied }` (i.e. the temporal rejection causes defined in
+   `cpt-cf-licensing-service-fr-retry-after-semantics` plus the single non-temporal cause that a quota policy
+   can legitimately produce). The remaining members of `R_non_temporal`
+   (`feature_not_entitled`, `offering_item_missing`, `scope_disabled`, `authority_data_stale`) are
+   entitlement-layer causes and **MUST NOT** be declared by a quota policy; doing so would make the
+   quota layer impersonate an entitlement-layer denial and would contradict `limiting_layer = quota` in
+   `decision_explanation`. When the policy does not declare `rejection_reason_code`, the module-wide
+   default `quota_rejected` is applied. A policy **MUST NOT** declare `rejection_reason_code` as a value
+   outside the permitted closed set; such declarations are rejected at policy admission with
+   `error_code = policy_config_conflict`. Explanation metadata
+   (`decision_explanation.contributing_policies`) lists **all** binding scopes regardless of which one
+   won attribution.
 
 The canonical scope-narrowness total order (narrowest → widest) used in step 3c and in any other rule in
 this PRD that requires a tie-break across scope levels is:
-`model > api_key > user > project > model_family > tenant > region > platform`. Scope levels outside this
-set **MUST NOT** be used in p1; a future version MAY extend the order additively, but such extensions
-require explicit PRD update and an ADR.
+`user > project > tenant > region > platform`. Scope levels outside this set **MUST NOT** be used in p1; a
+future version MAY extend the order additively, but such extensions require explicit PRD update and an ADR.
+When two binding policies share the same canonical scope level but differ only by domain-specific `subject_scope`,
+`product_family`, `offering_item_or_feature`, or `usage_dimension` filters, those filters do not create additional
+scope-narrowness levels; ties continue to fall through to `policy_id` lexicographic order after normalized
+shortfall and canonical scope level have been compared.
 
 When a single admission would satisfy more than one non-terminal modifier (for example, a would-be-capped
 admission whose composed magnitude would also cross a `warn_threshold_percent` on another applicable policy),
@@ -2591,12 +2721,13 @@ policy after replacing the reservation hold with the committed magnitude **MUST*
 - **Strictness**: RELAXED
 
 The system **MUST** support AI and LLM quota evaluation across request rate, input tokens, output tokens, total token
-budgets, cost budgets, concurrent responses, tool-related activity, uploads, storage, and per-model and per-model-family
-limits. This list enumerates the minimum set of quota dimensions the module **MUST** be capable of governing; each
-dimension actually configured for a product family **MUST** register one canonical integer unit used consistently
-across policy storage, admission, settlement, and explanation payloads before the dimension can be admitted or
-settled. Dimensions without a registered canonical unit are rejected at policy
-admission time.
+budgets, cost budgets, concurrent responses, tool-related activity, uploads, storage, and product-specific target-class
+constraints. AI and LLM target-class constraints **MUST NOT** introduce product-specific global scope levels; they are
+represented through `cpt-cf-licensing-service-fr-domain-specific-dimensions`. This list enumerates the minimum set of
+quota dimensions the module **MUST** be capable of governing; each dimension actually configured for a product family
+**MUST** register one canonical integer unit used consistently across policy storage, admission, settlement, and
+explanation payloads before the dimension can be admitted or settled. Dimensions without a registered canonical unit are
+rejected at policy admission time.
 
 - **Rationale**: AI workloads are a primary platform consumer and require quota semantics beyond request-per-minute
   checks.
@@ -2654,7 +2785,8 @@ canonical usage dimension but disagree on the canonical integer value; `shadow_e
 failure of the shadow path; `shadow_timeout` records a shadow path that did not respond within its configured
 deadline; `shadow_skipped` records the shadow path not being invoked (sampling, per-scope disablement, or no
 shadow authority configured). Each record **MUST** carry exactly one bucket, selected by the severity order
-`outcome_mismatch > effect_mismatch > reason_mismatch > limit_mismatch > shadow_error > shadow_timeout > shadow_skipped > match`. Shadow comparison **MUST** be performed only
+`outcome_mismatch > effect_mismatch > reason_mismatch > limit_mismatch > shadow_error > shadow_timeout > shadow_skipped > match`.
+Shadow comparison **MUST** be performed only
 across the same normalized licensing scope, the same usage dimension, and canonicalized effective-limit units.
 Absence of an authoritative decision is not a shadow comparison outcome; live-path authoritative failure is
 reported as a service error through the normal decision path and is excluded from the shadow comparison
@@ -2679,9 +2811,12 @@ unless introduced by a new functional requirement and an ADR.
 
 ## 6. Non-Functional Requirements
 
-> **Global baselines**: Project-wide NFRs (performance, security, reliability, scalability) defined in root PRD and [guidelines/](../../../guidelines/). Document only module-specific NFRs here: **exclusions** from defaults or **standalone** requirements.
+> **Global baselines**: Project-wide NFRs (performance, security, reliability, scalability) defined in root PRD
+> and [guidelines/](../../../guidelines/). Document only module-specific NFRs here: **exclusions** from defaults or *
+*standalone** requirements.
 >
-> **Testing strategy**: NFRs verified via automated benchmarks, security scans, and monitoring unless otherwise specified.
+> **Testing strategy**: NFRs verified via automated benchmarks, security scans, and monitoring unless otherwise
+> specified.
 
 NFRs in this section are priority-scoped. p1 exit is driven primarily by latency, availability, staleness visibility,
 correlation, observability, and durability for delivered p1 capabilities. NFRs tied to lower-priority features become
@@ -2730,7 +2865,10 @@ The system **MUST** provide deterministic outcomes for 99.9% of monthly licensin
 degraded decisions when policy permits non-authoritative evaluation and documented service errors when a valid decision
 cannot be produced.
 
-- **Threshold**: `99.9%` of monthly externally visible decision-producing requests at the licensing-service boundary return either authoritative decisions, policy-defined degraded decisions, or documented service errors with fixed `error_code` semantics. Internal retries, projection refresh operations, and shadow sub-requests are excluded from this denominator.
+- **Threshold**: `99.9%` of monthly externally visible decision-producing requests at the licensing-service boundary
+  return either authoritative decisions, policy-defined degraded decisions, or documented service errors with fixed
+  `error_code` semantics. Internal retries, projection refresh operations, and shadow sub-requests are excluded from
+  this denominator.
 - **Rationale**: Platform modules require predictable behavior even during authority outages or projection lag.
 - **Architecture Allocation**: Implementation allocation is captured in companion design artifacts.
 
@@ -2755,8 +2893,11 @@ scope, telemetry **MUST** extend to them as well.
 The system **MUST** retain enough decision and routing metadata to reconstruct why an entitlement or limit decision was
 produced for at least 30 days in production environments.
 
-- **Threshold**: Decision records retained for `>= 30 days` include at minimum `correlation_id`, licensing scope, resolved authority mode, decision outcome, decision state, primary reason code, freshness state, and source version or watermark when available.
-- **Rationale**: Tenant support, compliance investigations, and migration validation need post-factum decision reconstruction.
+- **Threshold**: Decision records retained for `>= 30 days` include at minimum `correlation_id`, licensing scope,
+  resolved authority mode, decision outcome, decision state, primary reason code, freshness state, and source version or
+  watermark when available.
+- **Rationale**: Tenant support, compliance investigations, and migration validation need post-factum decision
+  reconstruction.
 - **Architecture Allocation**: Implementation allocation is captured in companion design artifacts.
 
 #### Correlation and Traceability
@@ -2767,8 +2908,10 @@ The system **MUST** propagate the same `correlation_id` across decision response
 records, observability events, and any shadow comparison records generated by the same logical request when that
 capability is in scope.
 
-- **Threshold**: `100%` of decision-producing requests emit one stable `correlation_id` across response and emitted records.
-- **Rationale**: Multi-system review and incident analysis require end-to-end traceability for a single licensing decision.
+- **Threshold**: `100%` of decision-producing requests emit one stable `correlation_id` across response and emitted
+  records.
+- **Rationale**: Multi-system review and incident analysis require end-to-end traceability for a single licensing
+  decision.
 - **Architecture Allocation**: Implementation allocation is captured in companion design artifacts.
 
 #### Single-Authority Safety
@@ -2789,8 +2932,10 @@ one authoritative source at the same time.
 The system **MUST** expose explicit stale-state signals and apply the configured degraded-mode policy rather than
 silently serving stale data as fresh when projection or cache staleness exceeds configured policy thresholds.
 
-- **Threshold**: Any response served after freshness threshold breach includes explicit stale-state metadata and degraded-mode semantics.
-- **Rationale**: Consumers and operators must be able to distinguish fresh authoritative data from tolerated stale reads.
+- **Threshold**: Any response served after freshness threshold breach includes explicit stale-state metadata and
+  degraded-mode semantics.
+- **Rationale**: Consumers and operators must be able to distinguish fresh authoritative data from tolerated stale
+  reads.
 - **Architecture Allocation**: Implementation allocation is captured in companion design artifacts.
 
 #### Quota Decision Latency
@@ -2840,7 +2985,8 @@ the `<= 5 min` bound is a Service Level Objective and **MUST NOT** be interprete
 invariant; the reconciliation-lag metric **MUST** continue to be emitted so operators can quantify the
 breach.
 
-- **Threshold**: `<= 5 min` reconciliation lag under normal operation as defined above; alert on configurable threshold breach.
+- **Threshold**: `<= 5 min` reconciliation lag under normal operation as defined above; alert on configurable threshold
+  breach.
 - **Rationale**: Stale reservation state blocks valid work and produces inaccurate remaining-quota views.
 - **Architecture Allocation**: Implementation allocation is captured in companion design artifacts.
 
@@ -2864,7 +3010,9 @@ reconciliation actions as well.
 
 ## 7. Public Library Interfaces
 
-Define the public API surface, versioning or compatibility guarantees, and integration contracts provided by this library. Unless stated otherwise, interface descriptions below describe the full planned surface while p1 guarantees only the minimum operations and payload fields required by p1-tagged functional requirements.
+Define the public API surface, versioning or compatibility guarantees, and integration contracts provided by this
+library. Unless stated otherwise, interface descriptions below describe the full planned surface while p1 guarantees
+only the minimum operations and payload fields required by p1-tagged functional requirements.
 
 ### 7.1 Public API Surface
 
@@ -2874,8 +3022,13 @@ Define the public API surface, versioning or compatibility guarantees, and integ
 
 - **Type**: Rust SDK and internal service contract
 - **Stability**: experimental
-- **Description**: Umbrella SDK surface exposing feature entitlement checks, effective entitlement lookup, effective limit lookup, licensing decisions, authority status access, and quota governance. Quota-specific operations (quota preview, check-and-reserve, commit, release, effective quota inspection, usage summary) are exposed as sub-interfaces of this umbrella API and are additionally listed separately below for contract clarity; they **MUST NOT** be exposed as parallel public surfaces that bypass the umbrella SDK.
-- **Breaking Change Policy**: Breaking semantic or schema changes require architecture and design review; after stabilization they require a major version bump.
+- **Description**: Umbrella SDK surface exposing feature entitlement checks, effective entitlement lookup, effective
+  limit lookup, licensing decisions, authority status access, and quota governance. Quota-specific operations (quota
+  preview, check-and-reserve, commit, release, effective quota inspection, usage summary) are exposed as sub-interfaces
+  of this umbrella API and are additionally listed separately below for contract clarity; they **MUST NOT** be exposed
+  as parallel public surfaces that bypass the umbrella SDK.
+- **Breaking Change Policy**: Breaking semantic or schema changes require architecture and design review; after
+  stabilization they require a major version bump.
 
 #### Licensing Decision Response Contract
 
@@ -2883,8 +3036,13 @@ Define the public API surface, versioning or compatibility guarantees, and integ
 
 - **Type**: Data contract
 - **Stability**: experimental
-- **Description**: Priority-scoped canonical decision payload. p1 requires `decision_outcome`, `decision_state`, `resolved_authority_mode`, normalized licensing scope identifier, primary `reason_code`, `freshness_state`, and `correlation_id`, with explicit separation from service errors. p2 adds `policy_effect`, `contributing_reason_codes`, and basic structured explanation metadata. p3 adds the full `decision_explanation` payload and later-tier informational attributes such as `renewable_until` where the owning FR makes them applicable.
-- **Breaking Change Policy**: Changes to decision fields, closed enums, or decision-versus-error semantics require coordinated review and a breaking version change once the interface is stabilized.
+- **Description**: Priority-scoped canonical decision payload. p1 requires `decision_outcome`, `decision_state`,
+  `resolved_authority_mode`, normalized licensing scope identifier, primary `reason_code`, `freshness_state`, and
+  `correlation_id`, with explicit separation from service errors. p2 adds `policy_effect`, `contributing_reason_codes`,
+  and basic structured explanation metadata. p3 adds the full `decision_explanation` payload and later-tier
+  informational attributes such as `renewable_until` where the owning FR makes them applicable.
+- **Breaking Change Policy**: Changes to decision fields, closed enums, or decision-versus-error semantics require
+  coordinated review and a breaking version change once the interface is stabilized.
 
 #### Effective Entitlement and Limit Lookup Response Contracts
 
@@ -2892,8 +3050,13 @@ Define the public API surface, versioning or compatibility guarantees, and integ
 
 - **Type**: Data contract
 - **Stability**: experimental
-- **Description**: Priority-scoped successful response payloads for `GetEffectiveEntitlements` and `GetEffectiveLimits`. p1 requires normalized licensing scope, resolved authority mode, the lookup payload, `correlation_id`, and clear separation from service errors. p2 adds explicit freshness and degraded-state metadata. p3 adds closed-field-set and deterministic payload-shape guarantees together with any later-tier informational attributes such as `renewable_until`.
-- **Breaking Change Policy**: Changes to lookup-response semantics, degraded-state signaling, or response-versus-error separation require coordinated review and a breaking version change once stabilized.
+- **Description**: Priority-scoped successful response payloads for `GetEffectiveEntitlements` and `GetEffectiveLimits`.
+  p1 requires normalized licensing scope, resolved authority mode, the lookup payload, `correlation_id`, and clear
+  separation from service errors. p2 adds explicit freshness and degraded-state metadata. p3 adds closed-field-set and
+  deterministic payload-shape guarantees together with any later-tier informational attributes such as
+  `renewable_until`.
+- **Breaking Change Policy**: Changes to lookup-response semantics, degraded-state signaling, or response-versus-error
+  separation require coordinated review and a breaking version change once stabilized.
 
 #### Service Error Contract
 
@@ -2901,8 +3064,10 @@ Define the public API surface, versioning or compatibility guarantees, and integ
 
 - **Type**: Data contract
 - **Stability**: experimental
-- **Description**: Defines machine-readable `error_code`, `correlation_id`, and request-failure semantics for cases where no valid licensing decision can be produced.
-- **Breaking Change Policy**: Changes to the fixed error-code set or error-versus-decision semantics require coordinated review and a breaking version change once stabilized.
+- **Description**: Defines machine-readable `error_code`, `correlation_id`, and request-failure semantics for cases
+  where no valid licensing decision can be produced.
+- **Breaking Change Policy**: Changes to the fixed error-code set or error-versus-decision semantics require coordinated
+  review and a breaking version change once stabilized.
 
 #### Authority Status and Shadow Comparison API
 
@@ -2910,8 +3075,10 @@ Define the public API surface, versioning or compatibility guarantees, and integ
 
 - **Type**: Rust SDK and internal service contract
 - **Stability**: experimental
-- **Description**: Exposes authority mode, freshness, source-version visibility, shadow comparison, mismatch classification, and degraded-decision context for migration and operations.
-- **Breaking Change Policy**: Additive changes are allowed during the experimental stage; breaking changes require coordinated rollout across consumers.
+- **Description**: Exposes authority mode, freshness, source-version visibility, shadow comparison, mismatch
+  classification, and degraded-decision context for migration and operations.
+- **Breaking Change Policy**: Additive changes are allowed during the experimental stage; breaking changes require
+  coordinated rollout across consumers.
 
 #### Quota Decision and Reservation API
 
@@ -2919,7 +3086,9 @@ Define the public API surface, versioning or compatibility guarantees, and integ
 
 - **Type**: Rust SDK and internal service contract
 - **Stability**: experimental
-- **Description**: The quota runtime API. The guaranteed p1 surface is `Check`, `CheckAndReserve`, and `Commit`. Later tiers may add `Release`, `Update`, `GetEffectiveQuota`, `GetUsageSummary`, and lease operations. Every exposed operation continues to return the canonical decision contract appropriate to its priority tier.
+- **Description**: The quota runtime API. The guaranteed p1 surface is `Check`, `CheckAndReserve`, and `Commit`. Later
+  tiers may add `Release`, `Update`, `GetEffectiveQuota`, `GetUsageSummary`, and lease operations. Every exposed
+  operation continues to return the canonical decision contract appropriate to its priority tier.
 - **Breaking Change Policy**: Breaking semantic or schema changes require architecture and design review; after
   stabilization they require a major version bump.
 
@@ -2929,7 +3098,9 @@ Define the public API surface, versioning or compatibility guarantees, and integ
 
 - **Type**: Rust SDK and internal service contract
 - **Stability**: experimental
-- **Description**: Provides quota-policy CRUD and validation. p1 requires administrative policy management only; effective quota inspection and usage-summary views become required in later tiers. Used by control-plane clients and administrative interfaces.
+- **Description**: Provides quota-policy CRUD and validation. p1 requires administrative policy management only;
+  effective quota inspection and usage-summary views become required in later tiers. Used by control-plane clients and
+  administrative interfaces.
 - **Breaking Change Policy**: Breaking changes require coordinated review and a breaking version change once stabilized.
 
 #### Quota Decision Response Contract
@@ -2938,7 +3109,13 @@ Define the public API surface, versioning or compatibility guarantees, and integ
 
 - **Type**: Data contract
 - **Stability**: experimental
-- **Description**: Priority-scoped quota decision payload. p1 requires the minimal decision fields needed by `Check`, `CheckAndReserve`, and `Commit`, plus reservation identifier, reservation state, and expiry metadata when `CheckAndReserve` succeeds. p1 does not require soft-outcome payloads, release semantics, lease semantics, direct-update payloads, or full structured attribution. p2 adds `admission_outcome`, `policy_effect`, `retry_after_seconds`, `release_outcome`, and other payload fields required by later-tier quota operations. p3 adds deterministic field-shape guarantees, full structured attribution, lease-specific payload semantics, and later-tier informational attributes such as `renewable_until` where applicable.
+- **Description**: Priority-scoped quota decision payload. p1 requires the minimal decision fields needed by `Check`,
+  `CheckAndReserve`, and `Commit`, plus reservation identifier, reservation state, and expiry metadata when
+  `CheckAndReserve` succeeds. p1 does not require soft-outcome payloads, release semantics, lease semantics,
+  direct-update payloads, or full structured attribution. p2 adds `admission_outcome`, `policy_effect`,
+  `retry_after_seconds`, `release_outcome`, and other payload fields required by later-tier quota operations. p3 adds
+  deterministic field-shape guarantees, full structured attribution, lease-specific payload semantics, and later-tier
+  informational attributes such as `renewable_until` where applicable.
 - **Breaking Change Policy**: Changes to outcome semantics, closed enums, or response structure require coordinated
   review and a breaking version change once stabilized.
 
@@ -2962,11 +3139,13 @@ Contracts this library expects from external systems or provides to downstream c
   `cpt-cf-licensing-service-fr-entitlement-grant-renewal-grace`; authorities that cannot expose a renewal
   grace window **MUST** omit the attribute, and Licensing Service then emits no `renewable_until` for
   scopes routed to that adapter.
-- **Compatibility**: Additive field evolution within minor versions; breaking semantic changes require coordinated rollout.
+- **Compatibility**: Additive field evolution within minor versions; breaking semantic changes require coordinated
+  rollout.
 
 ## 8. Use Cases
 
-Optional: Include when interaction flows add clarity beyond requirement statements. Use cases below are examples and follow the same priority rules as their owning requirements.
+Optional: Include when interaction flows add clarity beyond requirement statements. Use cases below are examples and
+follow the same priority rules as their owning requirements.
 
 #### Check Feature Entitlement for a Module Request
 
@@ -2977,10 +3156,12 @@ Optional: Include when interaction flows add clarity beyond requirement statemen
 **Actor**: `cpt-cf-licensing-service-actor-consumer-module`
 
 **Preconditions**:
+
 - Licensing scope is derivable from request context.
 - Licensing authority data is available from either a fresh projection or native store.
 
 **Main Flow**:
+
 1. The consumer module calls the canonical licensing API with subject, feature, and scope context.
 2. The licensing service resolves authority mode for the scope.
 3. The licensing service loads canonical entitlement and effective-limit context.
@@ -2989,11 +3170,15 @@ Optional: Include when interaction flows add clarity beyond requirement statemen
    explanation payloads.
 
 **Postconditions**:
+
 - The consumer module receives an explainable licensing decision.
 
 **Alternative Flows**:
-- **Authority data stale or unavailable**: The licensing service returns a policy-defined degraded or denied outcome with stale-state metadata.
-- **Invalid request or unresolved scope**: The licensing service returns a service error with fixed `error_code` semantics instead of a business decision.
+
+- **Authority data stale or unavailable**: The licensing service returns a policy-defined degraded or denied outcome
+  with stale-state metadata.
+- **Invalid request or unresolved scope**: The licensing service returns a service error with fixed `error_code`
+  semantics instead of a business decision.
 
 #### Quota-Governed API Request (Reserve, Execute, Settle)
 
@@ -3004,10 +3189,12 @@ Optional: Include when interaction flows add clarity beyond requirement statemen
 **Actor**: `cpt-cf-licensing-service-actor-consumer-module`
 
 **Preconditions**:
+
 - Quota policy exists for the relevant scope and resource dimensions.
 - Entitlement and effective-limit data is available.
 
 **Main Flow**:
+
 1. The consumer module calls `CheckAndReserve` with a `client_operation_id`, an `idempotency_key`, execution
    context, and estimated resource dimensions.
 2. The module internally resolves entitlement, effective limits, and applicable quota policies.
@@ -3022,9 +3209,11 @@ Optional: Include when interaction flows add clarity beyond requirement statemen
    behavior beyond reservation expiry.
 
 **Postconditions**:
+
 - The request outcome is explained by durable quota state and remaining quota is updated.
 
 **Alternative Flows**:
+
 - **Hard limit exceeded**: The module returns `decision_outcome = deny`; later tiers may additionally expose
   `admission_outcome`, limiting-scope metadata, and retry-after guidance.
 - **Soft limit triggered**: Soft outcomes such as capping, downgrade, warning, or deferral are later-tier behavior and
@@ -3040,10 +3229,12 @@ Optional: Include when interaction flows add clarity beyond requirement statemen
 **Actor**: `cpt-cf-licensing-service-actor-consumer-module`
 
 **Preconditions**:
+
 - A consumer module is about to start a long-running job that consumes concurrency capacity.
 - Concurrency quota policy exists for the relevant scope.
 
 **Main Flow**:
+
 1. The consumer module requests capacity for a long-running slot.
 2. The module creates lease-backed state only in priority tiers where lease semantics are delivered.
 3. The job starts and the consumer module maintains lifecycle progress.
@@ -3051,9 +3242,11 @@ Optional: Include when interaction flows add clarity beyond requirement statemen
 5. If the consumer module fails, expiry and reconciliation recover orphaned capacity.
 
 **Postconditions**:
+
 - Active capacity reflects completed work and leaked slots are recoverable through reconciliation.
 
 **Alternative Flows**:
+
 - **No capacity remaining**: The module returns `decision_outcome = deny` with `admission_outcome = rejected` and the
   job is not started.
 - **Worker failure**: Reservation expires and reconciliation restores capacity.
@@ -3067,19 +3260,25 @@ Optional: Include when interaction flows add clarity beyond requirement statemen
 **Actor**: `cpt-cf-licensing-service-actor-control-plane`
 
 **Preconditions**:
+
 - An authorized operator or tenant administrator is managing quota policy.
 
 **Main Flow**:
+
 1. The control plane lists or updates quota policies for a selected scope.
 2. The module validates and persists the policy change.
 3. In later tiers, the control plane may request effective quota inspection for a subject and action context.
-4. When inspection surfaces are in scope, the module returns the resolved policies, effective limits, and remaining quota.
+4. When inspection surfaces are in scope, the module returns the resolved policies, effective limits, and remaining
+   quota.
 
 **Postconditions**:
+
 - Policy state is updated and the caller can inspect the resulting effective quota behavior.
 
 **Alternative Flows**:
-- **Conflicting override intent**: The module rejects the update with a validation error and no policy change is applied.
+
+- **Conflicting override intent**: The module rejects the update with a validation error and no policy change is
+  applied.
 
 #### Compare Shadow Decisions During Migration
 
@@ -3090,20 +3289,25 @@ Optional: Include when interaction flows add clarity beyond requirement statemen
 **Actor**: `cpt-cf-licensing-service-actor-migration-engineer`
 
 **Preconditions**:
+
 - The licensing scope is configured in `shadow` mode.
 - Both authoritative legacy and shadow native decision paths are available.
 
 **Main Flow**:
+
 1. A licensing decision request is processed using the authoritative legacy path.
 2. The licensing service computes the shadow native decision for the same input.
 3. The licensing service stores comparison output, mismatch classification, and `correlation_id` metadata.
 4. The migration engineer reviews mismatches and determines readiness for cutover.
 
 **Postconditions**:
+
 - Migration analysis data is available without changing live decision outcomes.
 
 **Alternative Flows**:
-- **Shadow path unavailable**: The licensing service records incomplete comparison metadata without affecting the authoritative live decision.
+
+- **Shadow path unavailable**: The licensing service records incomplete comparison metadata without affecting the
+  authoritative live decision.
 
 ## 9. Acceptance Criteria
 
@@ -3114,48 +3318,72 @@ Acceptance is priority-scoped: a p1 delivery is judged primarily against functio
 
 #### p1 Minimum Acceptance
 
-- [ ] A decision-producing p1 operation returns the minimal canonical decision contract: `decision_outcome`, `decision_state`, resolved authority mode, normalized licensing scope, primary `reason_code`, `freshness_state`, and `correlation_id`, with service errors kept separate from business decisions.
-- [ ] `Check` does not create durable reservation state or mutate runtime counters; `CheckAndReserve` creates durable reservation state; `Commit` settles or rejects against the existing reservation contract.
-- [ ] p1 state-changing operations require stable `client_operation_id` and `idempotency_key`; replay returns the previously accepted result and does not duplicate side effects.
-- [ ] Invalid request, unresolved scope, conflicting authority configuration, and unavailable authority without permitted degraded handling return service errors with fixed `error_code` semantics instead of business decisions.
-- [ ] A licensing scope cannot be configured as authoritative in both legacy and native modes simultaneously, and no request silently falls back from one authority to another after routing has been resolved.
-- [ ] Legacy-authoritative and native-authoritative scopes can coexist in the same deployment through explicit routing, and the same normalized licensing scope resolves to the same authority mode consistently across routing, cache identity, and audit records.
-- [ ] When `resolved_authority_mode = disabled`, decision-producing operations return `decision_outcome = deny` with primary `reason_code = scope_disabled` rather than a service error.
-- [ ] Degraded decisions are explicitly marked `decision_state = degraded`, are never reported as authoritative, and are allowed only on read / preview surfaces that are in scope for the active priority tier; p1 state-changing operations return service errors instead of degraded success results when fresh authoritative evaluation is unavailable.
-- [ ] Decision responses identify the resolved authority clearly enough to distinguish entitlement-driven denial from quota-driven denial or restriction.
-- [ ] The legacy VendorA adapter is implemented behind Licensing Service public contracts, and platform consumers cannot bypass the module to consume adapter behavior directly.
-- [ ] The quota layer does not independently take ownership of `entitlement_existence`, `feature_enablement`, `effective_licensed_limit`, or `commercially_authoritative_consumed_quantity`.
-- [ ] Audit and telemetry records for a decision can be joined by `correlation_id` and show authority mode, decision outcome, decision state, primary reason code, and freshness state.
-- [ ] The module separates fast runtime enforcement from durable authoritative accounting for the lifecycle states delivered in p1.
+- [ ] A decision-producing p1 operation returns the minimal canonical decision contract: `decision_outcome`,
+  `decision_state`, resolved authority mode, normalized licensing scope, primary `reason_code`, `freshness_state`, and
+  `correlation_id`, with service errors kept separate from business decisions.
+- [ ] `Check` does not create durable reservation state or mutate runtime counters; `CheckAndReserve` creates durable
+  reservation state; `Commit` settles or rejects against the existing reservation contract.
+- [ ] p1 state-changing operations require stable `client_operation_id` and `idempotency_key`; replay returns the
+  previously accepted result and does not duplicate side effects.
+- [ ] Invalid request, unresolved scope, conflicting authority configuration, and unavailable authority without
+  permitted degraded handling return service errors with fixed `error_code` semantics instead of business decisions.
+- [ ] A licensing scope cannot be configured as authoritative in both legacy and native modes simultaneously, and no
+  request silently falls back from one authority to another after routing has been resolved.
+- [ ] Legacy-authoritative and native-authoritative scopes can coexist in the same deployment through explicit routing,
+  and the same normalized licensing scope resolves to the same authority mode consistently across routing, cache
+  identity, and audit records.
+- [ ] When `resolved_authority_mode = disabled`, decision-producing operations return `decision_outcome = deny` with
+  primary `reason_code = scope_disabled` rather than a service error.
+- [ ] Degraded decisions are explicitly marked `decision_state = degraded`, are never reported as authoritative, and are
+  allowed only on read / preview surfaces that are in scope for the active priority tier; p1 state-changing operations
+  return service errors instead of degraded success results when fresh authoritative evaluation is unavailable.
+- [ ] Decision responses identify the resolved authority clearly enough to distinguish entitlement-driven denial from
+  quota-driven denial or restriction.
+- [ ] The legacy VendorA adapter is implemented behind Licensing Service public contracts, and platform consumers cannot
+  bypass the module to consume adapter behavior directly.
+- [ ] The quota layer does not independently take ownership of `entitlement_existence`, `feature_enablement`,
+  `effective_licensed_limit`, or `commercially_authoritative_consumed_quantity`.
+- [ ] Audit and telemetry records for a decision can be joined by `correlation_id` and show authority mode, decision
+  outcome, decision state, primary reason code, and freshness state.
+- [ ] The module separates fast runtime enforcement from durable authoritative accounting for the lifecycle states
+  delivered in p1.
 
 #### Deferred Acceptance (p2/p3)
 
-- [ ] Later-tier decision fields such as `policy_effect`, `contributing_reason_codes`, structured explanation, `admission_outcome`, `retry_after_seconds`, `admitted_magnitude`, `target_policy_ids`, `release_outcome`, and `renewable_until` become acceptance criteria only in the priority tiers declared by their owning FRs.
-- [ ] Later-tier runtime surfaces such as `Release`, `Update`, `GetEffectiveQuota`, `GetUsageSummary`, and lease operations become acceptance criteria only in the priority tiers declared by their owning FRs.
-- [ ] Reconciliation, released-state accounting, shared recovery state machines, absolute stale-write protection, hierarchical policy resolution, shadow comparison, subject-kind registry enforcement, and full deterministic replay are not p1 acceptance gates; once delivered, they **MUST** satisfy the semantics of their owning FRs and ADRs.
-- [ ] Consumer modules, operators, and migration engineers gain the broader target-state capabilities of soft outcomes, effective quota inspection, usage summaries, reconciliation visibility, shadow comparison, and extensible governed dimensions only as the document advances through p2 and p3.
+- [ ] Later-tier decision fields such as `policy_effect`, `contributing_reason_codes`, structured explanation,
+  `admission_outcome`, `retry_after_seconds`, `admitted_magnitude`, `target_policy_ids`, `release_outcome`, and
+  `renewable_until` become acceptance criteria only in the priority tiers declared by their owning FRs.
+- [ ] Later-tier runtime surfaces such as `Release`, `Update`, `GetEffectiveQuota`, `GetUsageSummary`, and lease
+  operations become acceptance criteria only in the priority tiers declared by their owning FRs.
+- [ ] Reconciliation, released-state accounting, shared recovery state machines, absolute stale-write protection,
+  hierarchical policy resolution, shadow comparison, subject-kind registry enforcement, and full deterministic replay
+  are not p1 acceptance gates; once delivered, they **MUST** satisfy the semantics of their owning FRs and ADRs.
+- [ ] Consumer modules, operators, and migration engineers gain the broader target-state capabilities of soft outcomes,
+  effective quota inspection, usage summaries, reconciliation visibility, shadow comparison, and extensible governed
+  dimensions only as the document advances through p2 and p3.
 
 ## 10. Dependencies
 
-| Dependency | Description | Criticality |
-|------------|-------------|-------------|
-| Legacy VendorA licensing systems | Authoritative commercial truth for legacy scopes; required only when any scope is configured as `legacy_authoritative` | p1 (conditional) |
-| Native licensing persistence | Stores native-authoritative entitlements and limits | p1 |
-| Durable relational database | Stores quota policies, authoritative usage records, and aggregate views | p1 |
-| Fast-path state store | Supports low-latency counters and reservation state in p1; later tiers may extend it to lease-backed concurrency control | p1 |
-| Platform authentication and authorization | Restricts administrative and tenant-scoped access | p1 |
-| Audit and observability infrastructure | Captures decisions, p1 quota telemetry, sync health, and later-tier shadow or reconciliation signals when those capabilities are enabled | p1 |
-| Consumer modules | Supply request context and enforce returned decision outcomes at execution points | p1 |
-| Reliable event delivery mechanism | Supports later-tier usage settlement fan-out and reconciliation-triggering events between the module and downstream consumers. Delivery-mechanism choice is implementation detail. | p2 |
-| Distributed cache or read-model store | Supports low-latency effective-limit lookup beyond what the fast-path state store provides | p2 |
-| GTS or equivalent type-definition capability | Supports versioned extensible resource type definitions across modules | p2 |
+| Dependency                                   | Description                                                                                                                                                                        | Criticality      |
+|----------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------|
+| Legacy VendorA licensing systems             | Authoritative commercial truth for legacy scopes; required only when any scope is configured as `legacy_authoritative`                                                             | p1 (conditional) |
+| Native licensing persistence                 | Stores native-authoritative entitlements and limits                                                                                                                                | p1               |
+| Durable relational database                  | Stores quota policies, authoritative usage records, and aggregate views                                                                                                            | p1               |
+| Fast-path state store                        | Supports low-latency counters and reservation state in p1; later tiers may extend it to lease-backed concurrency control                                                           | p1               |
+| Platform authentication and authorization    | Restricts administrative and tenant-scoped access                                                                                                                                  | p1               |
+| Audit and observability infrastructure       | Captures decisions, p1 quota telemetry, sync health, and later-tier shadow or reconciliation signals when those capabilities are enabled                                           | p1               |
+| Consumer modules                             | Supply request context and enforce returned decision outcomes at execution points                                                                                                  | p1               |
+| Reliable event delivery mechanism            | Supports later-tier usage settlement fan-out and reconciliation-triggering events between the module and downstream consumers. Delivery-mechanism choice is implementation detail. | p2               |
+| Distributed cache or read-model store        | Supports low-latency effective-limit lookup beyond what the fast-path state store provides                                                                                         | p2               |
+| GTS or equivalent type-definition capability | Supports versioned extensible resource type definitions across modules                                                                                                             | p2               |
 
 ## 11. Assumptions
 
 The assumptions below are intentionally biased toward the p1 delivery contract while preserving room for future
 evolution.
 
-- Some production environments will continue to depend on legacy VendorA licensing for selected scopes during transition.
+- Some production environments will continue to depend on legacy VendorA licensing for selected scopes during
+  transition.
 - Not all modules need native-authoritative licensing on day one.
 - The platform can maintain canonical projections or cached views of authority data sufficient for p1 online checks;
   richer read models may be added in later tiers.
@@ -3167,40 +3395,54 @@ evolution.
 - Consumer modules enforce returned p1 quota outcomes close to execution and adopt later-tier module semantics only as
   those surfaces are delivered.
 - Billing and invoicing remain outside the module responsibility boundary.
-- Calendar-based quota periods use the closed set `{hourly, daily, weekly, monthly, billing_cycle}` with UTC-aligned window boundaries; window intervals are half-open `[window_start, window_end)` and an event at `window_end` belongs to the next window. `weekly` is anchored to ISO 8601 Monday `00:00:00 UTC`; `monthly` is anchored to the 1st of the month at `00:00:00 UTC`; `billing_cycle` is anchored by a per-policy `billing_anchor_day`. The normative policy-admission validation of `period` and `billing_anchor_day` (including the `[1, 28]` range rule for `billing_anchor_day`) is specified under `cpt-cf-licensing-service-fr-quota-policy-lifecycle`; this assumption bullet is descriptive of operator-visible semantics and defers to that FR for binding force. Sliding-window and token-bucket rate-limit shapes are out of p1 scope and may be added in a future version through additive, non-breaking extension of `policy.period`.
+- Calendar-based quota periods use the closed set `{hourly, daily, weekly, monthly, billing_cycle}` with UTC-aligned
+  window boundaries; window intervals are half-open `[window_start, window_end)` and an event at `window_end` belongs to
+  the next window. `weekly` is anchored to ISO 8601 Monday `00:00:00 UTC`; `monthly` is anchored to the 1st of the month
+  at `00:00:00 UTC`; `billing_cycle` is anchored by a per-policy `billing_anchor_day`. The normative policy-admission
+  validation of `period` and `billing_anchor_day` (including the `[1, 28]` range rule for `billing_anchor_day`) is
+  specified under `cpt-cf-licensing-service-fr-quota-policy-lifecycle`; this assumption bullet is descriptive of
+  operator-visible semantics and defers to that FR for binding force. Sliding-window and token-bucket rate-limit shapes
+  are out of p1 scope and may be added in a future version through additive, non-breaking extension of `policy.period`.
 
 ## 12. Risks
 
 Risks below cover both the p1 operating contract and later expansion. Rows involving shadowing, reconciliation, or
 highly extensible governance become materially more important in p2/p3 than in the initial rollout.
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Legacy adapter mapping drift | Wrong canonical entitlements or limits | Contract tests and shadow comparison metrics |
-| Projection staleness | Incorrect or delayed decisions | Freshness metadata, explicit degraded mode, reconciliation |
-| Dual-authority misconfiguration | Conflicting business truth | Strict validation and one-authority-per-scope rules |
-| Internal layer ownership confusion | Double counting or under-enforcement | Explicit usage-class ownership matrix |
-| Feature metadata drift | Quota layer interprets effective limits with the wrong lifecycle or retention semantics | Version feature metadata, use contract tests, and run integration tests |
-| Missing operation identity propagation | Difficult recovery analysis across preview, reservation, and settlement | Preserve both `client_operation_id` and `correlation_id` across telemetry |
-| Migration complexity | Slow rollout and operator uncertainty | Shadow mode, priority-tiered authority routing, detailed observability |
-| Hot-key contention on popular tenant or model scopes | Elevated decision latency and uneven enforcement behavior | Partition fast-path state by scope and monitor high-cardinality contention patterns |
-| Consumer modules integrate reserve and settlement inconsistently | Quota drift, double charging, or under-enforcement | Provide stable SDK contracts, idempotent semantics, and integration tests for consumer patterns |
-| Reconciliation lag grows during outages or event backlog | Remaining quota becomes stale and valid work is blocked | Instrument backlog health, alert on reconciliation delay, and provide expiry-driven recovery paths |
-| Uncontrolled custom resource type growth creates semantic drift | Policy sprawl and operator confusion | Govern resource type registration with metadata standards and validation rules |
-| Module size and complexity | Slower development velocity as entitlement + quota logic coexist | Internal layering, clear ownership matrix, and split into separate modules if module exceeds maintainability threshold |
+| Risk                                                             | Impact                                                                                  | Mitigation                                                                                                             |
+|------------------------------------------------------------------|-----------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
+| Legacy adapter mapping drift                                     | Wrong canonical entitlements or limits                                                  | Contract tests and shadow comparison metrics                                                                           |
+| Projection staleness                                             | Incorrect or delayed decisions                                                          | Freshness metadata, explicit degraded mode, reconciliation                                                             |
+| Dual-authority misconfiguration                                  | Conflicting business truth                                                              | Strict validation and one-authority-per-scope rules                                                                    |
+| Internal layer ownership confusion                               | Double counting or under-enforcement                                                    | Explicit usage-class ownership matrix                                                                                  |
+| Feature metadata drift                                           | Quota layer interprets effective limits with the wrong lifecycle or retention semantics | Version feature metadata, use contract tests, and run integration tests                                                |
+| Missing operation identity propagation                           | Difficult recovery analysis across preview, reservation, and settlement                 | Preserve both `client_operation_id` and `correlation_id` across telemetry                                              |
+| Migration complexity                                             | Slow rollout and operator uncertainty                                                   | Shadow mode, priority-tiered authority routing, detailed observability                                                 |
+| Hot-key contention on popular tenant, subject, or usage-dimension scopes | Elevated decision latency and uneven enforcement behavior                               | Partition fast-path state by scope and monitor high-cardinality contention patterns                                    |
+| Consumer modules integrate reserve and settlement inconsistently | Quota drift, double charging, or under-enforcement                                      | Provide stable SDK contracts, idempotent semantics, and integration tests for consumer patterns                        |
+| Reconciliation lag grows during outages or event backlog         | Remaining quota becomes stale and valid work is blocked                                 | Instrument backlog health, alert on reconciliation delay, and provide expiry-driven recovery paths                     |
+| Uncontrolled custom resource type growth creates semantic drift  | Policy sprawl and operator confusion                                                    | Govern resource type registration with metadata standards and validation rules                                         |
+| Module size and complexity                                       | Slower development velocity as entitlement + quota logic coexist                        | Internal layering, clear ownership matrix, and split into separate modules if module exceeds maintainability threshold |
 
 ## 13. Open Questions
 
 Unresolved questions that need answers before or during implementation.
 
-No affected product family **MUST** be implemented using undocumented defaults for these questions; each affected product family requires an approved extension to this PRD or equivalent requirements artifact before implementation.
+No affected product family **MUST** be implemented using undocumented defaults for these questions; each affected
+product family requires an approved extension to this PRD or equivalent requirements artifact before implementation.
 
-- What product-family-specific degraded-policy values and freshness thresholds should be configured for the read-only operation classes already declared degraded-eligible in this PRD?
-- Which product families require an explicit per-policy override of `max_deferred_retry_after_seconds` away from the module-wide default of `604_800` seconds, and which ones should stay on the default profile?
-- Which additional product-family-specific usage classes, beyond the mandatory baseline ownership matrix in this PRD, must be explicitly classified before those product families are onboarded?
-- What is the final v1 resource extensibility model for custom resource types: centrally registered, module-namespaced, or hybrid?
-- Which classes of operations default to explicit deny versus controlled emergency allow when quota dependencies are degraded?
-- What bounded overshoot tolerances are accepted for each quota class in single-region and future multi-region deployments?
+- What product-family-specific degraded-policy values and freshness thresholds should be configured for the read-only
+  operation classes already declared degraded-eligible in this PRD?
+- Which product families require an explicit per-policy override of `max_deferred_retry_after_seconds` away from the
+  module-wide default of `604_800` seconds, and which ones should stay on the default profile?
+- Which additional product-family-specific usage classes, beyond the mandatory baseline ownership matrix in this PRD,
+  must be explicitly classified before those product families are onboarded?
+- What is the final v1 resource extensibility model for custom resource types: centrally registered, module-namespaced,
+  or hybrid?
+- Which classes of operations default to explicit deny versus controlled emergency allow when quota dependencies are
+  degraded?
+- What bounded overshoot tolerances are accepted for each quota class in single-region and future multi-region
+  deployments?
 - Which policy authoring boundaries belong to platform operators versus tenant administrators in v1?
 - Where is the final boundary between authoritative quota accounting and downstream billing or chargeback systems?
 
@@ -3237,8 +3479,13 @@ Links to related specification artifacts.
 - **Design**: [DESIGN.md](./DESIGN.md)
 - **ADRs**: [ADR/](./ADR/)
 - **Features**: `features/` — not created yet
-- **Primary ADR (federation)**: [ADR/0001-cpt-cf-licensing-service-adr-federated-licensing-authority.md](./ADR/0001-cpt-cf-licensing-service-adr-federated-licensing-authority.md)
-- **Primary ADR (unification)**: [ADR/0002-cpt-cf-licensing-service-adr-unified-licensing-quota-module.md](./ADR/0002-cpt-cf-licensing-service-adr-unified-licensing-quota-module.md)
-- **ADR (reservation lifecycle + reconciled semantics)**: [ADR/0003-cpt-cf-licensing-service-adr-reservation-lifecycle-and-reconciled-semantics.md](./ADR/0003-cpt-cf-licensing-service-adr-reservation-lifecycle-and-reconciled-semantics.md)
-- **ADR (online idempotency TTL scope)**: [ADR/0004-cpt-cf-licensing-service-adr-online-idempotency-ttl-scope.md](./ADR/0004-cpt-cf-licensing-service-adr-online-idempotency-ttl-scope.md)
-- **Superseded Module**: former standalone `quota-service` module; removed from the repository, requirements incorporated into §5.5–§5.11 of this PRD
+- **Primary ADR (federation)
+  **: [ADR/0001-cpt-cf-licensing-service-adr-federated-licensing-authority.md](./ADR/0001-cpt-cf-licensing-service-adr-federated-licensing-authority.md)
+- **Primary ADR (unification)
+  **: [ADR/0002-cpt-cf-licensing-service-adr-unified-licensing-quota-module.md](./ADR/0002-cpt-cf-licensing-service-adr-unified-licensing-quota-module.md)
+- **ADR (reservation lifecycle + reconciled semantics)
+  **: [ADR/0003-cpt-cf-licensing-service-adr-reservation-lifecycle-and-reconciled-semantics.md](./ADR/0003-cpt-cf-licensing-service-adr-reservation-lifecycle-and-reconciled-semantics.md)
+- **ADR (online idempotency TTL scope)
+  **: [ADR/0004-cpt-cf-licensing-service-adr-online-idempotency-ttl-scope.md](./ADR/0004-cpt-cf-licensing-service-adr-online-idempotency-ttl-scope.md)
+- **Superseded Module**: former standalone `quota-service` module; removed from the repository, requirements
+  incorporated into §5.5–§5.11 of this PRD

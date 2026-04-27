@@ -78,7 +78,7 @@ routing.
 | `cpt-cf-licensing-service-fr-quota-class-coverage` | Rate and budget quotas realised through §3.5 Period and Window Semantics (SSA-008/SSA-011); concurrency realised through §3.6.3 Lease Lifecycle Mechanics (SSA-200). |
 | `cpt-cf-licensing-service-fr-quota-policy-lifecycle` | Policy CRUD through §3.3 contracts; `quota_policies` table (§3.7) plus state-transition audit via the transactional outbox (§3.7 Administrative Audit Path). |
 | `cpt-cf-licensing-service-fr-quota-policy-resolution` | §3.5 Soft-Threshold Evaluation resolves `P_applicable` under the canonical scope-narrowness total order; emergency-override precedence handled through the decision-orchestrator policy gate (§3.2). |
-| `cpt-cf-licensing-service-fr-hierarchical-scope-evaluation` | §3.5 Soft-Threshold Evaluation aggregates across the hierarchical scope order (`model > api_key > user > project > model_family > tenant > region > platform`) with Union-warn / AND-cap / AND-downgrade composition. |
+| `cpt-cf-licensing-service-fr-hierarchical-scope-evaluation` | §3.5 Soft-Threshold Evaluation aggregates across the hierarchical scope order (`user > project > tenant > region > platform`) with Union-warn / AND-cap / AND-downgrade composition; domain-specific identities and resource classes are matched through normalized-scope filters rather than global scope levels. |
 | `cpt-cf-licensing-service-fr-preview-vs-reserve` | Two distinct endpoints (§3.3 `POST /quota/check` vs `POST /quota/reservations`); admission formula applied identically per §3.5 with only the documented side-effect delta and degraded-state delta. |
 | `cpt-cf-licensing-service-fr-effective-quota` | §3.3 `GET /quota/effective` preview endpoint returns effective limits, remaining quota, limiting scopes, and resource dimensions without mutating state. |
 | `cpt-cf-licensing-service-fr-bounded-overshoot` | §3.6.1 Commit Magnitude Semantics (SSA-010) enforces per-policy `allow_overshoot_bound_percent`; `overshoot_capacity_exhausted` / `commit_exceeds_reservation` error codes surface the classification. |
@@ -595,8 +595,8 @@ encoding `<subject_kind>:<opaque_id>` used inside `subject_scope`.
 - **Durable store**: the registry is persisted in the same durable relational store that holds
   `QuotaPolicy` and the resource-type registry; schema columns are `subject_kind` (primary key),
   `owning_module_id`, `semver`, `opaque_id_pattern`, `opaque_id_max_length`, `retired_at`, `created_at`,
-  `updated_at`. Built-in kinds `project`, `user`, `api_key` are inserted as fixtures on first start-up and
-  are idempotent across restarts.
+  `updated_at`. Built-in kinds `project` and `user` are inserted as fixtures on first start-up and are
+  idempotent across restarts.
 - **Fast-path cache**: admission, policy admission, and audit-record emission **MAY** cache the resolved
   registry under the same TTL and invalidation-deadline constants as the resource-type registry
   (`registry_cache_ttl_seconds = 300` default; `registry_cache_invalidation_deadline_seconds = 10`). Cache
@@ -1006,11 +1006,12 @@ From the request and state:
 
 Realizes hierarchical composition per `cpt-cf-licensing-service-fr-soft-threshold-mechanics`: **Union-warn /
 AND-cap / AND-downgrade**. `P_applicable` is the set of applicable policies across all scope levels
-(`model > api_key > user > project > model_family > tenant > region > platform`, the canonical
-scope-narrowness total order defined in the PRD). `P_binding` is the subset under which the request does not
-fit. The degenerate single-policy case (`|P_applicable| = 1`) is a direct corollary of these rules. Soft-
-threshold mechanics apply to `quantity_model ∈ {counted, incremental}` only; `absolute` is handled in §3.4 and
-uses only a scope-level warn evaluation (see "Absolute-model warn" below).
+(`user > project > tenant > region > platform`, the canonical scope-narrowness total order defined in the PRD).
+Domain-specific subject identities and resource classes participate through normalized-scope filters, not through
+additional scope levels. `P_binding` is the subset under which the request does not fit. The degenerate single-policy
+case (`|P_applicable| = 1`) is a direct corollary of these rules. Soft-threshold mechanics apply to
+`quantity_model ∈ {counted, incremental}` only; `absolute` is handled in §3.4 and uses only a scope-level warn
+evaluation (see "Absolute-model warn" below).
 
 `governs(p, d)` is a boolean indicating whether policy `p` defines an `effective_limit` for dimension `d`. The
 min-aggregation over policies is restricted to policies that actually govern `d`; undefined `remaining[p, d]`
