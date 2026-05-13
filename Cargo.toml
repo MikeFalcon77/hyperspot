@@ -43,6 +43,8 @@ members = [
     "libs/modkit-node-info",
     "libs/modkit-transport-grpc",
     "libs/modkit-utils",
+    "libs/rustls-corecrypto-provider",
+    "libs/rustls-fips-shim",
     "libs/system-sdks",
     "libs/system-sdks/sdks/directory",
     "modules/credstore/credstore-sdk",
@@ -65,6 +67,7 @@ members = [
     "examples/oop-modules/calculator-gateway/calculator-gateway",
     "examples/oop-modules/calculator/calculator-sdk",
     "examples/oop-modules/calculator/calculator",
+    "examples/cf-fips-probe",
     "modules/system/types-registry/types-registry-sdk",
     "modules/system/types-registry/types-registry",
     "modules/system/types-sdk",
@@ -237,6 +240,8 @@ modkit-sdk = { package = "cf-modkit-sdk", version = "0.6.5", path = "libs/modkit
 modkit-security = { package = "cf-modkit-security", version = "0.7.0", path = "libs/modkit-security" }
 modkit-transport-grpc = { package = "cf-modkit-transport-grpc", version = "0.6.4", path = "libs/modkit-transport-grpc" }
 modkit-utils = { package = "cf-modkit-utils", version = "0.6.3", path = "libs/modkit-utils" }
+rustls-corecrypto-provider = { package = "cf-rustls-corecrypto-provider", version = "0.1.0", path = "libs/rustls-corecrypto-provider" }
+rustls-fips-shim = { package = "cf-rustls-fips-shim", version = "0.1.0", path = "libs/rustls-fips-shim" }
 
 cf-system-sdks = { version = "0.1.35", path = "libs/system-sdks" }
 cf-system-sdk-directory = { version = "0.1.35", path = "libs/system-sdks/sdks/directory" }

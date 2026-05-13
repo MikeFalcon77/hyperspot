@@ -1,0 +1,46 @@
+[package]
+name = "cf-rustls-corecrypto-provider"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "rustls CryptoProvider backed by Apple corecrypto (Security.framework + CommonCrypto) for FIPS 140-3 compliance on macOS"
+readme = "README.md"
+keywords = ["rustls", "crypto", "tls", "fips", "macos"]
+categories = ["cryptography"]
+
+[lib]
+name = "rustls_corecrypto_provider"
+
+# This crate is a thin FFI wrapper over CommonCrypto; it inherently needs
+# `unsafe`. Workspace lints forbid unsafe code globally, so we opt out of
+# inheritance and re-state the rest of the workspace's `rust` lint set.
+[lints.rust]
+unsafe_code = "allow"
+deprecated = "warn"
+non_ascii_idents = "forbid"
+unused_mut = "warn"
+noop_method_call = "warn"
+unused_import_braces = "warn"
+
+[features]
+default = []
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Workspace pin already provides std + tls12; default-features locked at workspace level.
+# We do not require the aws_lc_rs backend ourselves, but feature unification across the
+# workspace may pull it in regardless — that is fine; we only register our own provider.
+rustls = { workspace = true }
+security-framework = "3.7"
+security-framework-sys = "2.14"
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+zeroize = { workspace = true }
+subtle = "2"
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+hex = "0.4"
+tempfile = { workspace = true }

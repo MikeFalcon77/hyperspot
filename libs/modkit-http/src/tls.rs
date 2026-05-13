@@ -64,7 +64,15 @@ pub fn get_crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
     rustls::crypto::CryptoProvider::get_default()
         .cloned()
         .unwrap_or_else(|| {
-            #[cfg(feature = "fips")]
+            // Provider selection mirrors `modkit::bootstrap::init_crypto_provider`:
+            //   - fips + macOS  → Apple corecrypto
+            //   - fips + other  → AWS-LC FIPS
+            //   - non-fips      → AWS-LC default
+            #[cfg(all(feature = "fips", target_os = "macos"))]
+            {
+                Arc::new(rustls_corecrypto_provider::default_provider())
+            }
+            #[cfg(all(feature = "fips", not(target_os = "macos")))]
             {
                 Arc::new(rustls::crypto::default_fips_provider())
             }

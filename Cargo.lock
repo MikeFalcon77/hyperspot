@@ -1597,6 +1597,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-fips-probe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cf-modkit",
+ "cf-modkit-http",
+ "clap",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "cf-grpc-hub"
 version = "0.2.6"
 dependencies = [
@@ -1704,6 +1716,8 @@ dependencies = [
  "cf-modkit-odata",
  "cf-modkit-sdk",
  "cf-modkit-utils",
+ "cf-rustls-corecrypto-provider",
+ "cf-rustls-fips-shim",
  "cf-system-sdks",
  "chrono",
  "dashmap",
@@ -1890,6 +1904,8 @@ name = "cf-modkit-http"
 version = "0.6.5"
 dependencies = [
  "bytes",
+ "cf-rustls-corecrypto-provider",
+ "cf-rustls-fips-shim",
  "flate2",
  "http",
  "http-body",
@@ -2261,6 +2277,30 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "cf-rustls-corecrypto-provider"
+version = "0.1.0"
+dependencies = [
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
+ "hex",
+ "rustls",
+ "security-framework 3.7.0",
+ "security-framework-sys",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
+name = "cf-rustls-fips-shim"
+version = "0.1.0"
+dependencies = [
+ "hyper-rustls",
+ "rustls",
 ]
 
 [[package]]
