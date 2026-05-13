@@ -134,6 +134,89 @@ Cyber Fabric applies defense-in-depth security across the entire development lif
 
 See **[Security Overview](docs/security/SECURITY.md)** for the full breakdown, including: Secure ORM with compile-time tenant scoping, authentication/authorization architecture (NIST SP 800-162 PDP/PEP model), 90+ Clippy deny-level rules, custom dylint architectural lints, cargo-deny advisory checks, ClusterFuzzLite continuous fuzzing, CodeQL/Scorecard/Snyk/Aikido scanners, and AI-powered PR review bots.
 
+## FIPS 140-3 support
+
+Cyber Fabric builds with `--features fips` route every TLS data-path cryptographic operation through a **FIPS 140-3 validated cryptographic module**. This is *"Uses FIPS-validated cryptography"* — not a CMVP certification of Cyber Fabric itself (the validated modules are owned by Apple and AWS Labs respectively).
+
+### What is validated
+
+| Target | Validated module | Source |
+|---|---|---|
+| Linux (x86_64, aarch64) | AWS-LC FIPS Provider (CMVP cert **#4816**) | `aws-lc-fips-sys` pulled via `cf-rustls-fips-shim` |
+| macOS (any arch) | Apple `corecrypto` User-Space Module (per-OS-version CMVP cert) | `cf-rustls-corecrypto-provider` over Security.framework + CommonCrypto |
+| Windows | *not yet supported* — planned via `rustls-cng-crypto` | — |
+
+All branches share the same `rustls 0.23` state machine — only the `CryptoProvider` swaps per OS.
+
+### What is enforced on the wire
+
+Built with `--features fips`, the modkit-http client offers **only** FIPS-Approved algorithms in its `ClientHello`:
+
+| Category | Algorithms |
+|---|---|
+| TLS versions | TLS 1.2, TLS 1.3 (no TLS 1.0/1.1) |
+| TLS 1.3 cipher suites | `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384` |
+| TLS 1.2 cipher suites | `ECDHE_{ECDSA,RSA}_WITH_AES_{128,256}_GCM_SHA{256,384}` (×4) |
+| Key exchange | NIST P-256, P-384 ECDHE |
+| Signatures (verify) | ECDSA P-256/P-384, RSA-PSS, RSA PKCS#1 v1.5 (SHA-256/384/512) |
+| Hash / HMAC / HKDF | SHA-256, SHA-384 |
+| TLS 1.2 Extended Master Secret (RFC 7627) | **required** (`require_ems = true`) per NIST SP 800-52 Rev. 2 §3.5 |
+
+Explicitly **excluded**: ChaCha20-Poly1305, x25519, X25519MLKEM768 / post-quantum hybrids, ED25519, MD5, SHA-1.
+
+### Build & runtime
+
+```sh
+# FIPS-conformant build
+cargo build -p cf-server --features fips
+
+# Server-side TLS termination is NOT performed in production — TLS is
+# expected to be terminated at the reverse proxy. The FIPS chain covers
+# all outbound HTTPS made by modkit-http (provider calls, healthchecks,
+# database TLS, JWT verify against external JWKS, etc.).
+```
+
+`modkit::bootstrap::init_crypto_provider` runs automatically as the first step of `init_procedure` (called by both `run_server` and `run_migrate`) — no explicit setup needed in `main()`.
+
+### How to verify a build is FIPS-conformant
+
+```sh
+# Wire-level (offered ClientHello inspected by an external TLS server):
+cargo run -p cf-fips-probe --features fips -- --url https://www.howsmyssl.com/a/check
+
+# Expected: given_cipher_suites contains only AES-GCM suites, given_named_groups
+# contains only secp256r1/secp384r1, post_quantum_key_agreement: false.
+# The probe heuristic prints `[OK] No ChaCha20 in ClientHello cipher_suites`.
+```
+
+```sh
+# Linkage on macOS+fips — should be Apple frameworks only, no aws-lc-fips dylib:
+otool -L target/debug/cf-server | grep -E 'aws|crypto|ssl|ring'
+# (Expected: only /System/Library/Frameworks/Security.framework)
+
+# Runtime — corecrypto loaded:
+vmmap <cf-server-pid> | grep -E 'corecrypto|Security\.framework'
+```
+
+See [`examples/cf-fips-probe/README.md`](examples/cf-fips-probe/README.md) for the full four-layer verification chain (linkage, runtime, wire-level, cert-validation).
+
+### Build prerequisites
+
+- **macOS + fips**: Xcode Command Line Tools + Rust toolchain. No `cmake` / `perl` / `go` (those used to be required when aws-lc-fips was linked on macOS; the per-target shim eliminates them).
+- **Linux + fips**: C toolchain + `cmake` + `perl` + `go` (required by `aws-lc-fips-sys` build script).
+
+### What this does NOT claim
+
+- Cyber Fabric itself is **not** on the CMVP Validated Modules list. CMVP-listed modules are Apple `corecrypto` (on macOS) and AWS-LC FIPS Provider (on Linux); Cyber Fabric is a *consumer*.
+- The FIPS claim on macOS is valid only when the running macOS version is covered by the Operational Environment of the current `corecrypto` CMVP certificate. Verify per release against <https://csrc.nist.gov/projects/cryptographic-module-validation-program/validated-modules/search>.
+- TLS protocol-level NIST recommendations (SP 800-52 Rev. 2) beyond EMS — minimum protocol version, certificate hygiene, etc. — are the deployment's responsibility.
+- Server-side TLS termination (inbound HTTPS) is delegated to the reverse proxy and is not part of this FIPS scope.
+
+### Architecture decisions
+
+- [`docs/adrs/modkit/0004-macos-fips-via-corecrypto-provider.md`](docs/adrs/modkit/0004-macos-fips-via-corecrypto-provider.md) — why we built a custom rustls `CryptoProvider` over Apple corecrypto rather than using `native-tls` or declaring FIPS Linux-only.
+- [`docs/adrs/modkit/0005-fips-feature-target-conditional-shim.md`](docs/adrs/modkit/0005-fips-feature-target-conditional-shim.md) — why a one-`fips`-feature design uses an empty shim crate to encode per-target activation.
+
 ## Specification Templates
 
 Cyber Fabric uses industry-standard specification templates (IEEE, ISO, MADR) to drive development. Specs are written *before* implementation and live alongside the code in version control.

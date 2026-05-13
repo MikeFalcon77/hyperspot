@@ -41,6 +41,7 @@ hyper = { workspace = true, features = ["client", "http1", "http2"] }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "http2", "tokio"] }
 hyper-rustls = { workspace = true }
 rustls = { workspace = true }
+webpki-roots = "1.0"
 rustls-native-certs = { workspace = true }
 rustls-pki-types = { workspace = true }
 http-body-util = { workspace = true }
